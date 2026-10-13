@@ -156,8 +156,8 @@ C 'rs_gen_index nohup "$T/idx-nohup.md" /root' >/dev/null; I=$(cat "$T/idx-nohup
 has "$I" "^| ws-box | wsbox | 4x fake | - | - | fixture workstation | $RS_USER_DIR/targets/ws-box/reference.md |$" "nohup row"
 hasnt "$I" 'no workstation registered yet' "no placeholder sentence when a nohup target exists"
 RS_USER_DIR=/nonexistent RS_PACKS_DIR=/nonexistent RS_HOME=$FH C 'rs_gen_index nohup "$T/idx-empty.md" /root' >/dev/null
-has "$(cat "$T/idx-empty.md")" 'no workstation registered yet: add ~/.config/run-skills/targets/<name>/profile.sh from /root/targets/_template-nohup/ (or a target pack) and re-run install.sh' "empty nohup index prints the placeholder sentence"
+has "$(cat "$T/idx-empty.md")" 'no workstation registered yet: register one with the user (/root/INSTALL.md, Steps 2-6: run-probe, then ~/.config/run-skills/targets/<name>/ from /root/targets/_template-nohup/) or install a target pack' "empty nohup index prints the placeholder sentence"
 RS_USER_DIR=/nonexistent RS_PACKS_DIR=/nonexistent RS_HOME=$FH C 'rs_gen_index slurm "$T/idx-empty.md" /root' >/dev/null
 hasnt "$(cat "$T/idx-empty.md")" 'registered yet' "slurm index with a target has no placeholder"
 mkdir -p "$T/emptyhome/targets"; RS_USER_DIR=/nonexistent RS_PACKS_DIR=/nonexistent RS_HOME=$T/emptyhome C 'rs_gen_index slurm "$T/idx-empty.md" /root' >/dev/null
-has "$(cat "$T/idx-empty.md")" 'no cluster registered yet: add .*_template-slurm/ (or a target pack)' "empty slurm index prints the placeholder sentence"
+has "$(cat "$T/idx-empty.md")" 'no cluster registered yet: register one with the user (/root/INSTALL.md.*_template-slurm/) or install a target pack' "empty slurm index prints the placeholder sentence"

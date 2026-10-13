@@ -63,6 +63,26 @@ for f in skills/hpc-run/SKILL.md skills/ws-run/SKILL.md skills/hpc-run/reference
          skills/ws-run/references/procedure-nohup.md; do
   has "$(cat "$RS_HOME/$f")" 'experiment-conventions' "$f points at experiment-conventions.md"
 done
+[ "$(readlink "$RS_HOME/skills/ws-run/references/project-setup.md")" = "../../hpc-run/references/project-setup.md" ] \
+  && ok "ws-run project-setup.md -> hpc-run's (one copy)" || bad "ws-run project-setup.md -> hpc-run's (one copy)"
+PS=$(cat "$RS_HOME/skills/hpc-run/references/project-setup.md" 2>/dev/null)
+for f in skills/hpc-run/SKILL.md skills/ws-run/SKILL.md; do
+  has "$(cat "$RS_HOME/$f")" 'references/project-setup.md' "$f: a project without a conf goes through project-setup.md"
+  has "$(cat "$RS_HOME/$f")" 'INSTALL.md' "$f: registering a target points at INSTALL.md"
+done
+has "$PS" 'never guess' "project-setup: never guess the remote dir"; has "$PS" 'never create it' "project-setup: never create a conda env"
+has "$PS" 'run-sync -n' "project-setup: dry-run before the first sync"; has "$PS" 'Never launch it unasked' "project-setup: no launch without the user"
+has "$PS" 'Remote-only edits' "project-setup: checks an existing remote copy before syncing"; has "$PS" '.run-skills-proj' "project-setup: a foreign venv is not adopted silently"
+has "$PS" 'git/info/exclude' "project-setup: a shared repo keeps the conf untracked"
+I=$(cat "$RS_HOME/INSTALL.md" 2>/dev/null)
+has "$I" 'Read-only on remote machines' "INSTALL rail: read-only on servers"; has "$I" 'BatchMode=yes' "INSTALL rail: never wait at a password prompt"
+has "$I" 'Secrets never enter the conversation' "INSTALL rail: secrets stay out"; has "$I" 'need an explicit OK' "INSTALL rail: ~/.ssh/config needs an OK"
+has "$I" 'Do not invent facts' "INSTALL rail: no invented facts"; has "$I" 'never into the clone' "INSTALL rail: site facts stay out of the engine"
+has "$I" 'at most four questions' "INSTALL rail: small question batches"; has "$I" 'project-setup.md' "INSTALL hands existing projects to project-setup.md"
+for c in 'run-probe hosts' 'run-probe <alias>' 'run-probe wandb' 'run-probe wandb --import-netrc'; do has "$I" "$c" "INSTALL uses: $c"; done
+for c in 'run-probe hosts ' 'run-probe <alias> ' 'run-probe wandb \[--import-netrc\] '; do
+  has "$(sed -n '2,8p' "$RS_HOME/bin/run-probe")" "$c" "run-probe header documents: $c"; done
+has "$(cat "$RS_HOME/install.sh")" '"$RS_HOME/INSTALL.md" "$DEST/"' "install.sh ships INSTALL.md next to the harness (skills point at \$ROOT/INSTALL.md)"
 has "$(cat "$RS_HOME/skills/hpc-run/SKILL.md")" 'run-sync\|run-bootstrap' "hpc-run names the bin/ commands"
 has "$(cat "$RS_HOME/skills/ws-run/SKILL.md")" 'run-launch' "ws-run names run-launch"
 for y in hpc-run ws-run; do [ -f "$RS_HOME/codex/$y.openai.yaml" ] && ok "codex/$y.openai.yaml" || bad "codex/$y.openai.yaml"; done
@@ -100,7 +120,7 @@ PFW="$RS_USER_DIR/forbidden-words"
 if [ -f "$PFW" ]; then
   PW=$(sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' "$PFW" | tr '\n' '|' | sed 's/|*$//')
   if [ -n "$PW" ]; then
-    SCAN=""; for x in bin lib remote targets skills templates tests docs codex .github selftest.sh install.sh README.md AGENTS.md LICENSE; do
+    SCAN=""; for x in bin lib remote targets skills templates tests docs codex .github selftest.sh install.sh README.md AGENTS.md INSTALL.md LICENSE; do
       [ -e "$RS_HOME/$x" ] && SCAN="$SCAN $x"; done
     FW=$(cd "$RS_HOME" && grep -rIli -E -e "$PW" -- $SCAN 2>/dev/null); RC=$?
     if [ "$RC" -ge 2 ]; then bad "no forbidden words in the repo (overlay list) — grep rejected a pattern in $PFW"
@@ -113,7 +133,7 @@ else
   ok "no overlay forbidden-words file (nothing private to screen for)"
 fi
 [ -L "$RS_HOME/CLAUDE.md" ] && [ "$(readlink "$RS_HOME/CLAUDE.md")" = AGENTS.md ] && ok "CLAUDE.md -> AGENTS.md symlink" || bad "CLAUDE.md -> AGENTS.md symlink"
-for f in templates/hpc.conf.example templates/ws.conf.example templates/ssh_config templates/wandb_env templates/pack/README.md README.md AGENTS.md LICENSE docs/DESIGN.md docs/packs.md; do
+for f in templates/hpc.conf.example templates/ws.conf.example templates/ssh_config templates/wandb_env templates/pack/README.md README.md AGENTS.md INSTALL.md LICENSE docs/DESIGN.md docs/packs.md; do
   [ -f "$RS_HOME/$f" ] && ok "$f" || bad "$f"
 done
 for f in "$RS_HOME"/bin/* "$RS_HOME"/lib/*.sh "$RS_HOME"/remote/* "$RS_HOME"/targets/*/*.sh "$RS_HOME"/tests/*.sh "$RS_HOME"/selftest.sh "$RS_HOME"/install.sh; do
@@ -124,7 +144,7 @@ budget() { [ -f "$RS_HOME/$1" ] || { bad "$1 exists"; return; }; local n; n=$(wc
   [ "$n" -le "$2" ] && ok "$1 within $2 lines ($n)" || bad "$1 within $2 lines ($n)"; }
 budget lib/common.sh 120; budget remote/env.sh 170; budget remote/bootstrap.sh 90; budget remote/submit.sh 190; budget remote/job.sbatch 65
 budget remote/status.sh 175   # generous on purpose: every lookup has an explicit failure branch; compressing them hides bugs
-budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 230; budget AGENTS.md 160
+budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 240; budget AGENTS.md 165; budget INSTALL.md 230
 budget skills/hpc-run/SKILL.md 60; budget skills/ws-run/SKILL.md 60
-budget skills/hpc-run/references/experiment-conventions.md 130
+budget skills/hpc-run/references/experiment-conventions.md 130; budget skills/hpc-run/references/project-setup.md 100
 for d in hpc-run ws-run; do [ -d "$RS_HOME/$d" ] && bad "legacy $d/ tree removed" || ok "legacy $d/ tree removed"; done

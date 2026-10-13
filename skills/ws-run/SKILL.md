@@ -11,11 +11,12 @@ Read `references/INDEX.md` **now**. Its line 1 is `root: <dir>` — the installe
 lists every registered workstation: name, ssh host, GPUs, description, and its reference file. Pick the target from
 the user's words (its name or trigger words); if they name none, use `DEFAULT_STATION` from the project's `.ws.conf`;
 if still ambiguous, ask. **Then read exactly that target's reference file** (the path in its table row).
-If INDEX says no workstation is registered yet, register one first: copy `$ROOT/targets/_template-nohup/` to
-`~/.config/run-skills/targets/<alias>/`, fill in `profile.sh` + `reference.md`, re-run `install.sh` (or install
-the user's lab target pack).
+If INDEX says no workstation is registered yet (or the user wants another one), register it with the user: Steps 2–6
+of `$ROOT/INSTALL.md` (read-only discovery with `$ROOT/bin/run-probe`, then `~/.config/run-skills/targets/<alias>/`
+from `$ROOT/targets/_template-nohup/`, then `install.sh`) — or install the user's lab target pack.
 (For a Slurm cluster use the **hpc-run** skill instead.) A project runs on a workstation when its repo root has a
-`.ws.conf`; if it is missing, scaffold one from `references/conf-keys.md` and ask for `WS_REMOTE_DIR` — never guess it.
+`.ws.conf`; if it is missing (or the user asks to set the project up), follow `references/project-setup.md` — it asks
+for `WS_REMOTE_DIR`; never guess it.
 
 ## 2. Commands (cwd = the project root; `<t>` = target name, `<host>` = its host column)
 ```

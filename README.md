@@ -64,6 +64,22 @@ astral.sh into the project's env root (so the target needs outbound internet for
 
 ## Quick start
 
+### Let your agent do it (recommended)
+
+Paste this into Claude Code, Codex or pi:
+
+> Install run-skills for me: clone https://github.com/NAIVlab/run-skills to `~/.local/share/run-skills` and follow
+> its `INSTALL.md`.
+
+[`INSTALL.md`](INSTALL.md) is a runbook written for the agent. It installs the skills, lists the hosts in your
+`~/.ssh/config` and asks which are GPU machines, probes the ones you pick with read-only commands (GPUs, Slurm
+partitions and accounts, filesystems), asks what a probe cannot know (default partition, where projects live, queues
+you must never hit), writes the target files, connects your wandb key without ever printing it, and verifies the
+result. It asks before connecting anywhere, shows any `~/.ssh/config` change before making it, and submits nothing.
+In a lab with a [target pack](#target-packs), give it the pack's URL when it asks.
+
+### Or by hand
+
 **1. Install** (re-run the same command later to update):
 
 ```bash
@@ -86,8 +102,9 @@ cp -R ~/.local/share/run-skills/targets/_template-nohup ~/.config/run-skills/tar
 cp -R ~/.local/share/run-skills/targets/_template-slurm ~/.config/run-skills/targets/mycluster  # a Slurm cluster
 ```
 
-The directory name is the target name. Edit `profile.sh` (ssh alias, GPUs, storage policy — every key is
-commented), for Slurm also `policy.sh` (partitions, GPU ranges, per-GPU cpu/mem, walltime caps), and
+The directory name is the target name. `bash ~/.agents/run-skills/bin/run-probe <alias>` prints the facts you
+need (GPUs, partitions, time limits, accounts, filesystems — read-only). Edit `profile.sh` (ssh alias, GPUs, storage
+policy — every key is commented), for Slurm also `policy.sh` (partitions, GPU ranges, per-GPU cpu/mem, walltime caps), and
 `reference.md` — the one page the agent reads before using the target, so write down what a newcomer would need
 (partitions, quotas, quirks). Add a matching `Host` block to `~/.ssh/config` (see
 [`templates/ssh_config`](templates/ssh_config)), then re-run `install.sh` so the target shows up in the skills.
@@ -103,6 +120,17 @@ wandb-offline — the harness never falls back to credentials stored on the remo
 The first time, the agent scaffolds the project's `.ws.conf` (workstations) or `.hpc.conf` (clusters) and asks you
 for the remote directory — it never guesses it. Annotated examples:
 [`templates/ws.conf.example`](templates/ws.conf.example), [`templates/hpc.conf.example`](templates/hpc.conf.example).
+
+## Bringing an existing project
+
+Open your agent in the project and say *"set up this project for mycluster"* (or just ask for a run). The skills'
+[`project-setup.md`](skills/hpc-run/references/project-setup.md) has it read how the project runs today —
+`pyproject.toml` or `requirements.txt`, a conda env, your existing `sbatch` / `nohup` scripts, wandb, checkpointing —
+and translate that into `.hpc.conf` / `.ws.conf`: `#SBATCH` lines become `DEFAULT_*`, `ACCOUNT` and `SBATCH_EXTRA`,
+`module load` and exports become an `ENV_HOOK`, a conda env stays a conda env. If the project already lives on the
+server, it checks that copy first (edits made only there, a hand-built `.venv` the harness would otherwise adopt),
+then shows a dry-run sync and bootstraps the env. Your old scripts stay untouched, and it reports gaps such as a
+trainer that cannot resume from a checkpoint. Nothing runs until you say go.
 
 ## How a run happens
 
@@ -175,8 +203,9 @@ These are part of the skills' instructions and are enforced by the harness where
 
 | path | what |
 |---|---|
-| `skills/` | the two skills: a thin `SKILL.md` each + `references/` (procedures, conf keys, experiment conventions) |
-| `bin/` | local commands: `run-sync`, `run-bootstrap`, `run-launch` |
+| `skills/` | the two skills: a thin `SKILL.md` each + `references/` (procedures, conf keys, project setup, experiment conventions) |
+| `INSTALL.md` | the install runbook your agent follows |
+| `bin/` | local commands: `run-sync`, `run-bootstrap`, `run-launch`, and `run-probe` (read-only discovery) |
 | `lib/common.sh` | local helpers: target discovery, conf precedence, conf linter, INDEX generation |
 | `remote/` | deployed next to each project: `env.sh`, `bootstrap.sh`, `status.sh`, `submit.sh`, `job.sbatch` |
 | `targets/` | `_template-slurm/`, `_template-nohup/` |

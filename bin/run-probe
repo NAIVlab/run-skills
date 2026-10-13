@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# run-skills bin/run-probe — read-only discovery for setting up targets (the agent's INSTALL.md runbook). LOCAL.
+#   run-probe hosts                    ssh aliases from ~/.ssh/config (+ Include files): alias, hostname, user, note
+#   run-probe <alias>                  ONE ssh (BatchMode, 15 s timeout) running read-only commands on the host:
+#                                      OS, GPUs, tools, conda installs, Slurm partitions/associations, storage (~3 KB)
+#   run-probe wandb [--import-netrc]   is a key in ~/.config/run-skills/wandb_env? (never printed); --import-netrc
+#                                      copies ~/.netrc's api.wandb.ai password into it, only when it is still empty
+# Writes nothing on the remote and never prints a secret. RS_SSH_CONFIG replaces ~/.ssh/config (tests, odd setups).
+set -euo pipefail
+RS_HOME=$(cd "$(dirname "$0")/.." && pwd)
+. "$RS_HOME/lib/common.sh"
+CFG=${RS_SSH_CONFIG:-$HOME/.ssh/config}; SSHDIR=$(dirname "$CFG")
+usage() { sed -n '3,8p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+sshg() { if [ -n "${RS_SSH_CONFIG:-}" ]; then ssh -F "$CFG" -G "$1"; else ssh -G "$1"; fi; }
+
+cfg_files() {   # cfg_files FILE DEPTH: FILE, then every file its Include lines name (relative = the ssh dir), depth-capped
+  local f=$1 n=$2 inc p; [ -f "$f" ] || return 0; echo "$f"; [ "$n" -lt 8 ] || return 0
+  awk 'tolower($1)=="include"{for(i=2;i<=NF;i++)print $i}' "$f" | while read -r inc; do
+    case "$inc" in "~/"*) inc="$HOME/${inc#\~/}" ;; /*) ;; *) inc="$SSHDIR/$inc" ;; esac
+    for p in $inc; do cfg_files "$p" $((n+1)); done   # unquoted on purpose: Include takes globs
+  done
+}
+hosts() {
+  local reg="" t a hn un note list seen=" "
+  for t in $(rs_targets); do reg="$reg $( (rs_load_target "$t"; echo "$t=$T_HOST") )"; done
+  printf '%-18s %-36s %-14s %s\n' alias hostname user note
+  list=$(cfg_files "$CFG" 0 | while read -r f; do
+      sed -e 's/#.*//' -e 's/^[[:space:]]*[Hh][Oo][Ss][Tt][[:space:]=][[:space:]=]*/HOST /' "$f" | awk '$1=="HOST"{for(i=2;i<=NF;i++)print $i}'
+    done)
+  set -f                                                     # `Host *` must stay a word, not a glob of the cwd
+  for a in $list; do
+    case "$a" in *[*?!]*) continue ;; esac                  # patterns (Host *, !foo) are not machines
+    case "$seen" in *" $a "*) continue ;; esac; seen="$seen$a "
+    hn=$(sshg "$a" 2>/dev/null | awk '$1=="hostname"{print $2; exit}') || hn=""
+    un=$(sshg "$a" 2>/dev/null | awk '$1=="user"{print $2; exit}') || un=""
+    note=""
+    case "$hn" in github.com|*.github.com|gitlab.com|*.gitlab.com|bitbucket.org|ssh.dev.azure.com|codeberg.org|gitee.com|hf.co|huggingface.co)
+      note="skip: code host" ;; esac
+    [ -n "$note" ] || [ "$un" != git ] || note="skip: code host (user git)"
+    case "$un" in *'<'*) note="${note:+$note; }placeholder user" ;; esac
+    for t in $reg; do [ "${t#*=}" = "$a" ] && note="${note:+$note; }registered: ${t%%=*}"; done
+    printf '%-18s %-36s %-14s %s\n' "$a" "${hn:--}" "${un:--}" "$note"
+  done; set +f
+}
+
+remote_script() {   # runs on the host under `bash -s`: read-only, every lookup bounded (timeout 20 s, head, cut)
+  cat <<'REMOTE'
+T() { if command -v timeout >/dev/null 2>&1; then timeout 20 "$@"; else "$@"; fi; }
+U=${USER:-$(id -un)}
+echo "== host =="
+echo "hostname: $(hostname -f 2>/dev/null || hostname)"
+echo "user: $U  home: $HOME  shell: ${SHELL:-?}  TMPDIR: ${TMPDIR:-unset}"
+PRETTY_NAME=$(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-}")
+echo "os: ${PRETTY_NAME:-$(uname -s)} $(uname -m)  glibc: $(ldd --version 2>/dev/null | head -1 | awk '{print $NF}')"
+echo "cpus: $(nproc 2>/dev/null || echo ?)  mem: $(free -g 2>/dev/null | awk '/^Mem:/{print $2" GB"}')"
+echo "== gpu (this node) =="
+if command -v nvidia-smi >/dev/null 2>&1; then
+  T nvidia-smi --query-gpu=index,name,memory.total,driver_version --format=csv,noheader 2>&1 | head -16 | cut -c1-160
+  echo "compute capability: $(T nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | sort -u | tr '\n' ' ')"
+  echo "in use: $(T nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | wc -l | tr -d ' ') process(es)"
+else echo "none: no nvidia-smi on this node (normal on a Slurm login node)"; fi
+echo "== tools =="
+for x in sbatch uv conda mamba micromamba python3 git curl; do echo "$x: $(command -v "$x" 2>/dev/null || echo -)"; done
+for x in "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do [ -x "$x" ] && echo "uv (not on a bare PATH): $x"; done
+for d in "$HOME/miniconda3" "$HOME/anaconda3" "$HOME/miniforge3" "$HOME/mambaforge" /opt/conda; do
+  [ -f "$d/etc/profile.d/conda.sh" ] && echo "conda.sh: $d/etc/profile.d/conda.sh"; done
+echo "modules: $(ls /etc/profile.d 2>/dev/null | grep -iE 'lmod|modules' | tr '\n' ' ')"
+echo "== slurm =="
+if command -v sinfo >/dev/null 2>&1; then
+  echo "version: $(sinfo --version 2>/dev/null)"
+  echo "partitions (name|avail|timelimit|nodes|gres|cpus/node|mem MB/node; * = default):"
+  T sinfo -h -o '%P|%a|%l|%D|%G|%c|%m' 2>&1 | sort -u | head -40 | cut -c1-200
+  echo "associations (account|partition|qos):"
+  T sacctmgr -nP show assoc where user="$U" format=account,partition,qos 2>&1 | head -20 | cut -c1-200
+  echo "default account: $(T sacctmgr -nP show user "$U" format=defaultaccount 2>/dev/null | head -1)"
+  echo "your jobs in the queue: $(T squeue -h -u "$U" 2>/dev/null | wc -l | tr -d ' ')"
+else echo "none: no sinfo on PATH (a workstation, or Slurm lives elsewhere)"; fi
+echo "== storage =="
+DIRS="$HOME /tmp"; for d in /scratch /work /project /projects /groups /data /lustre /gpfs /fs /nfs; do [ -d "$d" ] && DIRS="$DIRS $d"; done
+for d in $DIRS; do [ "$d" = "$HOME" ] || [ "$d" = /tmp ] || { [ -d "$d/$U" ] && echo "exists: $d/$U"; }; done
+T df -hPT $DIRS 2>/dev/null | awk 'NR==1 || !seen[$7]++' | head -14 | cut -c1-160
+if command -v quota >/dev/null 2>&1; then echo "quota:"; T quota -s 2>&1 | grep -viE 'cannot resolve|error while|permission denied' | head -8 | cut -c1-160; fi
+REMOTE
+}
+probe() {   # probe ALIAS
+  local a=$1 out rc
+  if out=$(remote_script | ssh -o BatchMode=yes -o ConnectTimeout=15 "$a" 'bash -s' 2>&1); then rc=0; else rc=$?; fi
+  if [ "$rc" = 255 ]; then
+    echo "UNREACHABLE: ssh -o BatchMode=yes $a failed: $(printf '%s\n' "$out" | tail -1 | cut -c1-200)"
+    echo "  A password, 2FA prompt or unknown host key needs one interactive login: ask the user to run 'ssh $a'"
+    echo "  in their own terminal (with ControlMaster on, later BatchMode calls reuse it), then probe again."
+    return 4
+  fi
+  printf '%s\n' "$out" | head -c 6000; echo
+  [ "$rc" = 0 ] || echo "WARN: the remote probe exited $rc (output above may be partial)"
+}
+
+conf_val() {   # conf_val KEY FILE: the last `export KEY=value` in FILE, quotes stripped ('' when absent)
+  [ -f "$2" ] || return 0; sed -n "s/^export $1=//p" "$2" | tail -1 | tr -d \''"'
+}
+wandb() {   # wandb [--import-netrc]: report (never print) the key state; optionally import it from ~/.netrc
+  local f=$RS_USER_DIR/wandb_env k e
+  netrc_key() { awk '{for(i=1;i<=NF;i++){if($i=="machine")m=$(i+1); if($i=="password"&&m=="api.wandb.ai"){print $(i+1); exit}}}' "$HOME/.netrc" 2>/dev/null; }
+  k=$(conf_val WANDB_API_KEY "$f"); e=$(conf_val WANDB_ENTITY "$f")
+  if [ "${1:-}" = --import-netrc ]; then
+    [ -z "$k" ] || { echo "wandb_env already holds a key — not touched (edit $f yourself to change it)." >&2; return 1; }
+    k=$(netrc_key); [ -n "$k" ] || { echo "no api.wandb.ai entry in ~/.netrc — nothing to import." >&2; return 1; }
+    [ -f "$f" ] || { mkdir -p "$RS_USER_DIR"; install -m 600 "$RS_HOME/templates/wandb_env" "$f" 2>/dev/null || install -m 600 /dev/null "$f"; }
+    ( umask 077; { grep -v '^export WANDB_API_KEY=' "$f" || true; printf "export WANDB_API_KEY='%s'\n" "$k"; } > "$f.tmp" ) && mv "$f.tmp" "$f"
+    chmod 600 "$f"; echo "imported the ~/.netrc wandb key into $f (mode 600; key not shown)."; k=set
+  fi
+  echo "file: $f ($([ -f "$f" ] && echo present || echo missing))"
+  echo "key: $([ -n "$k" ] && echo set || echo 'empty -> runs go wandb-offline')"
+  echo "entity: ${e:-unset: wandb uses the default entity of the key}"
+  echo "~/.netrc: $([ -n "$(netrc_key)" ] && echo 'has an api.wandb.ai entry (run-probe wandb --import-netrc copies it)' || echo 'no wandb entry')"
+}
+
+case "${1:-}" in
+  hosts) [ "$#" -eq 1 ] || usage; hosts ;;
+  wandb) [ "$#" -le 2 ] || usage; [ "$#" -eq 1 ] || [ "$2" = --import-netrc ] || usage; wandb "${2:-}" ;;
+  ""|-h|--help|-*) usage ;;
+  *) [ "$#" -eq 1 ] || usage; probe "$1" ;;
+esac

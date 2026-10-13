@@ -15,7 +15,11 @@ git clone git@github.com:<org>/<pack-name>.git ~/.config/run-skills/packs/<pack-
   && bash ~/.config/run-skills/packs/<pack-name>/install.sh
 ```
 
-This installs (or updates) the run-skills engine in `~/.local/share/run-skills`, registers this pack, installs the
+Or let your agent do it — paste into Claude Code, Codex or pi: *"Install run-skills for me with our target pack
+`git@github.com:<org>/<pack-name>.git`: clone https://github.com/NAIVlab/run-skills to `~/.local/share/run-skills`
+and follow its `INSTALL.md`."* It also sets up your ssh aliases (asking first) and the wandb key.
+
+Either way, this installs (or updates) the run-skills engine in `~/.local/share/run-skills`, registers this pack, installs the
 `hpc-run` / `ws-run` skills and runs the offline selftest. Then:
 
 1. **ssh**: append [`ssh_config`](ssh_config) to `~/.ssh/config`, replace `<user>`, and `ssh-copy-id <alias>` for

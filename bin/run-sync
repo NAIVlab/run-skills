@@ -62,7 +62,8 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 { cat "$T_DIR/profile.sh"; printf '\nT_NAME=%s\n' "'$T_NAME'"; } > "$TMP/profile.sh"   # \n: profile may lack a final newline
 FILES=(); while IFS= read -r f; do FILES+=("$f"); done < <(rs_deploy_files)
 rsync -az $DRY "${FILES[@]}" "$TMP/profile.sh" "$XHOST:$RDIR/$DEPLOY/"
-rsync -az $DRY "./$CONF" "$XHOST:$RDIR/$CONF"
+# single known files: a dry run only names them (rsync -n to a file inside a not-yet-existing project dir fails)
+if [ -n "$DRY" ]; then echo "[$T_NAME] (dry) would push ./$CONF -> $RDIR/$CONF"; else rsync -az "./$CONF" "$XHOST:$RDIR/$CONF"; fi
 if [ -z "$DRY" ]; then   # chmod the deploy; drop v1 leftovers (cluster.sh/station.sh/run.sh) so only v2 files sit next to env.sh
   ssh "$HOST" "chmod +x '$RDIR/$DEPLOY/'*.sh '$RDIR/$DEPLOY/'job.sbatch 2>/dev/null; rm -f '$RDIR/$DEPLOY/'cluster.sh '$RDIR/$DEPLOY/'station.sh '$RDIR/$DEPLOY/'run.sh; true"
 fi
@@ -70,10 +71,10 @@ fi
 # 3) wandb secret (mode 600): the project's own .wandb_env wins, else the central one (see rs_wandb_env_file)
 WBENV=$(rs_wandb_env_file)
 if [ -n "$WBENV" ]; then
-  rsync -a $DRY --chmod=F600 "$WBENV" "$XHOST:$RDIR/.wandb_env"
-  echo "[$T_NAME] wandb key: ${WBENV/#$HOME/\~} -> $RDIR/.wandb_env (mode 600)"
+  [ -n "$DRY" ] || rsync -a --chmod=F600 "$WBENV" "$XHOST:$RDIR/.wandb_env"
+  echo "[$T_NAME] wandb key: ${WBENV/#$HOME/\~} -> $RDIR/.wandb_env (mode 600)${DRY:+ (dry: not pushed)}"
 else
   echo "[$T_NAME] wandb key: NONE (./.wandb_env or $RS_USER_DIR/wandb_env) -> runs go offline"
 fi
 rs_lint_conf "./$CONF"   # stale <TAG>_KEY lines that nothing reads (WARN on stderr)
-echo "[$T_NAME] sync done -> $HOST:$RDIR  (harness in $RDIR/$DEPLOY)"
+echo "[$T_NAME] ${DRY:+dry run: nothing written; }sync done -> $HOST:$RDIR  (harness in $RDIR/$DEPLOY)"

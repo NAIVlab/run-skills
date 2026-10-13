@@ -12,10 +12,11 @@ lists every Slurm target: name, ssh host, GPUs, default partition / GPU type, wa
 Pick the target from the user's words (its name or trigger words); if they name none, use `DEFAULT_CLUSTER` from the
 project's `.hpc.conf`; if still ambiguous (see the Routing notes in INDEX), ask. **Then read exactly that target's
 reference file** (the path in its table row): partitions, caps, storage model, gotchas, and a card of its values.
-If INDEX says no cluster is registered yet, register one first: copy `$ROOT/targets/_template-slurm/` to
-`~/.config/run-skills/targets/<name>/`, fill in `profile.sh` + `policy.sh` + `reference.md`, re-run `install.sh`
-(or install the user's lab target pack). A project runs on a target when its repo root has a `.hpc.conf`; if it is missing, scaffold one from
-`references/conf-keys.md` and ask for `REMOTE_DIR` — never guess it.
+If INDEX says no cluster is registered yet (or the user wants another one), register it with the user: Steps 2–6 of
+`$ROOT/INSTALL.md` (read-only discovery with `$ROOT/bin/run-probe`, then `~/.config/run-skills/targets/<name>/` from
+`$ROOT/targets/_template-slurm/`, then `install.sh`) — or install the user's lab target pack. A project runs on a
+target when its repo root has a `.hpc.conf`; if it is missing (or the user asks to set the project up), follow
+`references/project-setup.md` — it asks for `REMOTE_DIR`; never guess it.
 
 ## 2. Commands (cwd = the project root; `<t>` = target name, `<host>` = its host column)
 ```

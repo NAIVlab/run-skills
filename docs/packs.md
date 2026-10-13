@@ -73,7 +73,11 @@ pack's `routing/<skill>.md` is appended to it verbatim, so write Markdown bullet
      && bash ~/.config/run-skills/packs/<pack>/install.sh
    ```
 
-   A clone elsewhere works too — `install.sh` symlinks it into `~/.config/run-skills/packs/`.
+   A clone elsewhere works too — `install.sh` symlinks it into `~/.config/run-skills/packs/`. Members who prefer
+   to let their agent do it can paste: *"Install run-skills for me with our target pack `<url>`: clone
+   https://github.com/NAIVlab/run-skills to `~/.local/share/run-skills` and follow its `INSTALL.md`."* The runbook
+   installs the pack, fills in the pack's `ssh_config` placeholders with the member's username, and probes the
+   targets read-only.
 3. Updates: `git -C ~/.config/run-skills/packs/<pack> pull && bash ~/.config/run-skills/packs/<pack>/install.sh`
    pulls the pack, then pulls the engine and reinstalls. Profile and policy edits apply at the next sync; changes to
    names, descriptions or routing need the reinstall to reach the skills' INDEX.

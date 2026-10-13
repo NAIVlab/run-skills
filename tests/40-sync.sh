@@ -43,6 +43,8 @@ O=$(sync_in "$P" TARGET=fx-slurm); RL=$(cat "$T/rsync.log")
 has "$RL" '^--chmod=F600$' "wandb_env pushed as mode 600"; has "$RL" '^fx:/x/\.wandb_env$' "wandb_env destination"
 O=$(sync_in "$P" TARGET=fx-slurm -- -n); RL=$(cat "$T/rsync.log")
 has "$RL" '^--dry-run$' "-n passes --dry-run"; [ -s "$T/launch.log" ] && bad "dry run never sshes" || ok "dry run never sshes"
+hasnt "$RL" '\.hpc\.conf$\|chmod=F600' "dry run pushes neither the conf nor the wandb file (a new project's dir does not exist yet)"
+has "$O" '(dry) would push ./.hpc.conf' "dry run names the conf it would push"; has "$O" 'dry: not pushed' "dry run says the wandb file was not pushed"
 O=$(sync_in "$P" TARGET=fx-slurm -- -D); has "$(cat "$T/rsync.log")" '^--delete$' "-D passes --delete"
 sync_in "$P" TARGET=fx-slurm -- -Z >/dev/null && bad "unknown flag rejected" || ok "unknown flag rejected"
 O=$(sync_in "$P" CLUSTER=fx-slurm); has "$(echo "$O" | head -1)" '^\[fx-slurm\] remote: fx:/x' "CLUSTER= is accepted as TARGET"

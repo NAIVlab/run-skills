@@ -10,7 +10,7 @@ profile.sh [policy.sh policy.local.sh]` — and is refreshed by every sync.
 Sourced as shell: values with spaces MUST be double-quoted or sync/submit abort. Minimum: `REMOTE_DIR` (absolute
 remote project dir; `<TAG>_REMOTE_DIR` per target when targets do not share a filesystem), `ENV_KIND` (uv default |
 conda, then `ENV_NAME`), `RUN` (default command). Full list, defaults and prefix rules: `conf-keys.md`. Missing conf →
-scaffold it (ask for `REMOTE_DIR`, env kind, run command); local and remote names differ, so never guess the dir.
+follow `project-setup.md` (ask for `REMOTE_DIR`, env kind, run command); local and remote names differ, so never guess the dir.
 
 ## 1. Sync — push code, deploy the harness
 ```

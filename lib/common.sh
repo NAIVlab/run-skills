@@ -107,8 +107,8 @@ rs_gen_index() {   # rs_gen_index slurm|nohup OUT [ROOT]: references/INDEX.md fo
         [ "$kind" = slurm ] && d="${T_DEFAULT_PARTITION:--} / ${T_DEFAULT_GPU_TYPE:--}" || d=-
         echo "| $t | $T_HOST | ${T_GPUS:--} | $d | ${T_MAXTIME:--} | ${T_DESC:--} | $ref |" ) && rows=$((rows+1))
     done
-    [ "$rows" = 0 ] && echo && echo "no $([ "$kind" = slurm ] && echo cluster || echo workstation) registered yet: add" \
-      "~/.config/run-skills/targets/<name>/profile.sh from $root/targets/_template-$kind/ (or a target pack) and re-run install.sh"
+    [ "$rows" = 0 ] && echo && echo "no $([ "$kind" = slurm ] && echo cluster || echo workstation) registered yet: register one with" \
+      "the user ($root/INSTALL.md, Steps 2-6: run-probe, then ~/.config/run-skills/targets/<name>/ from $root/targets/_template-$kind/) or install a target pack"
     echo; if [ -f "$RS_HOME/skills/$skill/references/INDEX.md" ]; then sed -n '/^## Routing/,$p' "$RS_HOME/skills/$skill/references/INDEX.md"; fi
     for ref in "$RS_PACKS_DIR"/*/routing/"$skill.md" "$RS_USER_DIR/routing/$skill.md"; do if [ -f "$ref" ]; then cat "$ref"; fi; done
   } > "$out"

@@ -7,7 +7,7 @@ is `nohup`'d over one ssh and tracked by PID + log. The harness is deployed to `
 
 `.ws.conf` (sourced as shell; double-quote values with spaces) is the only per-project state: `WS_REMOTE_DIR`
 (relative to the box's `$HOME`, e.g. `projects/<name>`; `<TAG>_REMOTE_DIR` per box), `ENV_KIND` (uv default | conda,
-then `ENV_NAME`), `RUN`; full list in `conf-keys.md`. Missing → scaffold it and ask; never guess the remote dir.
+then `ENV_NAME`), `RUN`; full list in `conf-keys.md`. Missing → follow `project-setup.md`; never guess the remote dir.
 
 ## 1. Sync — push code, deploy the harness
 ```

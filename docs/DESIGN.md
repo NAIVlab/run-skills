@@ -111,6 +111,20 @@ second copy would be listed twice by agents that scan several roots. It generate
 discovered targets and prepends the targets' trigger words to the skill description (some agents select skills
 lexically; descriptions stay under 1024 characters and free of `<>`). The clone never receives generated files.
 
+## Onboarding is a conversation
+
+Installing is easy; *describing a site* is the hard part, and it is the agent that will later depend on that
+description. So setup is a runbook for the agent, `INSTALL.md`, rather than an interactive script: the agent lists the
+user's ssh hosts, probes the chosen ones, and asks only what a probe cannot know — which partitions the user may use,
+where projects live, which queues must never be hit by accident. Facts that can be measured are measured by
+`bin/run-probe`: one `BatchMode` ssh running read-only commands with bounded output, so every agent sees the same
+evidence, a password prompt can never hang it, and the selftest can run it against stubs. What cannot be measured is
+asked and marked as the user's word in `reference.md`. The rails mirror the skills': nothing is submitted, secrets
+never pass through the conversation (`run-probe wandb` reports whether a key is set and can import one from `~/.netrc`
+without printing it), and `~/.ssh/config` changes are shown before they are made. Existing projects get the same
+treatment from `project-setup.md`: their current launch scripts are the specification for the conf, and a copy
+already on the server is checked for remote-only edits and a hand-built venv before the first sync.
+
 ## Testing
 
 `selftest.sh` runs entirely offline. Phase A runs the generic suite against fixture targets in a scratch overlay,

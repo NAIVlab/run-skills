@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run-skills install.sh — install the harness copy + the hpc-run / ws-run skills for Claude Code, Codex and pi. LOCAL.
 #   bash install.sh            (RS_HARNESS_ROOT / RS_SKILLS_ROOT override the two install dirs under ~/.agents)
-# Copies bin lib remote targets tests selftest.sh -> ~/.agents/run-skills/ (ONE harness copy; skills reach it through
+# Copies bin lib remote targets tests selftest.sh INSTALL.md -> ~/.agents/run-skills/ (ONE harness copy; skills reach it through
 # INDEX's `root:` line). Installs ONE copy of each skill into $RS_SKILLS_ROOT — read natively by Codex and pi — and
 # symlinks ~/.claude/skills/<s> to it (Claude Code follows symlinks). Per-agent copies under ~/.codex/skills and
 # ~/.pi/agent/skills are retired (a second copy would be listed twice). The v1 {hpc-run,ws-run} harness dirs of each
@@ -64,7 +64,7 @@ legacy() {   # legacy ROOT: move a v1 harness dir aside once; leave exec forward
 
 echo "== harness -> $DEST =="
 mkdir -p "$DEST"
-rsync -a --delete "$RS_HOME/bin" "$RS_HOME/lib" "$RS_HOME/remote" "$RS_HOME/targets" "$RS_HOME/tests" "$RS_HOME/selftest.sh" "$DEST/"
+rsync -a --delete "$RS_HOME/bin" "$RS_HOME/lib" "$RS_HOME/remote" "$RS_HOME/targets" "$RS_HOME/tests" "$RS_HOME/selftest.sh" "$RS_HOME/INSTALL.md" "$DEST/"
 chmod -R u+rwX "$DEST"   # a read-only clone must not poison the $HOME copy
 # earlier v2 installs (and runbooks written then) used ~/.claude/run-skills: keep that path as a symlink to $DEST
 if [ "$DEST" != "$HOME/.claude/run-skills" ] && [ "$(readlink -f "$HOME/.claude/run-skills" 2>/dev/null)" != "$DEST" ]; then
@@ -116,3 +116,4 @@ echo "== selftest (stubbed slurm/ssh — nothing leaves this machine) =="
 bash "$RS_HOME/selftest.sh"   # from the clone: tests/70-docs.sh needs skills/ templates/ docs/, which $DEST omits
 echo
 echo "Install OK. Open Claude Code, Codex or pi and say e.g.: \"run this project on <target>\"."
+[ -n "$(rs_targets)" ] || echo "No targets yet: ask your agent to register your servers — $DEST/INSTALL.md, Steps 2-6."
