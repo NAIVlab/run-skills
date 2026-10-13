@@ -1,0 +1,16 @@
+# .ws.conf — copy to your project's repo root and edit. Sourced as shell: quote values with spaces.
+# Full key list + semantics: references/conf-keys.md of the installed ws-run skill (~/.agents/skills/ws-run/).
+# Precedence: CLI flag > <TAG>_KEY > KEY > default; <TAG> = target name uppercased, no punctuation (my-box -> MYBOX_).
+ENV_KIND=uv                                  # uv (default: per-box .venv built from pyproject.toml) | conda
+ENV_NAME=                                    # conda env name (only for ENV_KIND=conda; must already exist)
+RUN="python train.py --config configs/base.yaml --device cuda:0"   # `python` = the in-project .venv
+WS_REMOTE_DIR='projects/<project>'           # relative to the workstation's $HOME. REQUIRED.
+DEFAULT_NGPU=1                               # GPUs auto-picked when -d/-n are absent
+GPU_EXCLUDE=                                 # ids never auto-picked (someone else's GPUs), e.g. "0,1"
+NICE=10                                      # shared-box etiquette (0-19)
+DEFAULT_STATION='<alias>'                    # target used when the user names none
+# MYBOX_REMOTE_DIR=work/<project>            # per-target overrides: prefix any prefixable key with <TAG>_
+# MYBOX_JOB_NAME=<project>-mybox
+# VENV_DIR='$HOME/.venvs/<project>'          # explicit venv location (single-quoted: expands on the box)
+# BOOTSTRAP_HOOK=scripts/bootstrap_env.sh    # run by bootstrap.sh INSTEAD of `uv sync`
+# ENV_HOOK=scripts/env_hook.sh               # sourced at the end of .ws/env.sh; branch on $WS_TAG inside

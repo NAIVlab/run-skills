@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# run-skills bin/run-bootstrap — run the deployed bootstrap.sh on the target (uv sync / conda check) over ssh.
+# Runs LOCALLY from the repo root (cwd with .hpc.conf / .ws.conf), after run-sync. Idempotent.
+#   TARGET=<name> bash ~/.agents/run-skills/bin/run-bootstrap
+# The remote side sources env.sh (containment) and refuses a venv outside the project / T_ENV_ROOT / VENV_DIR.
+# CLUSTER= / STATION= are accepted as aliases of TARGET=.
+set -euo pipefail
+RS_HOME=$(cd "$(dirname "$0")/.." && pwd)
+. "$RS_HOME/lib/common.sh"
+rs_init
+rs_load_conf REMOTE_DIR WS_REMOTE_DIR REMOTE_HOST
+RDIR=$(rs_remote_dir); DEPLOY=$(rs_deploy_dir); HOST=$(rs_host)
+[ "$#" -eq 0 ] || { echo "usage: TARGET=<name> run-bootstrap   (no arguments)" >&2; exit 2; }
+
+echo "[$T_NAME] bootstrap on $HOST:$RDIR  ($DEPLOY/bootstrap.sh)"
+# nohup REMOTE_DIR is $HOME-relative, so `cd` from the login shell resolves it; PROJ is taken from the remote pwd.
+exec ssh "$HOST" "cd '$RDIR' && export PROJ=\$PWD TARGET='$T_NAME' && bash '$DEPLOY/bootstrap.sh'"

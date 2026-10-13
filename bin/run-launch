@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# run-skills bin/run-launch — launch the project's run on a nohup workstation target, contained (env.sh) and
+# detached. Runs LOCALLY from the repo root (cwd with .ws.conf) after run-sync + run-bootstrap.
+#   TARGET=<name> bash ~/.agents/run-skills/bin/run-launch [-d 0,1 | -n 2] [-N name] [-- <run cmd...>]
+#     -d ids   use exactly these GPU ids (bypasses GPU_EXCLUDE)     -n N   auto-pick the N idlest GPUs (memory.used)
+#     -N name  job/log name (default: JOB_NAME, else the remote dir basename)   -- cmd   overrides RUN from .ws.conf
+# .ws.conf keys (generic or <TAG>_): RUN DEFAULT_NGPU GPU_EXCLUDE NICE JOB_NAME ENV_NAME; generic-only: ENV_KIND.
+# Log: <REMOTE_DIR>/logs/<name>-<timestamp>.log (printed). STATION= / CLUSTER= are aliases of TARGET=.
+set -euo pipefail
+RS_HOME=$(cd "$(dirname "$0")/.." && pwd)
+. "$RS_HOME/lib/common.sh"
+rs_init
+[ "$T_KIND" = nohup ] || die "run-launch is for nohup targets; for Slurm use: ssh $T_HOST 'bash <REMOTE_DIR>/.$T_NAME/submit.sh …'"
+rs_load_conf REMOTE_DIR WS_REMOTE_DIR ENV_NAME ENV_KIND ENV_HOOK WANDB_MODE DEFAULT_NGPU GPU_EXCLUDE NICE RUN JOB_NAME
+RDIR=$(rs_remote_dir); HOST=$T_HOST
+ENV_NAME=$(ovr ENV_NAME); DEF_NGPU=$(ovr DEFAULT_NGPU 1); GPUX=$(ovr GPU_EXCLUDE); NICE=$(ovr NICE); RUN=$(ovr RUN)
+NAME=$(ovr JOB_NAME "$(basename "$RDIR")")
+case "${ENV_KIND:-uv}" in uv|conda) ;; *) die "ENV_KIND must be uv|conda (got '${ENV_KIND:-}')" ;; esac
+[ "${ENV_KIND:-uv}" = uv ] || [ -n "$ENV_NAME" ] || die "ENV_NAME required in .ws.conf for ENV_KIND=conda"
+GPUX="${GPUX//[[:space:]]/}"     # '0, 1' -> '0,1' (else the exclude regex silently fails open)
+if [ -n "$GPUX" ] && ! printf %s "$GPUX" | grep -Eq '^[0-9]+(,[0-9]+)*$'; then
+  die "GPU_EXCLUDE must be comma-separated GPU ids (got '$GPUX')"
+fi
+if [ -n "$NICE" ] && ! printf %s "$NICE" | grep -Eq '^[0-9]+$'; then
+  die "NICE must be a non-negative integer 0-19 (got '$NICE')"   # negative nice = priority over other users
+fi
+
+GPUS=""; NPICK=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -d) GPUS="${2:?-d needs GPU ids}"; shift 2 ;;
+    -n) NPICK="${2:?-n needs a count}"; shift 2 ;;
+    -N) NAME="${2:?-N needs a name}"; shift 2 ;;
+    --) shift; break ;;
+    *) echo "unknown arg: $1 (usage: run-launch [-d ids | -n N] [-N name] -- <cmd>)" >&2; exit 2 ;;
+  esac
+done
+# -d gets the same normalise+validate as GPU_EXCLUDE: a space inside CUDA_VISIBLE_DEVICES silently pins fewer GPUs.
+if [ -n "$GPUS" ]; then
+  GPUS="${GPUS//[[:space:]]/}"
+  printf %s "$GPUS" | grep -Eq '^[0-9]+(,[0-9]+)*$' || die "-d must be comma-separated GPU ids (got '$GPUS')"
+fi
+RUN_CMD="$*"; [ -n "$RUN_CMD" ] || RUN_CMD="$RUN"
+[ -n "$RUN_CMD" ] || die "no run command (pass after -- or set RUN / ${T_TAG}_RUN in .ws.conf)"
+
+echo "[$T_NAME] current GPUs on $HOST:"
+ssh "$HOST" "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --format=csv,noheader" | sed 's/^/  /'
+pick_gpus() {   # the $1 idlest GPUs by memory.used, skipping GPU_EXCLUDE ids
+  ssh "$HOST" "nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits" \
+    | { if [ -n "$GPUX" ]; then grep -Ev "^(${GPUX//,/|}),"; else cat; fi; } \
+    | sort -t, -k2 -n | head -n "$1" | cut -d, -f1 | paste -sd, -
+}
+if [ -n "$GPUS" ]; then
+  DEV="$GPUS"
+else
+  [ -n "$NPICK" ] || NPICK="$DEF_NGPU"
+  printf %s "$NPICK" | grep -Eq '^[1-9][0-9]*$' \
+    || die "GPU count (-n / DEFAULT_NGPU) must be a positive integer (got '$NPICK')"   # GNU head -n -1 = all but last
+  [ -z "$GPUX" ] || echo "[$T_NAME] auto-pick excludes GPU(s) [$GPUX] (GPU_EXCLUDE)"
+  DEV=$(pick_gpus "$NPICK") || true
+fi
+[ -n "$DEV" ] || die "could not resolve GPUs (all excluded/none visible?)"
+if [ -n "$NPICK" ]; then   # fewer GPUs than confirmed would silently change the run (world size, batch math)
+  got=$(printf %s "$DEV" | tr ',' '\n' | grep -c .)
+  [ "$got" -ge "$NPICK" ] || { echo "ERROR: asked -n $NPICK but only $got GPU id(s) exist after GPU_EXCLUDE. Use -n $got or -d <ids>." >&2; exit 1; }
+fi
+LOG="logs/${NAME}-$(date +%Y%m%d-%H%M%S).log"   # timestamped: a re-run with the same -N never truncates an older log
+echo "[$T_NAME] launching on GPU(s) [$DEV] -> $RDIR/$LOG"
+echo "          RUN: $RUN_CMD"
+
+# One remote shell: cd, containment env (env.sh puts the venv / conda env first on PATH), gate on the sentinel and on
+# the interpreter actually being the contained one, then nohup the run. The prep chain runs in the FOREGROUND under
+# set -e (a failure makes ssh return nonzero); only the nohup is backgrounded inside { } so $! is the run's PID.
+if [ "${ENV_KIND:-uv}" = conda ]; then
+  GATE="[ \"\${CONDA_DEFAULT_ENV:-}\" = '$ENV_NAME' ] || { echo \"ERROR: conda env '$ENV_NAME' not active (got '\${CONDA_DEFAULT_ENV:-none}')\" >&2; exit 1; }"
+else
+  GATE="_p=\$(command -v python || true); [ -n \"\$_p\" ] && [ \"\$_p\" -ef \"\$RS_VENV/bin/python\" ] || { echo \"ERROR: uv venv not active (python=\${_p:-none}, want \$RS_VENV/bin/python; run: TARGET=$T_NAME bash ~/.agents/run-skills/bin/run-bootstrap)\" >&2; exit 1; }"
+fi
+ssh "$HOST" "set -e; cd '$RDIR'; export PROJ=\$PWD TARGET='$T_NAME'; mkdir -p logs; \
+  unset RUN_ENV_READY HPC_ENV_READY WS_ENV_READY CONDA_DEFAULT_ENV; . .ws/env.sh; \
+  [ \"\${RUN_ENV_READY:-}\" = \"\$PROJ\" ] || { echo 'ERROR: containment env not loaded (RUN_ENV_READY unset)' >&2; exit 1; }; \
+  $GATE; \
+  { nohup ${NICE:+nice -n $NICE }env CUDA_VISIBLE_DEVICES='$DEV' PYTHONUNBUFFERED=1 $RUN_CMD > '$LOG' 2>&1 < /dev/null & echo \$! > '$LOG.pid'; echo \"[$T_NAME] started PID \$! on GPU(s) $DEV ; log $RDIR/$LOG ; pid file $RDIR/$LOG.pid\"; }"
+
+echo "[$T_NAME] verify:  ssh $HOST \"bash '$RDIR/.ws/status.sh' '$LOG'\"   |   ssh $HOST \"nvidia-smi\""   # log relative to the project: status.sh resolves it

@@ -1,0 +1,21 @@
+# .hpc.conf — copy to your project's repo root and edit. Sourced as shell: quote values with spaces.
+# Full key list + semantics: references/conf-keys.md of the installed hpc-run skill (~/.agents/skills/hpc-run/).
+# Precedence: CLI flag > <TAG>_KEY > KEY > default; <TAG> = target name uppercased, no punctuation (my-hpc -> MYHPC_).
+REMOTE_DIR='/project/<group>/<user>/<project>'  # absolute project dir on the cluster. REQUIRED, never guessed.
+ENV_KIND=uv                                  # uv (default: venv built from pyproject.toml) | conda
+ENV_NAME=                                    # conda env name (if ENV_KIND=conda; must already exist)
+RUN="python -m train --config configs/base.yaml"   # python = the target venv's python (uv run also works)
+DEFAULT_GPUS=1
+DEFAULT_TIME=1-00:00:00
+DEFAULT_CLUSTER=mycluster                    # target used when the user names none
+# MYCLUSTER_DEFAULT_PARTITION=gpu-long       # per-target overrides: prefix any prefixable key with <TAG>_
+# MYCLUSTER_ACCOUNT=<slurm-account>          # adds --account on that cluster only
+# OTHERHPC_REMOTE_DIR='/scratch/<user>/<project>'   # a second cluster that does not share the filesystem
+# VENV_DIR='$HOME/.venvs/<project>'          # explicit venv location (single-quoted: expands on the remote);
+#                                            #   or <TAG>_VENV_DIR= per target
+# BOOTSTRAP_HOOK=scripts/bootstrap_env.sh    # run by bootstrap.sh INSTEAD of `uv sync` (env + uv already set up)
+# UV_SYNC_ARGS="--python-platform x86_64-manylinux_2_35"
+# ENV_HOOK=scripts/env_hook.sh               # sourced at the end of env.sh; branch on $RS_TARGET inside
+# SBATCH_EXTRA="--qos=high --exclude=n1"     # never --partition; QOS/partition are submit.sh's decision
+# EXTRA_EXCLUDES="/.deps-*"                  # extra rsync excludes (also protected from -D)
+# SYNC_ALSO="data/small.json"                # excluded paths to push anyway

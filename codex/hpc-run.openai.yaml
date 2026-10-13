@@ -1,0 +1,4 @@
+interface:
+  display_name: "HPC Run"
+  short_description: "Run jobs on Slurm GPU clusters"
+  default_prompt: "Use $hpc-run to submit this project to the appropriate Slurm GPU cluster."

@@ -1,0 +1,20 @@
+# Example ~/.ssh/config entries — one Host block per target; the alias is the profile's T_HOST.
+# Replace <user> and the hostnames. Key auth: ssh-keygen -t ed25519 (if you have no key), then ssh-copy-id <alias>.
+# ControlMaster reuses one connection for the many short ssh calls a sync + submit makes.
+
+Host mycluster
+    Hostname login.cluster.example.edu
+    User <user>
+    IdentityFile ~/.ssh/id_ed25519
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%r@%h:%p
+    ControlPersist 1h
+
+Host mybox
+    Hostname gpu-box.example.edu
+    User <user>
+    IdentityFile ~/.ssh/id_ed25519
+    # ProxyJump bastion.example.edu   # if the box is only reachable through a jump host
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%r@%h:%p
+    ControlPersist 1h

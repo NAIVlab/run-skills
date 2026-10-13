@@ -1,0 +1,4 @@
+interface:
+  display_name: "Workstation Run"
+  short_description: "Run jobs on GPU workstations"
+  default_prompt: "Use $ws-run to launch this project on the appropriate GPU workstation."

@@ -1,0 +1,16 @@
+name: selftest
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install zsh (profiles and env.sh must parse under zsh too)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
+      - name: Offline selftest (stubbed slurm/ssh/uv/rsync)
+        run: RS_USER_DIR="$RUNNER_TEMP/rs-user" bash selftest.sh

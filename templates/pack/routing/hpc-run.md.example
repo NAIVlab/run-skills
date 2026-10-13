@@ -1,0 +1,2 @@
+- "the big queue" / "long jobs" → `mycluster` partition `gpu-long`; anything that
+  needs NVLink between GPUs → `mycluster` partition `gpu-nvl`.

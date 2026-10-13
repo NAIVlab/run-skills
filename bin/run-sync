@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# run-skills bin/run-sync — push the current project (cwd, must hold .hpc.conf / .ws.conf) to a target and
+# deploy the harness into <REMOTE_DIR>/.<target>/ (slurm) or <REMOTE_DIR>/.ws/ (nohup). Runs LOCALLY.
+#   TARGET=<name> bash ~/.agents/run-skills/bin/run-sync [-n|--dry-run (itemized)] [-D|--delete]
+# Additive by default: caches / venvs / wandb / logs / ckpts / outputs / data on the remote are excluded, so a
+# code sync never deletes them (not even with -D). .wandb_env is pushed separately as mode 600.
+# CLUSTER= / STATION= are accepted as aliases of TARGET= (v1 forwarders rely on that).
+set -euo pipefail
+RS_HOME=$(cd "$(dirname "$0")/.." && pwd)
+. "$RS_HOME/lib/common.sh"
+rs_init
+rs_load_conf REMOTE_DIR WS_REMOTE_DIR REMOTE_HOST XFER_HOST EXTRA_EXCLUDES SYNC_ALSO   # trust only the conf, never stale exports
+CONF=$(rs_conf_file); RDIR=$(rs_remote_dir); DEPLOY=$(rs_deploy_dir); HOST=$(rs_host)
+# Transfer host: where a site forbids rsync on the login node and provides a data-transfer node whose shell takes
+# rsync/scp/sftp only. Bulk goes there; the ssh control commands below stay on $HOST. Same filesystem by definition.
+XHOST=${XFER_HOST:-${T_XFER_HOST:-$HOST}}
+
+DRY=""; DEL=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -n|--dry-run) DRY="--dry-run --itemize-changes" ;;   # -n shows every file it would transfer
+    -D|--delete)  DEL="--delete" ;;
+    *) echo "usage: TARGET=<name> run-sync [-n|--dry-run] [-D|--delete]" >&2; exit 2 ;;
+  esac; shift
+done
+
+# Generated/output dirs are ANCHORED to the repo root (leading /) so a same-named SOURCE package dir (mypkg/data/)
+# is not dropped; junk (.git — dir OR worktree pointer file, __pycache__, ...) and *.parquet match at any depth.
+# -D never prunes these either. SYNC_ALSO=.git still force-pushes a real .git dir.
+EXC=(--exclude='.git' --exclude='.claude/' --exclude='.codex/' --exclude='.agent/' --exclude='.agents/'
+     --exclude='.vscode*/' --exclude='.idea/' --exclude='__pycache__/' --exclude='*.pyc'
+     --exclude='.pytest_cache/' --exclude='.mypy_cache/' --exclude='.ruff_cache/' --exclude='.DS_Store'
+     --exclude='node_modules/' --exclude='*.parquet'
+     --exclude='/.venv' --exclude='/.venv-*' --exclude='/.cache/' --exclude='/.local/' --exclude='/.config/' --exclude='/bin/'
+     --exclude='/tmp/' --exclude='/wandb/' --exclude='/wandb-artifacts/' --exclude='/logs/' --exclude='/run_logs/'
+     --exclude='/ckpts/' --exclude='/checkpoints/' --exclude='/runs/' --exclude='/outputs/'
+     --exclude='/videos/' --exclude='/data/' --exclude='.wandb_env')
+# Deploy dirs: .<name>/ of every target registered here (shipped + overlay) and the nohup .ws/ — never push one
+# target's deployed harness to another (targets that share a filesystem see each other's dirs).
+for n in $(rs_targets); do EXC+=(--exclude=".$n/"); done
+EXC+=(--exclude='.ws/')
+if [ -n "${EXTRA_EXCLUDES:-}" ]; then
+  set -f; for g in $EXTRA_EXCLUDES; do EXC+=(--exclude="$g"); done; set +f   # -f: keep patterns literal
+fi
+
+echo "[$T_NAME] remote: $HOST:$RDIR  tag: $T_TAG  deploy: $DEPLOY"
+[ "$XHOST" = "$HOST" ] || echo "[$T_NAME] transfer host: $XHOST (rsync only; ssh mkdir/chmod stay on $HOST)"
+echo "[$T_NAME] rsync ${DRY:+(dry) }$(pwd)/  ->  $XHOST:$RDIR/   (delete=${DEL:-off})"
+if [ -z "$DRY" ]; then ssh "$HOST" "mkdir -p '$RDIR/$DEPLOY' '$RDIR/logs'"; fi
+
+# 1) project code (additive unless -D; generated dirs excluded either way)
+rsync -az $DRY $DEL "${EXC[@]}" ./ "$XHOST:$RDIR/"
+# 1b) SYNC_ALSO: force-push these repo-relative paths although the default excludes drop them (e.g. "data/prompts").
+#     Additive, structure preserved (-R). Space-separated in the conf.
+for p in ${SYNC_ALSO:-}; do
+  if [ -e "$p" ]; then rsync -azR $DRY "$p" "$XHOST:$RDIR/"; echo "[$T_NAME] sync-also: $p"
+  else echo "[$T_NAME] sync-also: '$p' not found locally — skipped" >&2; fi
+done
+
+# 2) harness + this target's profile (with T_NAME pinned, so the remote never guesses) -> <RDIR>/<DEPLOY>/
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+{ cat "$T_DIR/profile.sh"; printf '\nT_NAME=%s\n' "'$T_NAME'"; } > "$TMP/profile.sh"   # \n: profile may lack a final newline
+FILES=(); while IFS= read -r f; do FILES+=("$f"); done < <(rs_deploy_files)
+rsync -az $DRY "${FILES[@]}" "$TMP/profile.sh" "$XHOST:$RDIR/$DEPLOY/"
+rsync -az $DRY "./$CONF" "$XHOST:$RDIR/$CONF"
+if [ -z "$DRY" ]; then   # chmod the deploy; drop v1 leftovers (cluster.sh/station.sh/run.sh) so only v2 files sit next to env.sh
+  ssh "$HOST" "chmod +x '$RDIR/$DEPLOY/'*.sh '$RDIR/$DEPLOY/'job.sbatch 2>/dev/null; rm -f '$RDIR/$DEPLOY/'cluster.sh '$RDIR/$DEPLOY/'station.sh '$RDIR/$DEPLOY/'run.sh; true"
+fi
+
+# 3) wandb secret (mode 600): the project's own .wandb_env wins, else the central one (see rs_wandb_env_file)
+WBENV=$(rs_wandb_env_file)
+if [ -n "$WBENV" ]; then
+  rsync -a $DRY --chmod=F600 "$WBENV" "$XHOST:$RDIR/.wandb_env"
+  echo "[$T_NAME] wandb key: ${WBENV/#$HOME/\~} -> $RDIR/.wandb_env (mode 600)"
+else
+  echo "[$T_NAME] wandb key: NONE (./.wandb_env or $RS_USER_DIR/wandb_env) -> runs go offline"
+fi
+rs_lint_conf "./$CONF"   # stale <TAG>_KEY lines that nothing reads (WARN on stderr)
+echo "[$T_NAME] sync done -> $HOST:$RDIR  (harness in $RDIR/$DEPLOY)"

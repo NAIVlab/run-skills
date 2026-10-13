@@ -1,0 +1,5 @@
+# Your PERSONAL Weights & Biases credentials — never a cluster's ~/.netrc / ~/.wandb_key.
+# run-sync pushes this file to <REMOTE_DIR>/.wandb_env (mode 600) on every sync; env.sh sources it.
+# Leave WANDB_API_KEY empty -> runs are forced to WANDB_MODE=offline (safe default).
+export WANDB_API_KEY=
+export WANDB_ENTITY=
