@@ -170,6 +170,6 @@ budget lib/common.sh 130; budget remote/env.sh 170; budget remote/bootstrap.sh 9
 budget remote/status.sh 175   # generous on purpose: every lookup has an explicit failure branch; compressing them hides bugs
 budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 240; budget AGENTS.md 165; budget INSTALL.md 230
 budget skills/hpc-run/SKILL.md 60; budget skills/ws-run/SKILL.md 60; budget bin/run-watch 700
-budget skills/hpc-run/references/experiment-conventions.md 134;   # +4: the run-watch exception (§3, §6, §7)
+budget skills/hpc-run/references/experiment-conventions.md 135;   # +4: the run-watch exception (§3, §6, §7); +1: a USR1 death is FAILED
 budget skills/hpc-run/references/project-setup.md 100
 for d in hpc-run ws-run; do [ -d "$RS_HOME/$d" ] && bad "legacy $d/ tree removed" || ok "legacy $d/ tree removed"; done

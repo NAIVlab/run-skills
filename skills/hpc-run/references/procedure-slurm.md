@@ -86,7 +86,7 @@ step rate (where `nvidia-smi` is usable is in the target's reference). State →
 (Priority/Resources = wait; a QOS/limit reason = a cap, not a stall); `RUNNING`; `COMPLETED` — rc 0, still verify the
 final artifact (rc 0 with `usr1=1` = it exited after the signal: find its own save line before resubmitting); `FAILED` —
 read the Traceback (`usr1=1` = it was signalled first; rc 138 there usually means no USR1 handler — rely on periodic
-saves, then resubmit); `TIMEOUT` — still running at `-t`; `--requeue` does not restart it (the chain's next segment, or a
+saves, then resubmit; sacct may show it as `10:0`); `TIMEOUT` — still running at `-t`; `--requeue` does not restart it (the chain's next segment, or a
 resubmit, resumes it); `OUT_OF_MEMORY` — smaller batch or larger `-m`; `PREEMPTED` / `NODE_FAIL` as the latest state = NOT
 requeued (`--no-requeue`, or a partition that preempts by cancel): resubmit and resume; `CANCELLED`. A requeued job
 instead goes back to `PENDING` and later runs again into the same log with a new `restart=N` header (`sacct -D` lists
@@ -100,7 +100,9 @@ the user the rows plus `#@ allow launch preempt=N errors=N timeout=N` (no defaul
 the cost of first submits plus N resubmits); only after their explicit OK run `run-watch <table> --approve "<their
 words>"`. Any later edit to those rows or the budget makes them detect-only again. It resubmits only a job the
 controller has purged with a terminal sacct state, never a CANCELLED one, never past an unknown submit outcome; a
-requeued job keeps its id and is only counted. Run it as this session's background task with a lease (`--for`,
+requeued job keeps its id and is only counted. A job ending within min(15 min, a tenth of its limit) of the time limit
+counts as `timeout` even when sacct says FAILED (killed by the USR1 warning) or COMPLETED without its done-path; one
+COMPLETED there with done `-` waits for a human (a save-and-exit is not proof the run finished). Run it as this session's background task with a lease (`--for`,
 default 2 h) and follow its output; every exit is a review point (`status.sh` spot-check, then restart). Without
 that, run `--once` at each review. Never detach it (no `nohup`, `setsid`, cron). After REQUEUE/RESUBMIT confirm the
 resume (or set `#@ resume /<the trainer's resume line>/`); ATTENTION is a finding — report it.
