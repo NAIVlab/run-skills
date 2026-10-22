@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# run-skills bin/run-pull — copy results back from a target into the current project (cwd, must hold .hpc.conf /
+# .ws.conf): logs, metrics, eval outputs, a checkpoint. Runs LOCALLY; rsync only, never ssh, so it works through a
+# site's restricted data-transfer node — the same transfer host run-sync uses (rs_xfer_host).
+#   TARGET=<name> bash ~/.agents/run-skills/bin/run-pull [-n|--dry-run] <path>...
+# <path> is relative to the remote project dir and lands at the same path here (rsync -R). Additive: never deletes,
+# never replaces a local file that is newer (-u). Env and harness state (venvs, caches, deploy dirs, the conf,
+# .wandb_env, .git) is refused. -n = file count + total size, nothing written: use it before a large pull.
+set -euo pipefail
+RS_HOME=$(cd "$(dirname "$0")/.." && pwd)
+. "$RS_HOME/lib/common.sh"
+rs_init
+rs_load_conf REMOTE_DIR WS_REMOTE_DIR REMOTE_HOST EXTRA_EXCLUDES SYNC_ALSO  # trust only the conf, never stale exports
+CONF=$(rs_conf_file); RDIR=$(rs_remote_dir); XHOST=$(rs_xfer_host)
+
+usage() { echo "usage: TARGET=<name> run-pull [-n|--dry-run] <remote-project-relative path>..." >&2; exit 2; }
+DRY=""; PATHS=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -n|--dry-run) DRY=--dry-run ;;
+    --) shift; PATHS+=("$@"); break ;;
+    -*) usage ;;
+    *) PATHS+=("$1") ;;
+  esac; shift
+done
+[ "${#PATHS[@]}" -gt 0 ] || usage
+DEPLOYS=" .ws $(rs_targets | sed 's/^/./' | tr '\n' ' ')"
+SRC=(); i=0
+for p in "${PATHS[@]}"; do
+  while :; do case "$p" in ./*) p=${p#./} ;; */) p=${p%/} ;; *) break ;; esac; done
+  case "$p" in ''|.|/*|-*|..|../*|*/..|*/../*|*/./*|*/.|*//*|*[!A-Za-z0-9._/+=,@-]*)   # no globs, spaces, shell chars
+    die "run-pull: '$p' — give a plain path inside the remote project dir (relative, no '..', no wildcards)" ;; esac
+  d=$p; while :; do [ ! -L "$d" ] || die "run-pull: local '$d' is a symlink and rsync would replace it with a real dir — ask the user"
+    case "$d" in */*) d=${d%/*} ;; *) break ;; esac; done
+  top=${p%%/*}
+  case "$top" in .venv|.venv-*|.cache|.local|.config|bin|.git|.wandb_env|.hpc.conf|.ws.conf) die "run-pull: '$p' is env/harness state, never pulled" ;; esac
+  case "$DEPLOYS" in *" $top "*) die "run-pull: '$p' is a deployed harness dir, never pulled" ;; esac
+  PATHS[$i]=$p; SRC+=("$XHOST:$RDIR/./$p"); i=$((i+1))   # /./ = the -R anchor: the path below it is recreated here
+done
+
+echo "[$T_NAME] pull ${DRY:+(dry) }$XHOST:$RDIR/{${PATHS[*]}}  ->  $(pwd)/   (newer local files kept, nothing deleted)"
+RC=0
+# -K: a local symlinked dir inside a pulled tree stays a symlink (written through, or rsync exit 23 — never replaced)
+rsync -azR -u -K --safe-links --stats $DRY --exclude='.wandb_env' --exclude='.venv*/' --exclude='__pycache__/' \
+  --exclude='.git' "${SRC[@]}" ./ || RC=$?
+case "$RC" in
+  0) ;;
+  24) echo "[$T_NAME] rsync exit 24: files vanished during the copy (a running job rotates them) — pull again once it settles" >&2 ;;
+  *) echo "[$T_NAME] rsync exit $RC — nothing retried; see the rsync message above" >&2; exit "$RC" ;;
+esac
+[ -z "$DRY" ] || { echo "[$T_NAME] dry run: nothing written"; exit "$RC"; }
+
+# Would the next run-sync push these files back? It copies ./ with its excludes (+ SYNC_ALSO, forced), size+mtime only,
+# so once the remote copies change, a sync would overwrite them with this older copy. Ask rsync itself (dry, local).
+E=$(mktemp -d); trap 'rm -rf "$E"' EXIT
+EXC=(); while IFS= read -r g; do EXC+=(--exclude="$g"); done < <(rs_sync_excludes)
+BACK=$( { rsync -an --itemize-changes "${EXC[@]}" ./ "$E/" || echo '!fail'
+          for s in ${SYNC_ALSO:-}; do [ ! -e "$s" ] || rsync -anR --itemize-changes "$s" "$E/" || echo '!fail'; done; } 2>/dev/null |
+  awk -v P="${PATHS[*]}" 'BEGIN { n = split(P, a, " ") }
+    /^!fail$/ { f = 1 }
+    /^>f/ { sub(/^[^ ]+ /, ""); if (seen[$0]++) next
+            for (i = 1; i <= n; i++) if ($0 == a[i] || index($0, a[i] "/") == 1) { c++; break } }
+    END { print (f ? "unknown" : c + 0) }')
+case "$BACK" in
+  0) ;;
+  unknown) echo "[$T_NAME] NOTE: could not check whether run-sync would push these back (local listing failed) —" \
+             "make sure EXTRA_EXCLUDES covers them and SYNC_ALSO does not" >&2 ;;
+  *) echo "[$T_NAME] NOTE: run-sync would push $BACK of these files back and, once the remote copies change," \
+       "overwrite them with this copy — add the dir to EXTRA_EXCLUDES in ./$CONF (and drop it from SYNC_ALSO)" >&2 ;;
+esac
+echo "[$T_NAME] pull done <- $XHOST:$RDIR  (${PATHS[*]})"
+exit "$RC"

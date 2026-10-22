@@ -1,6 +1,6 @@
 ---
 name: ws-run
-description: Run, launch, monitor, or stop training on the user's GPU workstations (no Slurm) listed in references/INDEX.md, for any local project with a .ws.conf. Rsyncs the project to the box, bootstraps a contained uv or conda env, and launches the run detached with nohup on the idlest GPUs (lowest memory.used — verify they are actually free in the printed table), with every cache and output kept inside the project dir. Use whenever the user wants to run, launch, nohup, train, or eval on a workstation, a GPU server, or the box (not a Slurm cluster), check a run's status, tail its log, or stop a run.
+description: Run, launch, monitor, or stop training on the user's GPU workstations (no Slurm) listed in references/INDEX.md, for any local project with a .ws.conf. Rsyncs the project to the box, bootstraps a contained uv or conda env, and launches the run detached with nohup on the idlest GPUs (lowest memory.used — verify they are actually free in the printed table), with every cache and output kept inside the project dir. Use whenever the user wants to run, launch, nohup, train, or eval on a workstation, a GPU server, or the box (not a Slurm cluster), check a run's status, tail its log, copy its results back, or stop a run.
 allowed-tools: Bash, Read, Write, Edit
 ---
 
@@ -26,6 +26,7 @@ ssh <host> "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory
 # >>> print a one-line plan (target / GPU ids / run command) and wait for an explicit go, then:
 TARGET=<t> bash $ROOT/bin/run-launch -n 1 -N <name> -- <RUN>     # nohup on the idlest GPU(s); -d 0,1 picks ids explicitly
 ssh <host> "bash ~/<WS_REMOTE_DIR>/.ws/status.sh logs/<name>-<timestamp>.log"   # start a review: bounded digest (PID, log, hints, last lines); -n 40 = deep read
+TARGET=<t> bash $ROOT/bin/run-pull [-n] <path>...  # copy results back (paths relative to the project dir; -n = count + size first)
 ```
 
 ## 3. Procedure
@@ -43,6 +44,8 @@ read it before naming or launching any real experiment.
   `.ws.conf` files as uv unless the user asks for conda. Never create a conda env — if `ENV_NAME` is missing on the
   box, stop and ask.
 - Everything a run produces stays under the project dir (the harness pins caches, tmp, logs, ckpts there).
+- Files cross the wire only through `run-sync` (up) and `run-pull` (back): they use the target's transfer host
+  where the site requires one. Never hand-roll `rsync`/`scp`/`sftp` to `<host>`; ssh is for commands and bounded reads.
 - Experiments checkpoint and resume: nothing restarts a nohup run after a crash or reboot, so the command must
   pick up from its latest checkpoint on relaunch; smoke tests always run `WANDB_MODE=disabled`.
 - Monitoring (`experiment-conventions.md` §7): widen review intervals only with evidence; anomalies and milestones

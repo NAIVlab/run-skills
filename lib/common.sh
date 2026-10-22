@@ -45,6 +45,9 @@ rs_init() {   # bin/* prologue: TARGET (CLUSTER= / STATION= are aliases) -> rs_l
   rs_load_target "$TARGET"
 }
 rs_host() { [ "$T_KIND" = slurm ] && printf %s "${REMOTE_HOST:-$T_HOST}" || printf %s "$T_HOST"; }   # slurm honours REMOTE_HOST
+# every file copy (run-sync, run-pull) goes here: a site's data-transfer node whose restricted shell takes rsync/scp/sftp
+# only; ssh control commands stay on rs_host. Same filesystem by definition.
+rs_xfer_host() { printf %s "${T_XFER_HOST:-$(rs_host)}"; }   # a site fact: the profile only, never the conf
 rs_conf_file() { [ "$T_KIND" = slurm ] && echo .hpc.conf || echo .ws.conf; }
 rs_load_conf() {   # rs_load_conf KEY... : unset KEY and ${T_TAG}_KEY, then source ./<conf> from the cwd
   local c k; c=$(rs_conf_file)
@@ -65,6 +68,14 @@ rs_remote_dir() {
     d="${t:-${WS_REMOTE_DIR:-}}"; [ -n "$d" ] || die "WS_REMOTE_DIR (or ${T_TAG}_REMOTE_DIR) not set in .ws.conf — never guess it"
   fi
   printf %s "$d"
+}
+rs_sync_excludes() {   # run-sync's exclude patterns, one per line (static on purpose: hand-built .venv-foo must survive -D).
+  # Generated/output dirs are ANCHORED (leading /) so a same-named SOURCE dir (mypkg/data/) is kept; junk matches at any depth.
+  printf '%s\n' .git .claude/ .codex/ .agent/ .agents/ '.vscode*/' .idea/ __pycache__/ '*.pyc' .pytest_cache/ .mypy_cache/ \
+    .ruff_cache/ .DS_Store node_modules/ '*.parquet' /.venv '/.venv-*' /.cache/ /.local/ /.config/ /bin/ /tmp/ /wandb/ \
+    /wandb-artifacts/ /logs/ /run_logs/ /ckpts/ /checkpoints/ /runs/ /outputs/ /videos/ /data/ .wandb_env
+  local n g; for n in $(rs_targets) ws; do echo ".$n/"; done   # every deploy dir: targets sharing a filesystem see each other's
+  set -f; for g in ${EXTRA_EXCLUDES:-}; do echo "$g"; done; set +f   # -f: keep the conf's patterns literal
 }
 rs_deploy_dir() { [ "$T_KIND" = slurm ] && echo ".$T_NAME" || echo .ws; }
 rs_deploy_files() {   # absolute paths, one per line (profile.sh is deployed separately with T_NAME appended)
@@ -105,7 +116,7 @@ rs_gen_index() {   # rs_gen_index slurm|nohup OUT [ROOT]: references/INDEX.md fo
         case "$T_DIR" in "$RS_HOME"/*) ref="$root/targets/$t/reference.md" ;; *) ref="$T_DIR/reference.md" ;; esac
         [ -n "$T_LOCAL_DIR" ] && [ -f "$T_LOCAL_DIR/reference.local.md" ] && ref="$ref + $T_LOCAL_DIR/reference.local.md"
         [ "$kind" = slurm ] && d="${T_DEFAULT_PARTITION:--} / ${T_DEFAULT_GPU_TYPE:--}" || d=-
-        echo "| $t | $T_HOST | ${T_GPUS:--} | $d | ${T_MAXTIME:--} | ${T_DESC:--} | $ref |" ) && rows=$((rows+1))
+        echo "| $t | $T_HOST | ${T_GPUS:--} | $d | ${T_MAXTIME:--} | ${T_DESC:--}${T_XFER_HOST:+; files via \`$T_XFER_HOST\` (run-sync/run-pull only)} | $ref |" ) && rows=$((rows+1))
     done
     [ "$rows" = 0 ] && echo && echo "no $([ "$kind" = slurm ] && echo cluster || echo workstation) registered yet: register one with" \
       "the user ($root/INSTALL.md, Steps 2-6: run-probe, then ~/.config/run-skills/targets/<name>/ from $root/targets/_template-$kind/) or install a target pack"

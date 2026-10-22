@@ -16,6 +16,7 @@ TARGET=<t> bash $ROOT/bin/run-sync        # additive; -n dry-run; -D also delete
 First line printed: `[<t>] remote: <host>:<dir>  tag: <TAG>  deploy: .ws`. Never deletes remote `.venv* .cache
 .local .config bin tmp wandb wandb-artifacts logs run_logs ckpts checkpoints runs outputs videos data .wandb_env`
 or any `.<target>/` dir. Pushes the conf, the profile and your wandb key file as `.wandb_env` (mode 600).
+With a transfer host (`T_XFER_HOST`) it prints `transfer host: <xfer>` and ends `sync done -> … ; files via <xfer>`.
 
 ## 2. Bootstrap the env — first run, and after any dependency change (idempotent)
 ```
@@ -72,6 +73,21 @@ AND the log not advancing across two checks — never one sample. A nohup'd run 
 relaunch with the next `a<attempt>` (conventions §3) and confirm it resumed. **Never `kill` a process without explicit approval**; after an
 OK: `ssh <host> "kill <pid>"`.
 
+## 6. Pull results back — only with `run-pull`
+```
+TARGET=<t> bash $ROOT/bin/run-pull -n <path>...   # dry run: file count + total size (rsync --stats); writes nothing
+TARGET=<t> bash $ROOT/bin/run-pull <path>...      # copy them into the local project
+```
+Paths are relative to the project dir and land at the same path locally (`logs/<file>`, `results/`); plain paths
+only (no wildcards, no `..`) — for anything outside the project dir, ask the user. Additive: a local file newer than
+the remote copy is kept, nothing local is deleted, local symlinked dirs stay symlinks (one on the path itself is
+refused); venvs, caches, deploy dirs, the conf, `.wandb_env` and `.git` are refused. It only runs `rsync`, through the
+target's transfer host when its profile sets `T_XFER_HOST`. Never hand-roll an `rsync`/`scp` to `<host>` instead —
+a site that requires a transfer node need not refuse every copy elsewhere, so a copy that succeeds proves nothing.
+Large trees (`ckpts/`, `wandb/`): `-n` first, then pull with the user's OK. `NOTE: run-sync would push N of these
+files back` = a later sync would overwrite newer remote results with this copy: add the dir to `EXTRA_EXCLUDES`
+(and drop it from `SYNC_ALSO`). Exit 24 = files vanished mid-copy (a running job rotated them): pull again later.
+
 ## Storage model (the deployed `.ws/env.sh` enforces it; the box's profile chooses the policy)
 Everything under the project dir by default: HF/torch caches (`$PROJ/.cache/…`), wandb dirs, `logs/`, `ckpts/`,
 `tmp/` (`TMPDIR` — workstation `/tmp` is often tiny), compile caches (`$PROJ/.cache/{triton,torch_ext,inductor,vllm,
@@ -83,6 +99,7 @@ for scripts: `TARGET`, `WS_TAG=<tag, lowercase>` (never `CLUSTER`), `RS_TARGET`,
 is exported only when every step succeeded; the launch chain refuses without it.
 
 ## Safety rails (every time)
+- Files move only through `run-sync` / `run-pull` (the target's transfer host, if any); no hand-rolled `rsync`/`scp`.
 - Confirm before every launch; never launch onto a busy GPU or `kill` a run without an OK (shared boxes).
 - wandb: your key only (`.wandb_env`), never the box's `~/.netrc`; no key → offline. Never create conda envs.
   Keep outputs/caches under the project dir; report PID + log after every launch.

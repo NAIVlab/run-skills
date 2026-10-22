@@ -1,6 +1,6 @@
 ---
 name: hpc-run
-description: Run, submit, monitor, or cancel code on the user's Slurm clusters listed in references/INDEX.md, for any local project with a .hpc.conf. Rsyncs the project to its remote dir, bootstraps a contained uv or conda env, and submits an availability-checked sbatch job with every cache and output kept inside the project dir. Use whenever the user wants to run, launch, sbatch, train, or eval on a cluster, HPC, Slurm, or a named partition, or wants job status, logs, or to cancel a job.
+description: Run, submit, monitor, or cancel code on the user's Slurm clusters listed in references/INDEX.md, for any local project with a .hpc.conf. Rsyncs the project to its remote dir, bootstraps a contained uv or conda env, and submits an availability-checked sbatch job with every cache and output kept inside the project dir. Use whenever the user wants to run, launch, sbatch, train, or eval on a cluster, HPC, Slurm, or a named partition, or wants job status, logs, results copied back, or to cancel a job.
 allowed-tools: Bash, Read, Write, Edit
 ---
 
@@ -26,6 +26,7 @@ TARGET=<t> bash $ROOT/bin/run-bootstrap        # first run / deps changed: uv sy
 ssh <host> 'bash <REMOTE_DIR>/.<t>/submit.sh -p <partition> -g <ngpu> [-G <gputype>] -t <time> [-y] -- <RUN>'
 ssh <host> 'squeue -u $USER -o "%.10i %.3t %.11M %R %j"'        # monitor: %R = pending reason, %j last = full name
 ssh <host> 'bash <REMOTE_DIR>/.<t>/status.sh <jobid>'          # start a review: bounded digest (state, attempt/footer, hints, last lines); -n 40 = deep read
+TARGET=<t> bash $ROOT/bin/run-pull [-n] <path>...  # copy results back (paths relative to REMOTE_DIR; -n = count + size first)
 ```
 
 ## 3. Procedure
@@ -43,6 +44,8 @@ classes, naming, the wandb project/group/name mapping and the checkpoint/resume 
 - Never create a conda env: if `ENV_NAME` is missing on the target, stop and ask. uv venvs are different —
   `run-bootstrap` builds them from the project's own `pyproject.toml`, so running it is safe.
 - Everything a run produces stays under `REMOTE_DIR` (the harness pins caches, tmp, logs, ckpts there).
+- Files cross the wire only through `run-sync` (up) and `run-pull` (back): they use the target's transfer host
+  where the site requires one. Never hand-roll `rsync`/`scp`/`sftp` to `<host>`; ssh is for commands and bounded reads.
 - Experiments checkpoint and resume: jobs go out with `--requeue`, so the run command must pick up from its
   latest checkpoint when re-run (confirm before a long submit); smoke tests always run `WANDB_MODE=disabled`.
 - Monitoring (`experiment-conventions.md` §7): widen review intervals only with evidence; anomalies and milestones

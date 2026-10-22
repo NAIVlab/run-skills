@@ -67,7 +67,7 @@ ssh <host> "cd <REMOTE_DIR> && ls -a | head -40; git status --short 2>/dev/null 
 ```
 - **Remote-only edits**: in the dry run, `<f` lines other than `<f+++++++++` (new) are existing remote files a sync would
   overwrite with the local version (rsync compares size and time); `git status` there shows uncommitted work. Show
-  both; let the user bring changes back first or accept the loss.
+  both; let the user bring changes back first (`run-pull <path>`) or accept the loss.
 - **A venv the harness would adopt** — `.venv` (or `.venv<T_SUFFIX>`, or `T_ENV_ROOT/envs/<proj>`) without a
   `.run-skills-proj` file inside: `run-bootstrap` would `uv sync` into it and change it. Ask: let the harness manage
   it, or set `VENV_DIR` to a fresh path.

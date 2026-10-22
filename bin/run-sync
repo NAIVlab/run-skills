@@ -9,11 +9,9 @@ set -euo pipefail
 RS_HOME=$(cd "$(dirname "$0")/.." && pwd)
 . "$RS_HOME/lib/common.sh"
 rs_init
-rs_load_conf REMOTE_DIR WS_REMOTE_DIR REMOTE_HOST XFER_HOST EXTRA_EXCLUDES SYNC_ALSO   # trust only the conf, never stale exports
+rs_load_conf REMOTE_DIR WS_REMOTE_DIR REMOTE_HOST EXTRA_EXCLUDES SYNC_ALSO   # trust only the conf, never stale exports
 CONF=$(rs_conf_file); RDIR=$(rs_remote_dir); DEPLOY=$(rs_deploy_dir); HOST=$(rs_host)
-# Transfer host: where a site forbids rsync on the login node and provides a data-transfer node whose shell takes
-# rsync/scp/sftp only. Bulk goes there; the ssh control commands below stay on $HOST. Same filesystem by definition.
-XHOST=${XFER_HOST:-${T_XFER_HOST:-$HOST}}
+XHOST=$(rs_xfer_host)   # every rsync below goes to the transfer host (if any); ssh mkdir/chmod stay on $HOST
 
 DRY=""; DEL=""
 while [ "$#" -gt 0 ]; do
@@ -24,24 +22,9 @@ while [ "$#" -gt 0 ]; do
   esac; shift
 done
 
-# Generated/output dirs are ANCHORED to the repo root (leading /) so a same-named SOURCE package dir (mypkg/data/)
-# is not dropped; junk (.git — dir OR worktree pointer file, __pycache__, ...) and *.parquet match at any depth.
-# -D never prunes these either. SYNC_ALSO=.git still force-pushes a real .git dir.
-EXC=(--exclude='.git' --exclude='.claude/' --exclude='.codex/' --exclude='.agent/' --exclude='.agents/'
-     --exclude='.vscode*/' --exclude='.idea/' --exclude='__pycache__/' --exclude='*.pyc'
-     --exclude='.pytest_cache/' --exclude='.mypy_cache/' --exclude='.ruff_cache/' --exclude='.DS_Store'
-     --exclude='node_modules/' --exclude='*.parquet'
-     --exclude='/.venv' --exclude='/.venv-*' --exclude='/.cache/' --exclude='/.local/' --exclude='/.config/' --exclude='/bin/'
-     --exclude='/tmp/' --exclude='/wandb/' --exclude='/wandb-artifacts/' --exclude='/logs/' --exclude='/run_logs/'
-     --exclude='/ckpts/' --exclude='/checkpoints/' --exclude='/runs/' --exclude='/outputs/'
-     --exclude='/videos/' --exclude='/data/' --exclude='.wandb_env')
-# Deploy dirs: .<name>/ of every target registered here (shipped + overlay) and the nohup .ws/ — never push one
-# target's deployed harness to another (targets that share a filesystem see each other's dirs).
-for n in $(rs_targets); do EXC+=(--exclude=".$n/"); done
-EXC+=(--exclude='.ws/')
-if [ -n "${EXTRA_EXCLUDES:-}" ]; then
-  set -f; for g in $EXTRA_EXCLUDES; do EXC+=(--exclude="$g"); done; set +f   # -f: keep patterns literal
-fi
+# Excludes (lib/common.sh rs_sync_excludes): generated/output dirs anchored to the repo root, junk at any depth, every
+# target's deploy dir, EXTRA_EXCLUDES. -D never prunes these either. SYNC_ALSO=.git still force-pushes a real .git dir.
+EXC=(); while IFS= read -r g; do EXC+=(--exclude="$g"); done < <(rs_sync_excludes)
 
 echo "[$T_NAME] remote: $HOST:$RDIR  tag: $T_TAG  deploy: $DEPLOY"
 [ "$XHOST" = "$HOST" ] || echo "[$T_NAME] transfer host: $XHOST (rsync only; ssh mkdir/chmod stay on $HOST)"
@@ -76,5 +59,6 @@ if [ -n "$WBENV" ]; then
 else
   echo "[$T_NAME] wandb key: NONE (./.wandb_env or $RS_USER_DIR/wandb_env) -> runs go offline"
 fi
+VIA=""; [ "$XHOST" = "$HOST" ] || VIA="; files via $XHOST (copy only with run-sync/run-pull)"   # survives | tail -1
 rs_lint_conf "./$CONF"   # stale <TAG>_KEY lines that nothing reads (WARN on stderr)
-echo "[$T_NAME] ${DRY:+dry run: nothing written; }sync done -> $HOST:$RDIR  (harness in $RDIR/$DEPLOY)"
+echo "[$T_NAME] ${DRY:+dry run: nothing written; }sync done -> $HOST:$RDIR  (harness in $RDIR/$DEPLOY)$VIA"

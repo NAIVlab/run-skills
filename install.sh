@@ -97,9 +97,8 @@ fi
 
 echo "== ssh aliases =="
 missing=""
-for t in $(rs_targets); do
-  h=$( (rs_load_target "$t"; echo "$T_HOST") )
-  # `ssh -G` resolves the full config (Include/Match too); an undefined alias resolves to itself.
+for h in $(for t in $(rs_targets); do (rs_load_target "$t"; echo "$T_HOST ${T_XFER_HOST:-}"); done | tr ' ' '\n' | sort -u); do
+  # control host + transfer host; `ssh -G` resolves the full config (Include/Match too); an undefined alias resolves to itself.
   hn=$(ssh -G "$h" 2>/dev/null | awk '/^hostname /{print $2; exit}') || hn=""
   un=$(ssh -G "$h" 2>/dev/null | awk '/^user /{print $2; exit}') || un=""
   case "$un" in *'<'*) hn="" ;; esac   # unedited "<user>" placeholder = not configured

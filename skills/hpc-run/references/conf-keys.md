@@ -29,10 +29,10 @@ Only the keys marked **prefixable** honour `<TAG>_`; `run-sync` warns about any 
 | `EXTRA_EXCLUDES` | no | extra rsync exclude patterns, space-separated (also protects those paths from `-D`) |
 | `SYNC_ALSO` | no | repo-relative paths force-pushed even though excluded (`rsync -R` semantics; no spaces in paths) |
 | `REMOTE_HOST` | no | override the profile's ssh alias for sync/bootstrap (rare) |
-| `XFER_HOST` | no | ssh alias for the **rsync half** of `run-sync` — a site's data-transfer node, where one exists. The ssh control commands (`mkdir`, `chmod`) stay on the normal host, because such a node's restricted shell rejects them. Default: the profile's `T_XFER_HOST`, else the ssh host |
 | `DEFAULT_CLUSTER` | no | target to use when the user names none (skill routing only) |
 
-Not a conf key: `T_*` values come from the target's `profile.sh` (the user's `~/.config/run-skills/targets/<t>/`,
+Not a conf key: the data-transfer node (`T_XFER_HOST`) is a site fact and lives only in the profile — every file
+copy (`run-sync`, `run-pull`) goes there, the ssh commands stay on the host. Likewise, `T_*` values come from the target's `profile.sh` (the user's `~/.config/run-skills/targets/<t>/`,
 or an installed target pack's `targets/<t>/`).
 
 Minimal example (`templates/hpc.conf.example` in the clone has the annotated version):

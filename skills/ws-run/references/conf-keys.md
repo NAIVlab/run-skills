@@ -25,7 +25,9 @@ Only the keys marked **prefixable** honour `<TAG>_`; `run-sync` warns about any 
 | `SYNC_ALSO` | no | repo-relative paths force-pushed even though excluded (`rsync -R` semantics; no spaces in paths) |
 | `DEFAULT_STATION` | no | target to use when the user names none (skill routing only) |
 
-Not a conf key: `T_*` values (host, conda init, GPU facts, storage policy) come from the box's `profile.sh` in
+Not a conf key: the data-transfer node (`T_XFER_HOST`) is a site fact and lives only in the profile — every file
+copy (`run-sync`, `run-pull`) goes there, the ssh commands stay on the host. Likewise, `T_*` values (host, conda
+init, GPU facts, storage policy) come from the box's `profile.sh` in
 `~/.config/run-skills/targets/<t>/` (start from `$ROOT/targets/_template-nohup/`) or an installed target pack.
 
 Minimal example (`templates/ws.conf.example` in the clone has the annotated version):

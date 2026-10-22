@@ -87,6 +87,15 @@ for c in 'run-probe hosts ' 'run-probe <alias> ' 'run-probe wandb \[--import-net
 has "$(cat "$RS_HOME/install.sh")" '"$RS_HOME/INSTALL.md" "$DEST/"' "install.sh ships INSTALL.md next to the harness (skills point at \$ROOT/INSTALL.md)"
 has "$(cat "$RS_HOME/skills/hpc-run/SKILL.md")" 'run-sync\|run-bootstrap' "hpc-run names the bin/ commands"
 has "$(cat "$RS_HOME/skills/ws-run/SKILL.md")" 'run-launch' "ws-run names run-launch"
+for f in skills/hpc-run/SKILL.md skills/ws-run/SKILL.md skills/hpc-run/references/procedure-slurm.md \
+         skills/ws-run/references/procedure-nohup.md; do
+  has "$(cat "$RS_HOME/$f")" 'run-pull' "$f: results come back through run-pull"
+  has "$(cat "$RS_HOME/$f")" 'hand-roll' "$f rail: files move only through run-sync / run-pull"
+done
+for f in skills/hpc-run/references/conf-keys.md skills/ws-run/references/conf-keys.md; do
+  has "$(cat "$RS_HOME/$f")" 'T_XFER_HOST.*profile' "$f: the transfer host is a profile fact"
+  hasnt "$(cat "$RS_HOME/$f")" '^| `XFER_HOST`' "$f: no XFER_HOST conf key (one per conf would misroute other targets)"; done
+for t in _template-slurm _template-nohup; do has "$(cat "$RS_HOME/targets/$t/profile.sh")" '^T_XFER_HOST=' "$t profile documents T_XFER_HOST"; done
 for y in hpc-run ws-run; do [ -f "$RS_HOME/codex/$y.openai.yaml" ] && ok "codex/$y.openai.yaml" || bad "codex/$y.openai.yaml"; done
 
 echo "-- INDEX stubs == rs_gen_index (no overlay, root placeholder) --"
@@ -144,7 +153,7 @@ for f in "$RS_HOME"/bin/* "$RS_HOME"/lib/*.sh "$RS_HOME"/remote/* "$RS_HOME"/tar
 done
 budget() { [ -f "$RS_HOME/$1" ] || { bad "$1 exists"; return; }; local n; n=$(wc -l < "$RS_HOME/$1")
   [ "$n" -le "$2" ] && ok "$1 within $2 lines ($n)" || bad "$1 within $2 lines ($n)"; }
-budget lib/common.sh 120; budget remote/env.sh 170; budget remote/bootstrap.sh 90; budget remote/submit.sh 190; budget remote/job.sbatch 65
+budget lib/common.sh 130; budget remote/env.sh 170; budget remote/bootstrap.sh 90; budget remote/submit.sh 190; budget remote/job.sbatch 65
 budget remote/status.sh 175   # generous on purpose: every lookup has an explicit failure branch; compressing them hides bugs
 budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 240; budget AGENTS.md 165; budget INSTALL.md 230
 budget skills/hpc-run/SKILL.md 60; budget skills/ws-run/SKILL.md 60

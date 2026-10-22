@@ -16,7 +16,8 @@ follow `project-setup.md` (ask for `REMOTE_DIR`, env kind, run command); local a
 ```
 TARGET=<t> bash $ROOT/bin/run-sync        # additive; -n dry-run; -D also delete remote files gone locally
 ```
-First line printed: `[<t>] remote: <host>:<dir>  tag: <TAG>  deploy: .<t>` — check it on a new project (use `-n`).
+First line printed: `[<t>] remote: <host>:<dir>  tag: <TAG>  deploy: .<t>` — check it on a new project (use `-n`). With a
+transfer host it also prints `transfer host: <xfer>` and ends `sync done -> … ; files via <xfer>`.
 Never deletes remote `.venv* .cache .local .config bin tmp wandb wandb-artifacts logs run_logs ckpts checkpoints runs
 outputs videos data .wandb_env` or any `.<target>/` dir; `EXTRA_EXCLUDES` adds patterns, `SYNC_ALSO` force-pushes
 excluded paths. Also pushes the conf, the profile, and your wandb key file as `<REMOTE_DIR>/.wandb_env` (mode 600),
@@ -89,6 +90,21 @@ requeued (`--no-requeue`, or a partition that preempts by cancel): resubmit and 
 instead goes back to `PENDING` and later runs again into the same log with a new `restart=N` header (`sacct -D` lists
 the earlier attempts) — confirm the trainer's own resume line after every restart. `scancel` only with explicit approval.
 
+## 6. Pull results back — only with `run-pull`
+```
+TARGET=<t> bash $ROOT/bin/run-pull -n <path>...   # dry run: file count + total size (rsync --stats); writes nothing
+TARGET=<t> bash $ROOT/bin/run-pull <path>...      # copy them into the local project
+```
+Paths are relative to the project dir and land at the same path locally (`logs/<file>`, `results/`); plain paths
+only (no wildcards, no `..`) — for anything outside the project dir, ask the user. Additive: a local file newer than
+the remote copy is kept, nothing local is deleted, local symlinked dirs stay symlinks (one on the path itself is
+refused); venvs, caches, deploy dirs, the conf, `.wandb_env` and `.git` are refused. It only runs `rsync`, through the
+target's transfer host when its profile sets `T_XFER_HOST`. Never hand-roll an `rsync`/`scp` to `<host>` instead —
+a site that requires a transfer node need not refuse every copy elsewhere, so a copy that succeeds proves nothing.
+Large trees (`ckpts/`, `wandb/`): `-n` first, then pull with the user's OK. `NOTE: run-sync would push N of these
+files back` = a later sync would overwrite newer remote results with this copy: add the dir to `EXTRA_EXCLUDES`
+(and drop it from `SYNC_ALSO`). Exit 24 = files vanished mid-copy (a running job rotated them): pull again later.
+
 ## Storage model (the deployed `env.sh` enforces it; the target's profile chooses the policy)
 Blob caches and outputs are always in-project: `HF_HOME=$PROJ/.cache/huggingface`, `TORCH_HOME=$PROJ/.cache/torch`,
 wandb dirs under `$PROJ/wandb`, `$PROJ/.cache/wandb*`, `$PROJ/wandb-artifacts`, plus `$PROJ/logs` and `$PROJ/ckpts`.
@@ -106,6 +122,7 @@ Exported for project scripts: `TARGET`, `CLUSTER=<t>`, `RS_TARGET`, `RS_KIND=slu
 (+ `HPC_ENV_READY`) is exported only when every step succeeded; consumers refuse to run without it.
 
 ## Safety rails (every time)
+- Files move only through `run-sync` / `run-pull` (the target's transfer host, if any); no hand-rolled `rsync`/`scp`.
 - Confirm before every submit. Never `scancel` without an explicit OK. Partition/QOS are submit.sh's call only.
 - wandb: your key only (`.wandb_env`), never the cluster's `~/.netrc`; no key → offline. Never `wandb login` there.
 - Always `--mem` (cons_tres) — submit.sh sets it. Never create conda envs. Keep outputs/caches under `REMOTE_DIR`.

@@ -150,7 +150,7 @@ Fill `profile.sh` from the probe (every key is commented in the template):
 | `T_DEFAULT_GPU_TYPE` | `any`, unless the user wants a specific gres type by default |
 | `T_ENV_ROOT`, `T_TMPDIR`, `T_COMPILE_CACHE` | the storage questions below; keep the template values when nothing argues otherwise |
 | `T_SUFFIX`, `T_REMOTE_DIR_REQUIRED` | another registered target mounts the same project filesystem → `T_SUFFIX='-<name>'` (separate venvs); this target shares none → `T_REMOTE_DIR_REQUIRED=1` |
-| `T_XFER_HOST` (add the line) | only if the site requires a data-transfer node for rsync: its ssh alias |
+| `T_XFER_HOST` | only if the site's docs or login banner name a data-transfer node for rsync/scp: its ssh alias (needs its own Host block); say so in the reference card |
 
 For Slurm, write one `t_partition` case per partition the user will use: `P_GPUS=1-<GPUs per node>`,
 `P_CPU_PER_GPU` = cpus per node ÷ GPUs per node, `P_MEM_PER_GPU` = MB per node ÷ 1024 ÷ GPUs per node, rounded down

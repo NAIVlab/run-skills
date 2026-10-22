@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/40-sync.sh — phase A: bin/run-sync + bin/run-bootstrap with rsync/ssh stubs (nothing leaves the box):
 # protected excludes, derived + literal deploy-dir excludes, EXTRA_EXCLUDES, first-line summary, REMOTE_HOST,
-# T_REMOTE_DIR_REQUIRED, WSBOX_REMOTE_DIR precedence, deployed profile carries T_NAME, no ln -s, SYNC_ALSO -R
+# T_REMOTE_DIR_REQUIRED, WSBOX_REMOTE_DIR precedence, transfer host (all rsyncs, never ssh), deployed profile carries T_NAME, no ln -s, SYNC_ALSO -R
 # semantics with the real rsync. Run by selftest.sh with RS_HOME set:  bash tests/40-sync.sh
 set -u
 . "$RS_HOME/tests/lib.sh"
@@ -74,22 +74,22 @@ RL=$(cat "$T/rsync.log")
   && ok "profile transfer host handles code, SYNC_ALSO, harness, conf and wandb file; stale export ignored" \
   || bad "profile transfer host handles all rsync paths"
 hasnt "$RL" '^alt:\|^stale:' "rsync never uses the control host or inherited XFER_HOST"
+has "$(echo "$O" | tail -1)" 'sync done -> alt:/tagged .*; files via profile-xfer' "last line names the transfer host (survives | tail -1)"
 has "$(cat "$T/ssh-host.log")" '^alt$' "ssh uses REMOTE_HOST"
 hasnt "$(cat "$T/ssh-host.log")" 'xfer\|stale' "control commands never go to the transfer host"
-printf '\nXFER_HOST=conf-xfer\n' >> "$P2/.hpc.conf"
+printf '\nXFER_HOST=conf-xfer\nFXSLURM_XFER_HOST=tag-xfer\n' >> "$P2/.hpc.conf"
 O=$(sync_in "$P2" RS_USER_DIR="$T/user-xfer" TARGET=fx-slurm)
-RL=$(cat "$T/rsync.log")
-[ "$(printf '%s\n' "$RL" | grep -c '^conf-xfer:/tagged')" = 5 ] \
-  && ok "conf XFER_HOST overrides the profile for every transfer" || bad "conf XFER_HOST precedence"
+[ "$(cat "$T/rsync.log" | grep -c '^profile-xfer:/tagged')" = 5 ] \
+  && ok "conf XFER_HOST / <TAG>_XFER_HOST lines are ignored: the transfer host is a profile fact" || bad "conf XFER_HOST ignored"
 O=$(sync_in "$P2" RS_USER_DIR="$T/user-xfer" TARGET=fx-slurm -- -n)
-has "$(cat "$T/rsync.log")" '^conf-xfer:/tagged' "dry run keeps the transfer destination"
+has "$(cat "$T/rsync.log")" '^profile-xfer:/tagged' "dry run keeps the transfer destination"
 [ ! -s "$T/ssh-host.log" ] && ok "transfer-host dry run never sshes" || bad "transfer-host dry run sshes"
 O=$(cd "$P2" && TARGET=fx-slurm HOME="$T/home" with_path bash "$RS_HOME/bin/run-bootstrap" 2>&1)
-has "$(cat "$T/ssh-host.log")" '^alt$' "bootstrap keeps using the control host with XFER_HOST configured"
+has "$(cat "$T/ssh-host.log")" '^alt$' "bootstrap keeps using the control host with a transfer host configured"
 hasnt "$(cat "$T/ssh-host.log")" 'xfer' "bootstrap never uses the transfer host"
 O=$(sync_in "$P" TARGET=fx-slurm XFER_HOST=stale)
 has "$(cat "$T/rsync.log")" '^fx:/x/$' "without conf/profile transfer host, falls back to control host"
-rm -f "$P2/.wandb_env"; grep -v '^XFER_HOST=' "$P2/.hpc.conf" > "$P2/.hpc.conf.new" && mv "$P2/.hpc.conf.new" "$P2/.hpc.conf"   # leave $P2 as it was found
+rm -f "$P2/.wandb_env"; grep -v 'XFER_HOST=' "$P2/.hpc.conf" > "$P2/.hpc.conf.new" && mv "$P2/.hpc.conf.new" "$P2/.hpc.conf"   # leave $P2 as it was found
 
 cp -R "$RS_USER_DIR" "$T/user2"; mkdir -p "$T/user2/targets/fx-req"
 { cat "$RS_USER_DIR/targets/fx-slurm/profile.sh"; echo 'T_REMOTE_DIR_REQUIRED=1'; } > "$T/user2/targets/fx-req/profile.sh"

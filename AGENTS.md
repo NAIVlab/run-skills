@@ -33,7 +33,7 @@ hardcode the check count.
    Routing rules; a stub that `install.sh` regenerates with `rs_gen_index`), `procedure-<kind>.md`, `conf-keys.md`,
    `experiment-conventions.md` (run classes, naming, wandb mapping, checkpoint/resume) and `project-setup.md`
    (onboarding an existing project) — ONE copy each, ws-run's are symlinks into hpc-run. The agent reads INDEX, then exactly one `targets/<t>/reference.md`.
-2. **Local:** `bin/run-sync`, `bin/run-bootstrap`, `bin/run-launch` + `lib/common.sh` (sourced; never deployed);
+2. **Local:** `bin/run-sync`, `bin/run-pull`, `bin/run-bootstrap`, `bin/run-launch` + `lib/common.sh` (sourced; never deployed);
    `bin/run-probe` (INSTALL.md's discovery: ssh hosts, one read-only BatchMode probe, wandb key state; `tests/85-probe.sh`).
    Prologue: `RS_HOME=$(cd "$(dirname "$0")/.." && pwd)`; `TARGET` (aliases `CLUSTER`/`STATION`) → `rs_load_target`.
 3. **Remote:** `remote/env.sh`, `remote/bootstrap.sh`, `remote/status.sh` (both kinds; status.sh = the agent's one bounded
@@ -46,9 +46,11 @@ hardcode the check count.
 
 | | local (cwd = project root) | on the target |
 |---|---|---|
-| slurm | `run-sync`, `run-bootstrap` (ssh wrapper) | `<REMOTE_DIR>/.<t>/{env.sh,bootstrap.sh,status.sh,submit.sh,job.sbatch,profile.sh[,policy.sh,policy.local.sh]}`; submit = `ssh host 'bash …/.<t>/submit.sh …'` |
-| nohup | `run-sync`, `run-bootstrap`, `run-launch` (one ssh) | `~/<WS_REMOTE_DIR>/.ws/{env.sh,bootstrap.sh,status.sh,profile.sh}` |
+| slurm | `run-sync`, `run-pull`, `run-bootstrap` (ssh wrapper) | `<REMOTE_DIR>/.<t>/{env.sh,bootstrap.sh,status.sh,submit.sh,job.sbatch,profile.sh[,policy.sh,policy.local.sh]}`; submit = `ssh host 'bash …/.<t>/submit.sh …'` |
+| nohup | `run-sync`, `run-pull`, `run-bootstrap`, `run-launch` (one ssh) | `~/<WS_REMOTE_DIR>/.ws/{env.sh,bootstrap.sh,status.sh,profile.sh}` |
 
+Every file copy goes to `rs_xfer_host` (the profile's `T_XFER_HOST`, a site fact with no conf key, else the ssh
+host), every ssh to `rs_host`: a transfer node's restricted shell takes rsync only, so `run-pull` never sshes.
 An edit to `remote/*` reaches a project only after `install.sh` **and** a re-sync. Logs: slurm `logs/<name>_<jobid>.out` (header `restart=N`, footer `EXIT rc=N`; submit.sh prints the path), nohup `logs/<name>-<timestamp>.log` + `.pid`.
 `status.sh <jobid|log> [ckpt-dir]` (squeue/sacct or the PID, last 256 KiB → hints + last lines, last 64 MiB → harness start/exit markers,
 ~2 KB output) is the monitoring read. `ckpt_entry` is directory activity, never proof of resume; log reads are byte-bounded.
@@ -72,7 +74,7 @@ remote (`rs_path`). Consumers: sync excludes (`.<name>/` + literal `.ws/`), INDE
 default (`ovr KEY [DEFAULT]`, eval-based). Prefixable: `RS_PREFIXABLE_SLURM` / `RS_PREFIXABLE_NOHUP` (+ the
 profile's `T_CONF_KEYS`); `DEFAULT_PARTITION`/`DEFAULT_GPU_TYPE` are prefixed-only (generic ignored, profile
 `T_DEFAULT_*` is the fallback); `ENV_KIND ENV_HOOK BOOTSTRAP_HOOK UV_SYNC_ARGS WANDB_MODE EXTRA_EXCLUDES SYNC_ALSO
-REMOTE_HOST XFER_HOST DEFAULT_CLUSTER DEFAULT_STATION WS_REMOTE_DIR` are generic-only; `rs_lint_conf` warns (`not honoured`)
+REMOTE_HOST DEFAULT_CLUSTER DEFAULT_STATION WS_REMOTE_DIR` are generic-only; `rs_lint_conf` warns (`not honoured`)
 on any other `<TAG>_KEY` line. Remote dir: slurm `ovr REMOTE_DIR` (tagged form mandatory when `T_REMOTE_DIR_REQUIRED=1`);
 nohup `<TAG>_REMOTE_DIR` else `WS_REMOTE_DIR` — never guessed. Jobs go out with `--export=ALL`, so every local /
 login-node reader `unset`s the keys it reads (generic + `<TAG>_`) before sourcing the conf (`rs_load_conf KEY...` in
@@ -100,8 +102,9 @@ when `ENV_ROOT != $PROJ`, small-file state under `state/<proj>$SUF`. `T_TMPDIR`:
 compile dirs are `$SUF`-suffixed except `nv`, not mkdir'd when in `$TMPDIR`. `RAY_TMPDIR` stays under `/tmp`.
 `PATH="$VENV/bin:$ENV_ROOT/bin:$PATH"` for both kinds, `UV_NO_SYNC=1`. Exports `TARGET RS_TARGET RS_KIND RS_CUDA_ARCH
 RS_ENV_ROOT RS_VENV` and `CLUSTER` (slurm) **xor** `WS_TAG` (nohup, lowercase). `T_SUFFIX` is empty or hyphen-prefixed
-(sync protects the literal glob `/.venv-*`). The protected-exclude list in `run-sync` is static on purpose (hand-built
-`.venv-foo` dirs must survive `-D`); any dir env.sh creates under `$PROJ` must be an anchored entry there.
+(sync protects the literal glob `/.venv-*`). The protected-exclude list (`rs_sync_excludes`; run-pull's push-back
+check reuses it) is static on purpose (hand-built `.venv-foo` dirs must survive `-D`); any dir env.sh creates under
+`$PROJ` must be an anchored entry there.
 
 ### policy.sh API (slurm; bash; sourced only by submit.sh)
 

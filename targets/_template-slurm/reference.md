@@ -11,6 +11,7 @@ screen long, and free of personal ids (write `<user>`, `$USER`). Re-run `install
 
 ## Cluster
 - Login node, OS, Slurm version, accounting (`ACCOUNT` needed? how to list associations), QOS names.
+- Data transfer: does the site require copies to go through a transfer node (`T_XFER_HOST`)? What its shell accepts.
 - How conda is initialised (`T_CONDA_INIT`), `CUDA_HOME` (`T_CUDA_HOME`), module loads a job needs.
 
 ## Filesystem
