@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# run-skills bin/run-avail — free GPUs on every registered target (clusters AND workstations) right now, so a plan can
+# place a job where it starts soonest. Runs LOCALLY; one read-only BatchMode ssh per target, in parallel, under one
+# deadline. No TARGET needed (cwd = a project root adds a column: is this project set up on that target).
+#   bash ~/.agents/run-skills/bin/run-avail [--type T] [--min N] [--timeout SEC] [target...]
+# Slurm (per partition of T_PARTITIONS, per gres type): free = total - used on usable nodes (state idle / mixed /
+# allocated / completing / planned, none of the flags * ~ # ! % $ @ ^) that still have an idle CPU; "max/node" = the
+# most free on ONE node (a job here is single-node); "planned" = free GPUs on nodes backfill holds for a pending job.
+# Free is not schedulable: QOS, account and per-user caps still apply (submit.sh checks them). Workstations: a GPU is
+# free with no compute process, < 1 GiB used and < 5 % util. --type filters gres type / GPU name (substring),
+# --min N keeps rows with >= N free on one node (one box). Exit 0 if every target answered, else 1.
+set -uo pipefail
+RS_HOME=$(cd "$(dirname "$0")/.." && pwd)
+. "$RS_HOME/lib/common.sh"
+
+usage() { echo "usage: run-avail [--type T] [--min N] [--timeout SEC] [target...]" >&2; exit 2; }
+TYPE=""; MIN=0; TO=30; NAMES=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --type) TYPE=${2:-}; [ -n "$TYPE" ] || usage; shift ;;
+    --min) MIN=${2:-}; case "$MIN" in ''|*[!0-9]*) usage ;; esac; shift ;;
+    --timeout) TO=${2:-}; case "$TO" in ''|*[!0-9]*|0) usage ;; esac; shift ;;
+    -*) usage ;;
+    *) NAMES+=("$1") ;;
+  esac; shift
+done
+[ "${#NAMES[@]}" -gt 0 ] || NAMES=($(rs_targets))
+[ "${#NAMES[@]}" -gt 0 ] || die "no target registered (INSTALL.md, Steps 2-6)"
+
+# a failing query prints "@@fail <what>": the reading is then unknown, never zero (the pipeline's own rc would be uniq's)
+SLURM_Q="sinfo -h -N %s-O 'NodeHost:80,Partition:40,StateLong:30,CPUsState:30,Gres:1000,GresUsed:1000' || echo '@@fail sinfo'; echo @@mine; q=\$(squeue -h -u \"\${USER:-\$(id -un)}\" -o '%%t') || echo '@@fail squeue'; printf '%%s\\\\n' \"\$q\" | sort | uniq -c"
+WS_Q='nvidia-smi --query-gpu=index,uuid,name,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits || echo "@@fail nvidia-smi"; echo @@apps; nvidia-smi --query-compute-apps=gpu_uuid --format=csv,noheader || echo "@@fail compute-apps"'
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+PIDS=""; i=0
+for t in "${NAMES[@]}"; do
+  i=$((i+1)); printf '%s\n' "$t" > "$TMP/$i.name"
+  # one subshell per target: profile facts + is this project set up there (its conf resolves a remote dir)
+  ( rs_load_target "$t" || exit 1
+    c=$(rs_conf_file); p="no $c here"
+    if [ -f "./$c" ]; then p=$( (rs_load_conf REMOTE_DIR WS_REMOTE_DIR; rs_remote_dir) >/dev/null 2>&1 && echo set || echo "no remote dir in $c"); fi
+    printf '%s\n%s\n%s\n%s\n' "$T_KIND" "$T_HOST" "$(printf %s "${T_PARTITIONS:-}" | tr ' ' ',')" "$p" ) > "$TMP/$i.meta" 2> "$TMP/$i.err" \
+    || { echo bad > "$TMP/$i.kind"; continue; }
+  { read -r kind; read -r host; read -r parts; } < "$TMP/$i.meta"
+  echo "$kind" > "$TMP/$i.kind"
+  if [ "$kind" = slurm ]; then
+    pq=""; [ -z "$parts" ] || pq="-p '$parts' "; q=$(printf "$SLURM_Q" "$pq")   # no T_PARTITIONS: every partition
+  else q=$WS_Q; fi
+  ssh -n -o BatchMode=yes -o ConnectTimeout=15 "$host" "$q" > "$TMP/$i.out" 2> "$TMP/$i.err" &
+  PIDS="$PIDS $!"; echo "$!" > "$TMP/$i.pid"
+done
+# one deadline for the whole call; a straggler is killed and reported, never waited on
+( sleep "$TO"; for p in $PIDS; do kill "$p" 2>/dev/null; done ) >/dev/null 2>&1 & W=$!   # no inherited stdout:
+# a caller reading run-avail through a pipe must not wait for this watchdog's sleep
+for n in $(seq 1 "$i"); do
+  [ -f "$TMP/$n.pid" ] || continue; rc=0; wait "$(cat "$TMP/$n.pid")" || rc=$?; echo "$rc" > "$TMP/$n.rc"
+done
+kill "$W" 2>/dev/null; wait "$W" 2>/dev/null
+
+SLURM_AWK='
+function gres(s, arr,   n, i, it, f, k, j, typ) { split("", arr); gsub(/\([^)]*\)/, "", s); n = split(s, it, ",")
+  for (i = 1; i <= n; i++) { if (it[i] !~ /^gpu(:|$)/) continue; k = split(it[i], f, ":")
+    if (k == 2) typ = "gpu"; else { typ = f[2]; for (j = 3; j < k; j++) typ = typ ":" f[j] }
+    arr[typ] += f[k] + 0 } }
+/^@@fail/ { bad[$2] = 1; next }
+/^@@mine/ { mine = 1; next }
+mine { if (NF == 2) my = my (my == "" ? "" : ", ") $2 " " $1; next }
+NF < 6 { next }
+{ part = $2; sub(/\*$/, "", part); st = tolower($3); base = st; sub(/[*~#!%$@^+-]+$/, "", base); fl = substr(st, length(base) + 1)
+  usable = base ~ /^(idle|mixed|allocated|completing|planned)$/ && fl !~ /[*~#!%$@^]/
+  plan = (base == "planned" || fl ~ /-/); split($4, c, "/")
+  gres($5, tot); gres($6, used)
+  if (!(part in seen)) { seen[part] = 1; order[++np] = part }
+  for (ty in tot) { fr = (usable && c[2] + 0 > 0) ? tot[ty] - used[ty] : 0; if (fr < 0) fr = 0; k = part SUBSEP ty
+    if (!(k in T)) types[part] = types[part] " " ty
+    T[k] += tot[ty]; F[k] += fr; if (fr > M[k]) M[k] = fr; if (plan) P[k] += fr } }
+END { printf "  mine: %s\n", ("squeue" in bad ? "unknown (squeue failed)" : my == "" ? "none queued or running" : my)
+  if ("sinfo" in bad) { print "  ERROR: sinfo failed — free GPUs unknown, not zero"; exit }
+  for (i = 1; i <= np; i++) { part = order[i]; nt = split(types[part], ts, " "); rows = ""; full = ""; pf = pt = 0
+    for (j = 1; j <= nt; j++) { ty = ts[j]; k = part SUBSEP ty
+      if (TY != "" && index(tolower(ty), tolower(TY)) == 0) continue
+      pf += F[k]; pt += T[k]
+      if (M[k] + 0 < MIN || F[k] == 0) { if (MIN == 0 && TY == "") full = full " " ty " 0/" T[k]; continue }
+      rows = rows sprintf("    %-44s %3d/%-3d max/node %d%s\n", ty, F[k], T[k], M[k], (P[k] > 0 ? "  (" P[k] " planned)" : "")) }
+    if (pt == 0 || (rows == "" && (MIN > 0 || TY != ""))) continue   # CPU-only partition, or nothing matches
+    printf "  %s  %d/%d free\n%s", part, pf, pt, rows; if (full != "") printf "    full:%s\n", full } }'
+WS_AWK='
+/^@@fail/ { bad[$2] = 1; next }
+/^@@apps/ { apps = 1; next }
+apps { gsub(/ /, ""); if ($0 != "") busy[$0]++; next }
+{ n++; k = split($0, f, ", "); idx[n] = f[1]; uu[n] = f[2]; nm[n] = f[3]; us[n] = f[4]; tt[n] = f[5]; ut[n] = f[6]
+  ok[n] = (k == 6 && f[4] ~ /^[0-9.]+$/ && f[5] ~ /^[0-9.]+$/ && f[6] ~ /^[0-9.]+$/) }   # [N/A] etc. = unknown
+END { if ("nvidia-smi" in bad || n == 0) { print "  ERROR: nvidia-smi gave no GPU readings — state unknown, not zero"; exit }
+  for (i = 1; i <= n; i++) { if (TY != "" && index(tolower(nm[i]), tolower(TY)) == 0) continue
+    st = (!ok[i] || "compute-apps" in bad) ? "unknown" : (!(uu[i] in busy) && us[i] < 1024 && ut[i] < 5) ? "free" : "busy"
+    nf += (st == "free"); shown++
+    if (!ok[i]) rows = rows sprintf("  GPU%s %-26s unknown (%s)\n", idx[i], nm[i], $0)
+    else rows = rows sprintf("  GPU%s %-26s %-7s %5.1f/%.1fG %3d%%  procs %s\n", idx[i], nm[i], st, us[i] / 1024, tt[i] / 1024, ut[i], ("compute-apps" in bad ? "?" : busy[uu[i]] + 0)) }
+  if (shown == 0 || nf < MIN) exit; printf "  %d/%d free\n%s", nf, shown, rows }'
+
+echo "# run-avail $(date -u +%Y-%m-%dT%H:%MZ)  (free/total per gres type; free is not schedulable: QOS/account/per-user caps apply)"
+FAIL=0
+for n in $(seq 1 "$i"); do
+  t=$(cat "$TMP/$n.name"); kind=$(cat "$TMP/$n.kind" 2>/dev/null)
+  if [ "$kind" = bad ]; then echo "$t  ERROR: $(head -1 "$TMP/$n.err")"; FAIL=1; continue; fi
+  { read -r _; read -r host; read -r _; read -r proj; } < "$TMP/$n.meta"
+  rc=$(cat "$TMP/$n.rc"); hdr="$t  [$kind @ $host]  project: $proj"
+  if [ "$rc" != 0 ]; then
+    [ "$rc" = 143 ] && why="no answer within ${TO}s" || why="rc=$rc: $(grep -v '^$' "$TMP/$n.err" | head -1)"
+    echo "$hdr"; echo "  ERROR ($why) — state unknown, not zero"; FAIL=1; continue
+  fi
+  if [ "$kind" = slurm ]; then body=$(awk -v TY="$TYPE" -v MIN="$MIN" "$SLURM_AWK" "$TMP/$n.out")
+  else body=$(awk -v TY="$TYPE" -v MIN="$MIN" "$WS_AWK" "$TMP/$n.out"); fi
+  if [ "$kind" = nohup ] && [ -z "$body" ] && { [ -n "$TYPE" ] || [ "$MIN" -gt 0 ]; }; then continue; fi
+  ! grep -q '^@@fail' "$TMP/$n.out" || FAIL=1
+  echo "$hdr"; [ -z "$body" ] || echo "$body"
+  [ ! -s "$TMP/$n.err" ] || echo "  note: $(grep -v '^$' "$TMP/$n.err" | head -1)"   # e.g. an unknown partition
+done
+exit "$FAIL"

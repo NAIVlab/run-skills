@@ -34,6 +34,7 @@ hardcode the check count.
    `experiment-conventions.md` (run classes, naming, wandb mapping, checkpoint/resume) and `project-setup.md`
    (onboarding an existing project) — ONE copy each, ws-run's are symlinks into hpc-run. The agent reads INDEX, then exactly one `targets/<t>/reference.md`.
 2. **Local:** `bin/run-sync`, `bin/run-pull`, `bin/run-bootstrap`, `bin/run-launch` + `lib/common.sh` (sourced; never deployed);
+   `bin/run-avail` (free GPUs on every target before an open placement: one parallel read-only ssh each, one deadline);
    `bin/run-probe` (INSTALL.md's discovery: ssh hosts, one read-only BatchMode probe, wandb key state; `tests/85-probe.sh`).
    Prologue: `RS_HOME=$(cd "$(dirname "$0")/.." && pwd)`; `TARGET` (aliases `CLUSTER`/`STATION`) → `rs_load_target`.
 3. **Remote:** `remote/env.sh`, `remote/bootstrap.sh`, `remote/status.sh` (both kinds; status.sh = the agent's one bounded

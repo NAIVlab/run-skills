@@ -135,7 +135,7 @@ trainer that cannot resume from a checkpoint. Nothing runs until you say go.
 ## How a run happens
 
 ```text
- agent reads references/INDEX.md ──► picks the target ──► reads that target's reference.md
+ agent reads references/INDEX.md ──► picks the target (run-avail first when you left it open) ──► reads its reference.md
    │
    ├─ run-sync        rsync the code (caches, venvs, data, logs, checkpoints excluded and protected)
    │                  + deploy the harness into <remote dir>/.<target>/ (Slurm) or .ws/ (workstation)
@@ -206,7 +206,7 @@ These are part of the skills' instructions and are enforced by the harness where
 |---|---|
 | `skills/` | the two skills: a thin `SKILL.md` each + `references/` (procedures, conf keys, project setup, experiment conventions) |
 | `INSTALL.md` | the install runbook your agent follows |
-| `bin/` | local commands: `run-sync`, `run-pull`, `run-bootstrap`, `run-launch`, and `run-probe` (read-only discovery) |
+| `bin/` | local commands: `run-avail` (free GPUs everywhere), `run-sync`, `run-pull`, `run-bootstrap`, `run-launch`, `run-probe` |
 | `lib/common.sh` | local helpers: target discovery, conf precedence, conf linter, INDEX generation |
 | `remote/` | deployed next to each project: `env.sh`, `bootstrap.sh`, `status.sh`, `submit.sh`, `job.sbatch` |
 | `targets/` | `_template-slurm/`, `_template-nohup/` |

@@ -92,6 +92,10 @@ for f in skills/hpc-run/SKILL.md skills/ws-run/SKILL.md skills/hpc-run/reference
   has "$(cat "$RS_HOME/$f")" 'run-pull' "$f: results come back through run-pull"
   has "$(cat "$RS_HOME/$f")" 'hand-roll' "$f rail: files move only through run-sync / run-pull"
 done
+for f in skills/hpc-run/SKILL.md skills/ws-run/SKILL.md skills/hpc-run/references/INDEX.md skills/ws-run/references/INDEX.md \
+         skills/hpc-run/references/procedure-slurm.md skills/ws-run/references/procedure-nohup.md; do
+  has "$(cat "$RS_HOME/$f")" 'run-avail' "$f: an open placement starts with run-avail"; done
+has "$(cat "$RS_HOME/skills/hpc-run/references/INDEX.md")" 'The user fixed it' "INDEX: a fixed placement is used as given (no fleet check)"
 for f in skills/hpc-run/references/conf-keys.md skills/ws-run/references/conf-keys.md; do
   has "$(cat "$RS_HOME/$f")" 'T_XFER_HOST.*profile' "$f: the transfer host is a profile fact"
   hasnt "$(cat "$RS_HOME/$f")" '^| `XFER_HOST`' "$f: no XFER_HOST conf key (one per conf would misroute other targets)"; done

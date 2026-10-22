@@ -1,6 +1,6 @@
 ---
 name: hpc-run
-description: Run, submit, monitor, or cancel code on the user's Slurm clusters listed in references/INDEX.md, for any local project with a .hpc.conf. Rsyncs the project to its remote dir, bootstraps a contained uv or conda env, and submits an availability-checked sbatch job with every cache and output kept inside the project dir. Use whenever the user wants to run, launch, sbatch, train, or eval on a cluster, HPC, Slurm, or a named partition, or wants job status, logs, results copied back, or to cancel a job.
+description: Run, submit, monitor, or cancel code on the user's Slurm clusters listed in references/INDEX.md, for any local project with a .hpc.conf. Rsyncs the project to its remote dir, bootstraps a contained uv or conda env, checks free GPUs on every cluster and workstation when the user leaves the placement open, and submits an availability-checked sbatch job with every cache and output kept inside the project dir. Use whenever the user wants to run, launch, sbatch, train, or eval on a cluster, HPC, Slurm, or a named partition, or wants job status, logs, results copied back, or to cancel a job.
 allowed-tools: Bash, Read, Write, Edit
 ---
 
@@ -9,8 +9,9 @@ allowed-tools: Bash, Read, Write, Edit
 ## 1. Pick the target
 Read `references/INDEX.md` **now**. Its line 1 is `root: <dir>` — the installed harness dir, `$ROOT` below. The table
 lists every Slurm target: name, ssh host, GPUs, default partition / GPU type, walltime cap, and its reference file.
-Pick the target from the user's words (its name or trigger words); if they name none, use `DEFAULT_CLUSTER` from the
-project's `.hpc.conf`; if still ambiguous (see the Routing notes in INDEX), ask. **Then read exactly that target's
+Pick the target from the user's words (its name or trigger words). For a new launch whose placement they did not
+fix (only a range like "an H200" / "4 GPUs", or nothing), run `run-avail` first and place by what is free now (INDEX Routing:
+Placement); `DEFAULT_CLUSTER` in `.hpc.conf` is preferred when it can start the job. **Then read exactly that target's
 reference file** (the path in its table row): partitions, caps, storage model, gotchas, and a card of its values.
 If INDEX says no cluster is registered yet (or the user wants another one), register it with the user: Steps 2–6 of
 `$ROOT/INSTALL.md` (read-only discovery with `$ROOT/bin/run-probe`, then `~/.config/run-skills/targets/<name>/` from
@@ -20,6 +21,7 @@ target when its repo root has a `.hpc.conf`; if it is missing (or the user asks 
 
 ## 2. Commands (cwd = the project root; `<t>` = target name, `<host>` = its host column)
 ```
+bash $ROOT/bin/run-avail [--type T] [--min N] # free GPUs on EVERY target (clusters + workstations), read-only
 TARGET=<t> bash $ROOT/bin/run-sync             # push code + deploy the harness to <REMOTE_DIR>/.<t>/ (-n dry-run, -D prune)
 TARGET=<t> bash $ROOT/bin/run-bootstrap        # first run / deps changed: uv sync the target venv, or verify the conda env
 # >>> print a one-line plan (target / partition / GPUs / time / run command) and wait for an explicit go, then:

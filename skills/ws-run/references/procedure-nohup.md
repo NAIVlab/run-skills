@@ -28,6 +28,8 @@ instead. conda: only *verifies* `ENV_NAME` exists in the box's conda (`T_CONDA_I
 creates it**; on `conda env 'X' MISSING`, stop and ask. Ends with `bootstrap done (<t>).`
 
 ## 3. Check GPUs, then CONFIRM (required)
+Unless the user fixed the placement, `run-avail` first (INDEX Routing: Placement) — it also shows the Slurm clusters,
+which may fit better; the plan cites what is free there. On the chosen box:
 ```
 ssh <host> "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --format=csv,noheader"
 ssh <host> "ps -eo pid,etime,cmd | grep -i '[p]ython'"      # what is already running, and whose

@@ -1,6 +1,6 @@
 ---
 name: ws-run
-description: Run, launch, monitor, or stop training on the user's GPU workstations (no Slurm) listed in references/INDEX.md, for any local project with a .ws.conf. Rsyncs the project to the box, bootstraps a contained uv or conda env, and launches the run detached with nohup on the idlest GPUs (lowest memory.used — verify they are actually free in the printed table), with every cache and output kept inside the project dir. Use whenever the user wants to run, launch, nohup, train, or eval on a workstation, a GPU server, or the box (not a Slurm cluster), check a run's status, tail its log, copy its results back, or stop a run.
+description: Run, launch, monitor, or stop training on the user's GPU workstations (no Slurm) listed in references/INDEX.md, for any local project with a .ws.conf. Rsyncs the project to the box, bootstraps a contained uv or conda env, checks free GPUs on every workstation and cluster when the user leaves the placement open, and launches the run detached with nohup on the idlest GPUs (lowest memory.used — verify they are actually free in the printed table), with every cache and output kept inside the project dir. Use whenever the user wants to run, launch, nohup, train, or eval on a workstation, a GPU server, or the box (not a Slurm cluster), check a run's status, tail its log, copy its results back, or stop a run.
 allowed-tools: Bash, Read, Write, Edit
 ---
 
@@ -9,8 +9,10 @@ allowed-tools: Bash, Read, Write, Edit
 ## 1. Pick the target
 Read `references/INDEX.md` **now**. Its line 1 is `root: <dir>` — the installed harness dir, `$ROOT` below. The table
 lists every registered workstation: name, ssh host, GPUs, description, and its reference file. Pick the target from
-the user's words (its name or trigger words); if they name none, use `DEFAULT_STATION` from the project's `.ws.conf`;
-if still ambiguous, ask. **Then read exactly that target's reference file** (the path in its table row).
+the user's words (its name or trigger words). For a new launch whose placement they did not fix (only a range like
+"a free box" / "2 GPUs", or nothing), run `run-avail` first and place by what is free now (INDEX Routing: Placement) — a Slurm
+cluster may fit better; `DEFAULT_STATION` in `.ws.conf` is preferred when it can start the job. **Then read exactly
+that target's reference file** (the path in its table row).
 If INDEX says no workstation is registered yet (or the user wants another one), register it with the user: Steps 2–6
 of `$ROOT/INSTALL.md` (read-only discovery with `$ROOT/bin/run-probe`, then `~/.config/run-skills/targets/<alias>/`
 from `$ROOT/targets/_template-nohup/`, then `install.sh`) — or install the user's lab target pack.
@@ -20,6 +22,7 @@ for `WS_REMOTE_DIR`; never guess it.
 
 ## 2. Commands (cwd = the project root; `<t>` = target name, `<host>` = its host column)
 ```
+bash $ROOT/bin/run-avail [--type T] [--min N] # free GPUs on EVERY target (workstations + clusters), read-only
 TARGET=<t> bash $ROOT/bin/run-sync             # push code + deploy the harness to ~/<WS_REMOTE_DIR>/.ws/ (-n dry-run, -D prune)
 TARGET=<t> bash $ROOT/bin/run-bootstrap        # first run / deps changed: uv sync the venv, or verify the conda env
 ssh <host> "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --format=csv,noheader"   # who uses what
