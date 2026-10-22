@@ -12,6 +12,8 @@ for f in "$RS_HOME"/bin/* "$RS_HOME"/lib/*.sh "$RS_HOME"/remote/* "$RS_HOME"/tar
   n=$((n+1)); bash -n "$f" 2>/dev/null || { bad "bash -n ${f#"$RS_HOME"/}"; f_bad=1; }
 done
 [ "$f_bad" = 0 ] && ok "all $n scripts parse (bash -n)"
+if [ -n "${RS_BASH32:-}" ]; then   # optional: a bash 3.2 binary (macOS's) parses every LOCAL script
+  for f in "$RS_HOME"/bin/* "$RS_HOME"/lib/*.sh; do "$RS_BASH32" -n "$f" 2>/dev/null && ok "bash 3.2 -n ${f#"$RS_HOME"/}" || bad "bash 3.2 -n ${f#"$RS_HOME"/}"; done; fi
 [ "$n" -ge 10 ] && ok "harness has at least 10 scripts ($n)" || bad "harness has at least 10 scripts (got $n)"
 for f in "$RS_HOME"/remote/submit.sh "$RS_HOME"/remote/job.sbatch "$RS_HOME"/remote/bootstrap.sh "$RS_HOME"/remote/status.sh "$RS_HOME"/selftest.sh; do
   [ -f "$f" ] || continue

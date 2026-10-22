@@ -23,7 +23,7 @@ while IFS='|' read -r id n st ec wd; do
   [ -n "$id" ] || continue
   [ -z "$ids" ] || case ",$ids," in *",$id,"*) ;; *) continue ;; esac
   [ -z "$names" ] || case ",$names," in *",$n,"*) ;; *) continue ;; esac
-  case "$fields" in State) [ -f "$WORLD/now-running" ] && echo RUNNING || echo "$st" ;; JobID) echo "$id" ;; *) echo "$id|$n|$st|$ec|$wd" ;; esac
+  case "$fields" in State) [ -f "$WORLD/now-running" ] && echo RUNNING || echo "$st" ;; JobID) echo "$id" ;; JobID,WorkDir) echo "$id|$wd" ;; *) echo "$id|$n|$st|$ec|$wd" ;; esac
 done < "$WORLD/sacct"
 EOS
 cat > "$RBIN/sbatch" <<'EOS'
@@ -129,7 +129,7 @@ O=$(rw t.tsv --once --act); has "$O" "RESUBMIT name=a target=fx-slurm job=1000 p
 q "1000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --act >/dev/null
 q; acct "1000|a|PREEMPTED|0:0|$P"
 touch "$WORLD/now-running"; O=$(rw t.tsv --once --act)
-has "$O" 'WARN name=a .*reason=submit-skipped -- sacct-now=RUNNING' "the submit ssh re-checks sacct: changed state, nothing submitted"
+has "$O" 'WARN name=a .*reason=submit-skipped n=1 -- sacct-now=RUNNING' "the submit ssh re-checks sacct: changed state, nothing submitted"
 [ "$(nsub)" = 1 ] && [ "$(st a 4)" = 1 ] && ok "skipped submit: budget refunded (preempts 1)" || bad "skip refunds (preempts=$(st a 4))"
 rm -f "$WORLD/now-running"; O=$(rw t.tsv --once --act); has "$O" 'RESUBMIT name=a .*preempts=2/2' "second resubmit"
 q; acct "1001|a|PREEMPTED|0:0|$P"; O=$(rw t.tsv --once --act); RC=$?
@@ -247,3 +247,36 @@ has "$O" 'status=held job=- why=state-lost' "state lost (an older copy exists): 
 reset; approved "a fx-slurm - $ROW" "b fx-slurm - -"; q "1000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --adopt a=1000 >/dev/null
 approved "b fx-slurm - -"; O=$(rw t.tsv --once); has "$O" 'NOTE name=a removed still-active job=1000' "a removed row is kept, its live job named"
 approved "a fx-slurm - $ROW" "b fx-slurm - -"; O=$(rw t.tsv --once); has "$O" 'NOTE name=a .*status active' "the row back: its state restored"
+
+echo "-- review regressions --"
+reset; approved "#@ allow preempt=1" "a fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --act --adopt a=1000 >/dev/null
+rw t.tsv --once --act >/dev/null; rm -f "$P/logs/run-watch/t.state"; rw t.tsv --once --act >/dev/null
+q "2000|a|RUNNING|None|0|$NOW|$P|"; O=$(rw t.tsv --once --act); has "$O" 'ADOPT name=a .*job=2000' "lost state: a rerun is still followed"
+q; acct "2000|a|PREEMPTED|0:0|$P"; O=$(rw t.tsv --once --act)
+has "$O" 'reason=preempted why=budget-unknown action=needs-ok preempt=unknown/1' "lost state: spent budgets stay unknown after an adoption"
+[ "$(nsub)" = 0 ] && ok "lost state: no resubmit on a rebuilt budget" || bad "lost state: no resubmit"
+reset; approved "#@ allow launch" "a fx-slurm - $ROW" "b fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$NOW|$P|"
+O=$(rw t.tsv --once --act --max-active 1); has "$O" 'ADOPT name=a' "a is adopted"
+[ "$(nsub)" = 0 ] && ok "--max-active counts a job adopted in the same round" || bad "--max-active counts an adopted job ($(nsub))"
+reset; approved "a fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --adopt a=1000 >/dev/null
+q; acct "1000|a|COMPLETED|0:0|$P"; O=$(rw t.tsv --once); [ "$?" = 0 ] && ok "all done: exit 0" || bad "all done: exit 0"
+q "1100|a|PENDING|Priority|0|N/A|$P|"; O=$(rw t.tsv --once); RC=$?
+has "$O" 'ADOPT name=a .*job=1100 note=new-job' "an all-done table is still observed: a manual rerun is adopted"; [ "$RC" = 3 ] && ok "and the watch goes on (exit 3)" || bad "rerun of a done row: exit 3 ($RC)"
+reset; approved "#@ allow preempt=2" "a fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --adopt a=1000 >/dev/null
+q; acct "1000|a|PREEMPTED|0:0|$P"; O=$(rw t.tsv --once); has "$O" 'why=no-act' "preempted, watched without --act: needs-ok"
+acct "1000|a|PREEMPTED|0:0|$P" "1200|a|COMPLETED|0:0|$P"; O=$(rw t.tsv --once --act)
+has "$O" 'ADOPT name=a .*job=1200 prev=1000 note=newer-job' "the user's own finished rerun is followed"; [ "$(nsub)" = 0 ] && ok "no resubmit over a newer job" || bad "no resubmit over a newer job"
+O=$(rw t.tsv --once --act); has "$O" 'DONE name=a .*job=1200' "the rerun's end is reported"
+reset; approved "#@ allow preempt=2" "a fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --act --adopt a=1000 >/dev/null
+q; acct "1000|a|PREEMPTED|0:0|$P"; touch "$WORLD/sbatch.fail"; rw t.tsv --once --act >/dev/null
+O=$(rw t.tsv --once --act --release a); has "$O" 'reason=submit-unknown prev=1000' "a second unknown outcome after --release is reported again"
+rm -f "$WORLD/sbatch.fail"; q "1500|a|RUNNING|None|0|$NOW|$P|"; O=$(rw t.tsv --once --act --release a)
+has "$O" 'ADOPT name=a .*job=1500 prev=1000 note=newer-job' "release given; a newer live job is followed instead of resubmitting"
+q; acct "1000|a|PREEMPTED|0:0|$P" "1500|a|CANCELLED by 4242|0:0|$P"; O=$(rw t.tsv --once --act)
+has "$O" 'reason=cancelled by=4242' "the release was for job 1000: a later CANCELLED job is held"; [ "$(nsub)" = 0 ] && ok "release not reused for another job" || bad "release reused ($(nsub))"
+reset; approved "#@ allow launch" "a fx-slurm - $ROW"; q; acct "999|a|COMPLETED|0:0|/other/proj"
+O=$(rw t.tsv --once --act --max-active 3); has "$O" 'LAUNCH name=a' "another project's same-name job does not block a launch (re-check filters WorkDir)"
+reset; approved "#@ allow preempt=5" "a fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --act --adopt a=1000 >/dev/null
+q; acct "1000|a|PREEMPTED|0:0|$P"; touch "$WORLD/now-running"; for n in 1 2 3; do O=$(rw t.tsv --once --act); done; rm -f "$WORLD/now-running"
+has "$O" 'reason=submit-skipped n=3' "three skipped submits in a row: held for a human"; [ "$(st a 2)" = held ] && ok "skips escalate to held" || bad "skips escalate"
+
