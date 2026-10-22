@@ -3,7 +3,7 @@
 # name and its conf tag (my-hpc -> MYHPC_REMOTE_DIR in .hpc.conf). Paths single-quoted; only $HOME/$USER expand.
 T_KIND=slurm
 T_HOST=mycluster                 # ssh alias; ~/.ssh/config owns user/ProxyJump/keys
-T_XFER_HOST=''                   # ssh alias of the site's data-transfer node, if copies must go there ('' = T_HOST)
+T_XFER_HOST=''                   # ssh alias of the site's data-transfer node, if copies must go there ('' = the ssh host)
 T_DESC='My University cluster — gpu partition, 4x A100 per node'   # one line, no < >
 T_TRIGGERS='mycluster'           # verbatim words that route a request here (merged into the skill description)
 T_GPUS='4x A100 80GB per node'

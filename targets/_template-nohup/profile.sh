@@ -3,7 +3,7 @@
 # (ws-box -> WSBOX_NICE in .ws.conf). Paths single-quoted; only $HOME/$USER expand (on the remote).
 T_KIND=nohup
 T_HOST=mybox                     # ssh alias; ~/.ssh/config owns user/ProxyJump/keys
-T_XFER_HOST=''                   # rare on a box: a separate alias for file copies ('' = T_HOST)
+T_XFER_HOST=''                   # rare on a box: a separate alias for file copies ('' = the ssh host)
 T_DESC='Lab workstation — 4x RTX A6000, no scheduler'   # one line, no < >
 T_TRIGGERS='mybox'               # verbatim words that route a request here
 T_GPUS='4x RTX A6000 48GB'
