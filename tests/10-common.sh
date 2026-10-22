@@ -152,6 +152,9 @@ has "$I" '^| fx-home | fx | - | gpu / any | 1-00:00:00 | ' "row with '-' for mis
 hasnt "$I" 'ws-box' "slurm index has no nohup rows"
 has "$I" "^| fx-packed | fxp | - | gpu / any | 1-00:00:00 | fixture pack cluster | $RS_PACKS_DIR/fx-pack/targets/fx-packed/reference.md |$" "pack row: absolute reference"
 has "$(sed -n '/^## Routing/,$p' "$T/idx-slurm.md")" '^- fixture pack routing rule$' "a pack's routing/hpc-run.md lands in the Routing section"
+mkdir -p "$T/packs2"; ln -s "$RS_PACKS_DIR/fx-pack" "$T/packs2/a"; ln -s "$RS_PACKS_DIR/fx-pack" "$T/packs2/b"
+RS_PACKS_DIR=$T/packs2 C 'rs_gen_index slurm "$T/idx-twice.md" /root' >/dev/null
+[ "$(grep -c '^- fixture pack routing rule$' "$T/idx-twice.md")" = 1 ] && ok "a pack linked twice: its routing appears once" || bad "a pack linked twice: routing duplicated"
 C 'rs_gen_index nohup "$T/idx-nohup.md" /root' >/dev/null; I=$(cat "$T/idx-nohup.md")
 has "$I" "^| ws-box | wsbox | 4x fake | - | - | fixture workstation | $RS_USER_DIR/targets/ws-box/reference.md |$" "nohup row"
 hasnt "$I" 'no workstation registered yet' "no placeholder sentence when a nohup target exists"

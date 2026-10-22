@@ -107,7 +107,7 @@ rs_wandb_env_file() {
   return 0
 }
 rs_gen_index() {   # rs_gen_index slurm|nohup OUT [ROOT]: references/INDEX.md for the installed skill of that kind
-  local kind=$1 out=$2 root=${3:-$HOME/.agents/run-skills} skill rows=0 ref t
+  local kind=$1 out=$2 root=${3:-$HOME/.agents/run-skills} skill rows=0 ref t seen='|' real
   [ "$kind" = slurm ] && skill=hpc-run || skill=ws-run
   { echo "root: $root"; echo
     echo '| target | host | GPUs | default | max time | description | reference |'; echo '|---|---|---|---|---|---|---|'
@@ -121,6 +121,8 @@ rs_gen_index() {   # rs_gen_index slurm|nohup OUT [ROOT]: references/INDEX.md fo
     [ "$rows" = 0 ] && echo && echo "no $([ "$kind" = slurm ] && echo cluster || echo workstation) registered yet: register one with" \
       "the user ($root/INSTALL.md, Steps 2-6: run-probe, then ~/.config/run-skills/targets/<name>/ from $root/targets/_template-$kind/) or install a target pack"
     echo; if [ -f "$RS_HOME/skills/$skill/references/INDEX.md" ]; then sed -n '/^## Routing/,$p' "$RS_HOME/skills/$skill/references/INDEX.md"; fi
-    for ref in "$RS_PACKS_DIR"/*/routing/"$skill.md" "$RS_USER_DIR/routing/$skill.md"; do if [ -f "$ref" ]; then cat "$ref"; fi; done
+    for ref in "$RS_PACKS_DIR"/*/routing/"$skill.md" "$RS_USER_DIR/routing/$skill.md"; do   # a pack linked twice: once
+      [ -f "$ref" ] || continue; real="$(cd "$(dirname "$ref")" && pwd -P)/$skill.md"
+      case "$seen" in *"|$real|"*) ;; *) seen="$seen$real|"; cat "$ref" ;; esac; done
   } > "$out"
 }
