@@ -104,8 +104,9 @@ An overlay directory **with** `profile.sh` replaces the pack's target entirely.
 ## Keeping private things private
 
 - Put the pack in its own repo; the engine repo never needs your site names.
-- No user ids, account names or personal queues in a shared pack: use placeholders (`<user>`) and put personal
-  rules in each member's overlay.
+- No user ids, account names or personal queues in a shared pack: use placeholders (`<user>`, `<account>`) and put
+  personal rules in each member's overlay. List the placeholders under "Personal facts" in the pack's README:
+  INSTALL.md (Step 4) asks each member for them and writes the answers to their `reference.local.md`.
 - Maintainers of a public fork can list forbidden words — one `grep -E` pattern per line, matched
   case-insensitively — in `~/.config/run-skills/forbidden-words`; the selftest then fails if any of them appears in
   the engine repo. The list lives outside the repo, so it never leaks itself.

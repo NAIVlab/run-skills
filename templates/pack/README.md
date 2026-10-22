@@ -34,10 +34,18 @@ In a project repo, ask your agent, e.g. *"run this on bigcluster, 2 GPUs, 1 day"
 `.hpc.conf` (see [`hpc.conf.example`](hpc.conf.example) for our directory layout) and asks for the remote dir.
 It always shows a one-line plan and waits for your "go" before submitting.
 
+## Personal facts (the install asks each member)
+
+The pack holds placeholders only; the agent installing it asks every member for these and writes the answers to
+their own overlay, `~/.config/run-skills/targets/<name>/reference.local.md`:
+
+- `<user>`: your username on each target (also the `User` line of [`ssh_config`](ssh_config)).
+- `<account>`: the Slurm account your runs should bill to, if not your default association.
+- Your project directory on each target: <path pattern with `<user>`>.
+
 ## Group conventions
 
-- Where project directories live on each target: <path pattern>.
-- Accounts / QOS to use: <...>.
+- QOS to use: <...>.
 - Etiquette on shared boxes: <...>.
 
 ## Maintaining this pack

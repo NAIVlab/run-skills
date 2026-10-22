@@ -123,10 +123,14 @@ bash ~/.agents/run-skills/bin/run-probe <alias>
 
 ## Step 4 — Register each server as a target
 
-A pack already provides it → nothing to do (a personal rule on top of it goes into an overlay directory *without*
-`profile.sh`: `$E/docs/packs.md`, "Precedence and personal tweaks"). Otherwise the target name is the alias,
-lowercase letters, digits and hyphens (it becomes the conf tag: `my-hpc` → `MYHPC_`, and the deploy dir `.<name>/`
-in every project). Reserved, because the dir would collide: `ws`, `venv`, `cache`, `config`, `local`, `git`,
+A pack already provides it → no `profile.sh` to write, but the pack ships placeholders (`<user>`, `<account>`, …),
+never a member's identity, so **ask who the user is there** — the facts its README lists under "Personal facts"
+(else: username, the account their runs bill to, where their projects live), suggesting the probe's `default
+account:` / `associations` and `exists:` lines. Write the answers, marked "(user)", to
+`~/.config/run-skills/targets/<name>/reference.local.md` — an overlay directory *without* `profile.sh`, which also
+holds any personal rule (`$E/docs/packs.md`, "Precedence and personal tweaks"). Never put them into the pack.
+Otherwise the target name is the alias, lowercase letters, digits and hyphens (it becomes the conf tag: `my-hpc` →
+`MYHPC_`, and the deploy dir `.<name>/` in every project). Reserved, because the dir would collide: `ws`, `venv`, `cache`, `config`, `local`, `git`,
 `claude`, `codex`, `agents`; names starting with `_` are ignored (templates).
 
 ```bash
