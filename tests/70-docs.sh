@@ -96,6 +96,15 @@ for f in skills/hpc-run/SKILL.md skills/ws-run/SKILL.md skills/hpc-run/reference
          skills/hpc-run/references/procedure-slurm.md skills/ws-run/references/procedure-nohup.md; do
   has "$(cat "$RS_HOME/$f")" 'run-avail' "$f: an open placement starts with run-avail"; done
 has "$(cat "$RS_HOME/skills/hpc-run/references/INDEX.md")" 'The user fixed it' "INDEX: a fixed placement is used as given (no fleet check)"
+for f in skills/hpc-run/SKILL.md skills/ws-run/SKILL.md skills/hpc-run/references/procedure-slurm.md skills/ws-run/references/procedure-nohup.md; do
+  has "$(cat "$RS_HOME/$f")" 'run-watch' "$f: many jobs or long waits go through run-watch"
+  hasnt "$(cat "$RS_HOME/$f")" 'Monitor(\|/loop\|CronCreate\|ScheduleWakeup\|run_in_background' "$f names no runtime-specific waiting tool"; done
+for f in skills/hpc-run/references/procedure-slurm.md skills/ws-run/references/procedure-nohup.md; do
+  has "$(tr '\n' ' ' < "$RS_HOME/$f")" 'Never  *detach it (no `nohup`, `setsid`, cron)' "$f: run-watch stays owned by the session"; done
+has "$(tr '\n' ' ' < "$RS_HOME/skills/hpc-run/SKILL.md")" 'One exception: `run-watch --act` first-submits or resubmits only table rows the user  *approved' "hpc-run rail: the one detect-only exception, user-approved rows only"
+hasnt "$(cat "$RS_HOME/skills/hpc-run/SKILL.md")" 'only clears availability' "hpc-run rail: -y also confirms policy warnings (not just availability)"
+has "$(tr '\n' ' ' < "$RS_HOME/skills/hpc-run/references/procedure-slurm.md")" 'only after their explicit OK run `run-watch <table> --approve' "procedure-slurm: --approve only after the user's OK"
+has "$E" 'sole exception: `run-watch --act`' "conventions: detect-only names its one exception"
 for f in skills/hpc-run/references/conf-keys.md skills/ws-run/references/conf-keys.md; do
   has "$(cat "$RS_HOME/$f")" 'T_XFER_HOST.*profile' "$f: the transfer host is a profile fact"
   hasnt "$(cat "$RS_HOME/$f")" '^| `XFER_HOST`' "$f: no XFER_HOST conf key (one per conf would misroute other targets)"; done
@@ -160,6 +169,7 @@ budget() { [ -f "$RS_HOME/$1" ] || { bad "$1 exists"; return; }; local n; n=$(wc
 budget lib/common.sh 130; budget remote/env.sh 170; budget remote/bootstrap.sh 90; budget remote/submit.sh 190; budget remote/job.sbatch 65
 budget remote/status.sh 175   # generous on purpose: every lookup has an explicit failure branch; compressing them hides bugs
 budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 240; budget AGENTS.md 165; budget INSTALL.md 230
-budget skills/hpc-run/SKILL.md 60; budget skills/ws-run/SKILL.md 60
-budget skills/hpc-run/references/experiment-conventions.md 130; budget skills/hpc-run/references/project-setup.md 100
+budget skills/hpc-run/SKILL.md 60; budget skills/ws-run/SKILL.md 60; budget bin/run-watch 700
+budget skills/hpc-run/references/experiment-conventions.md 134;   # +4: the run-watch exception (§3, §6, §7)
+budget skills/hpc-run/references/project-setup.md 100
 for d in hpc-run ws-run; do [ -d "$RS_HOME/$d" ] && bad "legacy $d/ tree removed" || ok "legacy $d/ tree removed"; done

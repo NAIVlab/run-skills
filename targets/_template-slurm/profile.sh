@@ -21,3 +21,4 @@ T_DEFAULT_GPU_TYPE=any           # gres type name, or 'any' (count-only availabi
 T_MAXTIME=7-00:00:00             # cluster-wide walltime cap; policy.sh lowers it per partition (P_MAXTIME)
 T_FORBIDDEN_QOS=''               # QOS names rejected when found in SBATCH_EXTRA
 T_PARTITIONS='gpu cpu'           # listed in error messages/docs; policy.sh is the authority
+T_WATCH_RECOVER=1                # 0 = run-watch never resubmits here (reports needs-ok); 1 = within a table's approved budget
