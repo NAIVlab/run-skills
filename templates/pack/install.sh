@@ -10,8 +10,11 @@ ENGINE_DIR=${RS_ENGINE_DIR:-$HOME/.local/share/run-skills}
 PACKS=${RS_PACKS_DIR:-${RS_USER_DIR:-$HOME/.config/run-skills}/packs}
 command -v git >/dev/null || { echo "ERROR: git is required." >&2; exit 1; }
 
-echo "== pack '$NAME' -> $PACKS/$NAME =="
 mkdir -p "$PACKS"
+for e in "$PACKS"/*; do   # already registered under another name (e.g. installed via that link): keep that one entry
+  if [ -d "$e" ] && [ "$(cd "$e" && pwd -P)" = "$PACK" ]; then NAME=$(basename "$e"); break; fi
+done
+echo "== pack '$NAME' -> $PACKS/$NAME =="
 if [ "$(cd "$PACKS" && pwd -P)/$NAME" = "$PACK" ]; then
   echo "  cloned in place — nothing to link."
 elif [ -L "$PACKS/$NAME" ] || [ ! -e "$PACKS/$NAME" ]; then

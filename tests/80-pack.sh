@@ -29,6 +29,11 @@ O=$(inst "$T/other/install.sh"); RC=$?
 cp -R "$RS_HOME/templates/pack" "$H/.config/run-skills/packs/inplace"
 O=$(inst "$H/.config/run-skills/packs/inplace/install.sh"); RC=$?
 [ "$RC" = 0 ] && has "$O" 'cloned in place' "a pack cloned straight into the packs dir is accepted" || bad "in-place pack accepted (rc=$RC)"
+rm "$H/.config/run-skills/packs/mypack"; ln -s "$(cd "$T/mypack" && pwd -P)" "$H/.config/run-skills/packs/alias"
+O=$(inst "$H/.config/run-skills/packs/alias/install.sh"); RC=$?
+[ "$RC" = 0 ] && has "$O" "pack 'alias'" "installed via a link with another name: that name is kept" || bad "pack under another name (rc=$RC)"
+[ ! -e "$H/.config/run-skills/packs/mypack" ] && ok "...and no second link to the same pack" || bad "no second link to the same pack"
+O=$(inst "$T/mypack/install.sh"); [ ! -e "$H/.config/run-skills/packs/mypack" ] && ok "re-run from the clone: still the one existing link" || bad "re-run from the clone links twice"
 O=$(inst "$T/mypack/install.sh" RS_PACKS_DIR="$T/custom" RS_ENGINE_DIR="$T/eng" RS_ENGINE_URL=https://example.invalid/e.git); RC=$?
 [ -L "$T/custom/mypack" ] && ok "RS_PACKS_DIR honoured" || bad "RS_PACKS_DIR honoured"
 has "$(cat "$T/git.log")" "^git clone https://example.invalid/e.git $T/eng$" "RS_ENGINE_URL / RS_ENGINE_DIR honoured"
