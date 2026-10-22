@@ -11,9 +11,11 @@ This document explains *why* run-skills is shaped the way it is. The user-facing
 3. **Storage policy is declared per target**, because sites differ: a fast project filesystem here, a quota on
    small files there, a per-job `$TMPDIR` somewhere else.
 4. **The agent reads little and guesses nothing**: an index of targets plus one self-contained page per target.
-5. **Unsafe actions need a human**: submissions, launches, cancellations, new conda envs, remote directories.
+5. **Unsafe actions need a human**: submissions, launches, cancellations, new conda envs, remote directories. One
+   narrow, pre-approved exception: `run-watch --act` (below).
 
-Non-goals: multi-node jobs, non-NVIDIA hardware, a new configuration language, a daemon or a database.
+Non-goals: multi-node jobs, non-NVIDIA hardware, a new configuration language, a daemon or a database
+(`run-watch` is a foreground command the session owns, with a lease; its state file is a receipt, not a database).
 
 ## Three layers
 
@@ -132,3 +134,25 @@ with stubs for `sbatch`, `sinfo`, `squeue`, `scontrol`, `ssh`, `uv` and `rsync` 
 strings. Phase B runs every real target's `tests.sh` (engine, packs, overlay) with the same helpers. Documentation
 is tested too: the committed INDEX stubs must equal the generator's output, the skills must keep their rails, and
 an optional list of forbidden words keeps private names out of the repo.
+
+## Batch watching (`run-watch`)
+
+Agents watching many jobs one `squeue` at a time either poll too often or miss preemptions; hand-rolled watchers
+in projects drifted (retrying states nobody approved, counting a budget before the submit succeeded). `run-watch`
+is the one shared watcher:
+
+- **Observe cheaply.** One read-only BatchMode ssh per target per round, the script on stdin (inside a function, so a
+  cut-off script runs nothing); no deploy. A failed or incomplete observation decides nothing; a queue that empties
+  between two rounds is believed only on the second (a truncated reply must not read as "every job is gone").
+- **Settled = purged + terminal.** A requeued job keeps its id and stays in the controller, so "gone from
+  `squeue --states=all` and sacct shows a final state" is the same rule on a cluster that requeues and one that
+  cancels on preemption — no per-partition mode table. The submit ssh checks both again right before submitting.
+- **Act only on an approval that can go stale.** The table's `#@ allow` line is the budget (no defaults); `#@ ok`
+  carries a checksum of that line plus its block of rows, written by `--approve` with the user's words. The checksum
+  only stops edited or appended rows (and raised budgets) from inheriting an old approval — it cannot prove that the
+  user agreed; the skill rail (show the rows and budget, wait for the OK) does that.
+- **Never guess a submit outcome.** One row per submit ssh; no `+ sbatch` line from `submit.sh` = refused before
+  sbatch (budget refunded); a receipt = submitted; anything else is a sticky `submit-unknown` that only `--adopt` or
+  a user-approved `--release` clears. CANCELLED is never resubmitted (someone may have pressed cancel).
+- **Report, never interfere**: requeue storms, stalls (log mtime) and a missing resume line are events only.
+

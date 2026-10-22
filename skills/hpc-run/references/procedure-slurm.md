@@ -92,6 +92,19 @@ requeued (`--no-requeue`, or a partition that preempts by cancel): resubmit and 
 instead goes back to `PENDING` and later runs again into the same log with a new `restart=N` header (`sacct -D` lists
 the earlier attempts) — confirm the trainer's own resume line after every restart. `scancel` only with explicit approval.
 
+**Many jobs or long waits: `run-watch`** (cwd = project root; `bin/run-watch` header = the full contract). A table
+`#@ run-watch v1` lists rows `name target done-path submit.sh-args -- cmd` (or `-`: watch only; `-p` required, no
+`-n`, no `*-user-asked`, no shell quoting). Each round: one read-only ssh per target, one dated event per change
+(LAUNCH REQUEUE RESUBMIT RETRY DONE STALL WARN ATTENTION …). Without `--act` it never submits. To let it act, show
+the user the rows plus `#@ allow launch preempt=N errors=N timeout=N` (no default: absent = 0; paid partitions:
+the cost of first submits plus N resubmits); only after their explicit OK run `run-watch <table> --approve "<their
+words>"`. Any later edit to those rows or the budget makes them detect-only again. It resubmits only a job the
+controller has purged with a terminal sacct state, never a CANCELLED one, never past an unknown submit outcome; a
+requeued job keeps its id and is only counted. Run it as this session's background task with a lease (`--for`,
+default 2 h) and follow its output; every exit is a review point (`status.sh` spot-check, then restart). Without
+that, run `--once` at each review. Never detach it (no `nohup`, `setsid`, cron). After REQUEUE/RESUBMIT confirm the
+resume (or set `#@ resume /<the trainer's resume line>/`); ATTENTION is a finding — report it.
+
 ## 6. Pull results back — only with `run-pull`
 ```
 TARGET=<t> bash $ROOT/bin/run-pull -n <path>...   # dry run: file count + total size (rsync --stats); writes nothing

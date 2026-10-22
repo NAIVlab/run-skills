@@ -198,7 +198,8 @@ These are part of the skills' instructions and are enforced by the harness where
   `SBATCH_EXTRA`. A policy refusal is final; `-y` only acknowledges availability warnings.
 - Never create a conda env; never guess the remote directory; never use a machine's stored wandb credentials.
 - Smoke tests run with `WANDB_MODE=disabled`; real runs checkpoint and resume.
-- Monitoring is detect-only and byte-bounded; findings are reported, decisions stay with you.
+- Monitoring is detect-only and byte-bounded; findings are reported, decisions stay with you. The one exception:
+  `run-watch --act` resubmits preempted jobs (or first-submits rows) of a run table you approved, within its budget.
 
 ## Repository layout
 
@@ -206,7 +207,7 @@ These are part of the skills' instructions and are enforced by the harness where
 |---|---|
 | `skills/` | the two skills: a thin `SKILL.md` each + `references/` (procedures, conf keys, project setup, experiment conventions) |
 | `INSTALL.md` | the install runbook your agent follows |
-| `bin/` | local commands: `run-avail` (free GPUs everywhere), `run-sync`, `run-pull`, `run-bootstrap`, `run-launch`, `run-probe` |
+| `bin/` | local commands: `run-avail` (free GPUs everywhere), `run-sync`, `run-pull`, `run-bootstrap`, `run-launch`, `run-watch` (batch watch), `run-probe` |
 | `lib/common.sh` | local helpers: target discovery, conf precedence, conf linter, INDEX generation |
 | `remote/` | deployed next to each project: `env.sh`, `bootstrap.sh`, `status.sh`, `submit.sh`, `job.sbatch` |
 | `targets/` | `_template-slurm/`, `_template-nohup/` |
