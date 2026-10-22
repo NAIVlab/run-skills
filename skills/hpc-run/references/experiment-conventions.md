@@ -72,8 +72,9 @@ corrupts the only resume point.
   preempts by cancel ends the job PREEMPTED instead: resuming is a new submit (new id, same name). The harness forwards
   Slurm's `USR1` warning (~120 s before the time limit; on preemption only where the site sends it) and its `TERM`
   (cancel / preempt / final kill, then SIGKILL) to the trainer — handle them (a second TERM may follow on sites
-  that signal children too), or rely on periodic saves. A run that cannot resume yet goes out with
-  `SBATCH_EXTRA="--no-requeue"` rather than silently retraining from step 0.
+  that signal children too), or rely on periodic saves. A payload without a USR1 handler (a wrapper shell too) dies of
+  the warning: sacct says FAILED, not TIMEOUT (only a job still running at the limit is TIMEOUT). A run that cannot
+  resume yet goes out with `SBATCH_EXTRA="--no-requeue"` rather than silently retraining from step 0.
 - slurm, longer than the partition's walltime: `--requeue` does not restart a job at its walltime, so chain segments —
   one full `-n` name (including `a<attempt>`) for all segments plus `SBATCH_EXTRA="--dependency=singleton"`: only one
   job of that name runs at a time, the next starts when the previous one terminates (TIMEOUT included), a preempted

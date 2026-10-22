@@ -4,7 +4,8 @@
 # It acts only with --act, inside the table's `#@ allow` budget, on rows whose `#@ ok` block checksum still matches:
 # a first submit of a never-submitted row (`launch`), or a resubmit, under the same name, of a job the controller
 # has purged and sacct calls PREEMPTED/NODE_FAIL/BOOT_FAIL (preempt=N), FAILED/OUT_OF_MEMORY (errors=N) or TIMEOUT
-# (timeout=N) — one row per submit ssh, always through the deployed submit.sh, never -y of its own. Never scancel,
+# (timeout=N; also FAILED, or COMPLETED without its done-path, ending at-limit: within min(15 min, a tenth of the
+# limit) of it — a payload killed by the forwarded USR1 warning ends FAILED, never TIMEOUT) — one row per submit ssh, always through the deployed submit.sh, never -y of its own. Never scancel,
 # scontrol, kill. A requeued job keeps its id in the queue, so it is only counted (requeue-storm past a threshold).
 #   run-watch TABLE... [--act] [--once] [--every S] [--for S] [--stall-after S] [--max-active N] [--release NAME] [--adopt NAME=JOBID]
 #   run-watch TABLE --approve "the user's words"   # writes `#@ ok` over every unapproved or stale block, nothing else
@@ -267,7 +268,7 @@ OBS_SLURM='rw_main() {
   echo @@squeue; printf "%s\n" "$q" | grep -v "^$"
   miss=""; for e in $LOGS; do printf "%s\n" "$q" | grep -q "^${e%%:*}|" || { miss="$miss,${e%%:*}"; NAMES="$NAMES,${e#*:}"; }; done; NAMES=${NAMES#,}
   echo @@sacct-jobs
-  if [ -n "$miss" ]; then sacct -X -n -P -j "${miss#,}" -o JobID,JobName,State,ExitCode,WorkDir || { echo "@@fail sacct-jobs"; return; }; fi
+  if [ -n "$miss" ]; then sacct -X -n -P -j "${miss#,}" -o JobID,JobName,State,ExitCode,WorkDir,ElapsedRaw,TimelimitRaw || { echo "@@fail sacct-jobs"; return; }; fi
   echo @@sacct-names
   if [ -n "$NAMES" ]; then sacct -X -n -P -u "$U" -S now-30days --name="$NAMES" -o JobID,JobName,State,ExitCode,WorkDir || { echo "@@fail sacct-names"; return; }; fi
   echo @@stat
@@ -386,7 +387,7 @@ new_live() {   # the ONE live job of this name in this project not followed yet 
   done <<< "$(live_jobs "$i")"
   [ "$n" = 1 ] && echo "$out"
 }
-enqueue() { local k=${R_K[$1]}; [ -z "${Q_ROW[k]}" ] || return 0; Q_ROW[k]=$1; Q_KIND[k]=$2; Q_PREV[k]=$3; Q_EXP[k]=$4; Q_CLS[k]=$5; }
+enqueue() { local k=${R_K[$1]}; [ -z "${Q_ROW[k]}" ] || return 0; Q_ROW[k]=$1; Q_KIND[k]=$2; Q_PREV[k]=$3; Q_EXP[k]=$4; Q_CLS[k]=$5; Q_NOTE[k]=${6:-}; }
 why_not() {   # why this row may not submit now ('' = it may): ROW
   local i=$1
   [ "${R_SUB[i]}" != - ] || { echo detect-only-row; return; }
@@ -407,7 +408,7 @@ launch_or_wait() {
   enqueue "$i" launch "" "" launch
 }
 eval_slurm() {
-  local i=$1 j=${R_J[$1]} st cur line id jn jst why rc0 start wd n prev thr fst by dn cls used max r
+  local i=$1 j=${R_J[$1]} st cur line id jn jst why rc0 start wd n prev thr fst by dn cls used max r el lim at
   st=${S_ST[j]}; cur=${S_JOBS[j]##*,}
   case "$st" in
     submit-unknown) R_WAIT[i]=1
@@ -474,7 +475,7 @@ eval_slurm() {
   line=$(history_here "$i" | tail -n 1)
   if [ -n "$line" ] && [ "${line%%|*}" -gt "$cur" ]; then track "$i" "${line%%|*}"; ev ADOPT "$i" "job=${line%%|*} prev=$cur note=newer-job"; return; fi
   # settled only with a terminal sacct row (the submit ssh checks both again)
-  IFS='|' read -r id jn jst why wd <<< "$(awk -F'|' -v j="$cur" '$1 == j { print; exit }' "$D/sj")"
+  IFS='|' read -r id jn jst why wd el lim <<< "$(awk -F'|' -v j="$cur" '$1 == j { print; exit }' "$D/sj")"
   fst=${jst%% *}
   case "$fst" in   # known, not final: accounting lags the controller; anything unknown is held below
     ''|PENDING|RUNNING|REQUEUED|REQUEUE_FED|REQUEUE_HOLD|RESIZING|SUSPENDED|COMPLETING|CONFIGURING|SIGNALING|STAGE_OUT|STOPPED|SPECIAL_EXIT) ;;
@@ -487,19 +488,23 @@ eval_slurm() {
     return
   fi
   S_GAP[j]=0; S_TQ[j]=-; S_LAST[j]="$fst:${S_LAST[j]#*:}"; dn=$(done_of "$i")
+  # at-limit: ended within min(15 min, limit/10) of the time limit (ElapsedRaw s, TimelimitRaw min; not ExitCode: a
+  # USR1 death is 138:0 on one site, 10:0 on another — design §12). Slurm says TIMEOUT only for a job still alive at it.
+  at=""; case "$el:$lim" in :*|*:|*[!0-9:]*) ;; *) [ "$lim" -gt 0 ] && [ $((lim * 60 - el)) -le $((lim * 6 < 900 ? lim * 6 : 900)) ] && at="at-limit left=$((lim * 60 - el))s" ;; esac
   if [ "$fst" = COMPLETED ]; then
     case "$dn" in
-      -) S_ST[j]=done; ev DONE "$i" "job=$cur artifact=unchecked" ;;
-      yes) S_ST[j]=done; ev DONE "$i" "job=$cur done=${R_DONE[i]}" ;;
-      *) hold "$i" "$cur" completed-not-done "done=${R_DONE[i]}" ;;
-    esac; return
+      -) if [ -n "$at" ]; then hold "$i" "$cur" completed-at-limit "$at" "-- exit 0 at the time-limit warning: a save-and-exit, not proof the run finished"
+         else S_ST[j]=done; ev DONE "$i" "job=$cur artifact=unchecked"; fi; return ;;
+      yes) S_ST[j]=done; ev DONE "$i" "job=$cur done=${R_DONE[i]}"; return ;;
+      *) [ -n "$at" ] || { hold "$i" "$cur" completed-not-done "done=${R_DONE[i]}"; return; } ;;   # at-limit: a continuation
+    esac
   fi
   [ "$dn" != yes ] || { hold "$i" "$cur" "artifact-but-$(lower "$fst")" "done=${R_DONE[i]}"; return; }
-  case "$fst" in
-    PREEMPTED|NODE_FAIL|BOOT_FAIL) cls=preempt used=${S_PRE[j]} max=${A_PRE[${R_TB[i]}]} ;;
-    FAILED|OUT_OF_MEMORY) cls=errors used=${S_ERR[j]} max=${A_ERR[${R_TB[i]}]} ;;
-    TIMEOUT) cls=timeout used=${S_TO[j]} max=${A_TO[${R_TB[i]}]} ;;
-    CANCELLED|DEADLINE|REVOKED)   # never resubmitted on its own: the user may have pressed cancel
+  case "$fst${at:+:at}" in
+    PREEMPTED*|NODE_FAIL*|BOOT_FAIL*) cls=preempt used=${S_PRE[j]} max=${A_PRE[${R_TB[i]}]} ;;
+    FAILED|OUT_OF_MEMORY*) cls=errors used=${S_ERR[j]} max=${A_ERR[${R_TB[i]}]} ;;
+    TIMEOUT*|FAILED:at|COMPLETED:at) cls=timeout used=${S_TO[j]} max=${A_TO[${R_TB[i]}]} ;;
+    CANCELLED*|DEADLINE*|REVOKED*)   # never resubmitted on its own: the user may have pressed cancel
       if [ "${S_REL[j]}" = "$cur" ] && [ -z "$(why_not "$i")" ]; then enqueue "$i" resubmit "$cur" "$fst" release; return; fi
       by=""; case "$jst" in "CANCELLED by "*) by="by=${jst#CANCELLED by }" ;; esac
       hold "$i" "$cur" "$(lower "$fst")" $by; return ;;
@@ -510,8 +515,8 @@ eval_slurm() {
   [ -n "$why" ] || [ "$used" -lt "$max" ] || why=budget
   case "$why" in recover-off|budget|budget-unknown) [ "${S_REL[j]}" != "$cur" ] || { why=""; cls=release; } ;; esac   # the user's one-off OK
   [ "$used" -lt "$LOST" ] || used=unknown
-  if [ -n "$why" ]; then attn "$i" "$cur" "$(lower "$fst")" "why=$why" "action=needs-ok $cls=$used/$max"; R_WAIT[i]=1; return; fi
-  enqueue "$i" resubmit "$cur" "$fst" "$cls"
+  if [ -n "$why" ]; then attn "$i" "$cur" "$(lower "$fst")" "why=$why" "action=needs-ok $cls=$used/$max${at:+ $at}"; R_WAIT[i]=1; return; fi
+  enqueue "$i" resubmit "$cur" "$fst" "$cls" "$at"
 }
 eval_ws() {   # workstations: detect only (no scheduler, no preemption: a re-run is a new launch the user confirms)
   local i=$1 j=${R_J[$1]} st cur line dn
@@ -582,7 +587,7 @@ do_submit() {
       timeout) verb=RESUBMIT cnt="timeouts=${S_TO[j]}/${A_TO[${R_TB[i]}]}" ;;
       *) verb=RESUBMIT cnt="release=1" ;;
     esac
-    ev "$verb" "$i" "job=$jid prev=$prev state=$exp $cnt log=logs/${R_NAME[i]}_$jid.out"
+    ev "$verb" "$i" "job=$jid prev=$prev state=$exp${Q_NOTE[k]:+ ${Q_NOTE[k]}} $cnt log=logs/${R_NAME[i]}_$jid.out"
   elif ! grep -q '^@@begin' "$W/sub.out" && grep -q '^@@fail' "$W/sub.out"; then   # re-check failed: nothing ran
     refund; S_ST[j]=$old; S_REL[j]=$rel; S_SKIP[j]=$((S_SKIP[j] + 1)); out=$(grep -m1 '^@@fail' "$W/sub.out" | cut -c8-)
     if [ "${S_SKIP[j]}" -ge 3 ]; then hold_now "$i" "${prev:--}" submit-skipped "n=3 -- $out (the login node keeps disagreeing with the observation)"

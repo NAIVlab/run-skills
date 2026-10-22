@@ -19,11 +19,11 @@ cat > "$RBIN/sacct" <<'EOS'
 ids="" names="" fields=""
 while [ "$#" -gt 0 ]; do case "$1" in -j) ids=$2; shift ;; --name=*) names=${1#--name=} ;; -o) fields=$2; shift ;; esac; shift; done
 [ -f "$WORLD/sacct" ] || exit 0
-while IFS='|' read -r id n st ec wd; do
+while IFS='|' read -r id n st ec wd el lim; do
   [ -n "$id" ] || continue
   [ -z "$ids" ] || case ",$ids," in *",$id,"*) ;; *) continue ;; esac
   [ -z "$names" ] || case ",$names," in *",$n,"*) ;; *) continue ;; esac
-  case "$fields" in State) [ -f "$WORLD/now-running" ] && echo RUNNING || echo "$st" ;; JobID) echo "$id" ;; JobID,WorkDir) echo "$id|$wd" ;; *) echo "$id|$n|$st|$ec|$wd" ;; esac
+  case "$fields" in State) [ -f "$WORLD/now-running" ] && echo RUNNING || echo "$st" ;; JobID) echo "$id" ;; JobID,WorkDir) echo "$id|$wd" ;; *ElapsedRaw*) echo "$id|$n|$st|$ec|$wd|$el|$lim" ;; *) echo "$id|$n|$st|$ec|$wd" ;; esac
 done < "$WORLD/sacct"
 EOS
 cat > "$RBIN/sbatch" <<'EOS'
@@ -54,7 +54,7 @@ reset() { rm -rf "$P/logs/run-watch" "$WP/logs/run-watch" "$WORLD"/*; echo 1000 
 NOW=$(date +%s)
 OTHER="9|someone-else|RUNNING|None|0|$NOW|/elsewhere|"   # keeps the user's queue non-empty (the empty-squeue guard)
 q() { printf '%s\n' "$OTHER" "$@" > "$WORLD/squeue"; }   # rows: jid|name|state|reason|restarts|start|workdir|
-acct() { printf '%s\n' "$@" > "$WORLD/sacct"; }          # rows: jid|name|state|exit|workdir
+acct() { printf '%s\n' "$@" > "$WORLD/sacct"; }          # rows: jid|name|state|exit|workdir[|elapsed-s|limit-min]
 nsub() { grep -c . "$WORLD/sbatch.log"; }
 table() { { echo '#@ run-watch v1'; printf '%s\n' "$@"; } > "$P/t.tsv"; }
 approved() { table "$@"; rw t.tsv --approve "go ahead" >/dev/null; }
@@ -165,6 +165,30 @@ q "1000|a|RUNNING|None|0|$NOW|$P|" "1001|b|RUNNING|None|0|$NOW|$P|"; rw t.tsv --
 q; acct "1000|a|OUT_OF_MEMORY|0:125|$P" "1001|b|TIMEOUT|0:0|$P"; echo 2000 > "$WORLD/nextjid"
 O=$(rw t.tsv --once --act); has "$O" 'RETRY name=a .*state=OUT_OF_MEMORY errors=1/1' "errors=1: one retry"
 q "2000|a|PENDING|Priority|0|N/A|$P|"; O=$(rw t.tsv --once --act); has "$O" 'RESUBMIT name=b .*state=TIMEOUT timeouts=1/1' "timeout=1: one continuation (next round: one submit per target per round)"
+
+echo "-- at-limit: ended within min(15 min, limit/10) of the time limit = a timeout, whatever sacct calls it --"
+lim() {   # lim DONE ALLOW "STATE|EXIT|ELAPSED|LIMIT": adopt job 1000 of row a, then it settles that way
+  reset; approved "$2" "a fx-slurm $1 $ROW"; rm -rf "$P/out"; q "1000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --adopt a=1000 >/dev/null
+  q; acct "1000|a|${3%%|*}|$(echo "$3" | cut -d'|' -f2)|$P|$(echo "$3" | cut -d'|' -f3-)"; echo 2000 > "$WORLD/nextjid"; }
+lim - "#@ allow timeout=1" "FAILED|138:0|259055|4320"; O=$(rw t.tsv --once --act)   # a USR1 death 145 s early (design §12)
+has "$O" 'RESUBMIT name=a .*state=FAILED at-limit left=145s timeouts=1/1' "FAILED 145 s before a 3-day limit: timeout budget"
+lim - "#@ allow timeout=1" "FAILED|10:0|5254|90"; O=$(rw t.tsv --once --act)   # same death as another site records it
+has "$O" 'RESUBMIT name=a .*state=FAILED at-limit left=146s' "exit code not read: FAILED 10:0 at-limit too"
+lim - "#@ allow timeout=1" "FAILED|1:0|3600|4320"; O=$(rw t.tsv --once --act)
+has "$O" 'reason=failed why=budget action=needs-ok errors=0/0' "FAILED early: errors budget, not timeout"; [ "$(nsub)" = 0 ] && ok "FAILED early: 0 submits" || bad "FAILED early: 0 submits"
+lim - "" "FAILED|138:0|259055|4320"; O=$(rw t.tsv --once --act)
+has "$O" 'reason=failed why=budget action=needs-ok timeout=0/0 at-limit left=145s' "at-limit without a timeout budget: needs-ok says why"
+lim - "#@ allow timeout=1" "FAILED|1:0|200|5"; O=$(rw t.tsv --once --act)   # 100 s left of 5 min > 30 s (a tenth)
+has "$O" 'reason=failed why=budget action=needs-ok errors=0/0' "short limit: window is a tenth of it"; [ "$(nsub)" = 0 ] && ok "short limit: 0 submits" || bad "short limit: 0 submits"
+lim - "#@ allow timeout=1" "FAILED|1:0|290|5"; O=$(rw t.tsv --once --act); has "$O" 'state=FAILED at-limit left=10s' "short limit: inside its window"
+lim - "#@ allow timeout=1" "FAILED|138:0||"; O=$(rw t.tsv --once --act); has "$O" 'reason=failed why=budget' "no elapsed/limit: errors, as before"
+lim out/a.done "#@ allow timeout=1" "COMPLETED|0:0|259000|4320"; O=$(rw t.tsv --once --act)
+has "$O" 'RESUBMIT name=a .*state=COMPLETED at-limit left=200s timeouts=1/1' "COMPLETED at-limit, done-path missing: a continuation"
+lim - "#@ allow timeout=1" "COMPLETED|0:0|259000|4320"; O=$(rw t.tsv --once --act); RC=$?
+has "$O" 'reason=completed-at-limit at-limit left=200s' "COMPLETED at-limit, done '-': held, not DONE"; hasnt "$O" 'DONE name=a' "  ...and no DONE"
+[ "$RC" = 4 ] && [ "$(nsub)" = 0 ] && ok "completed-at-limit: exit 4, 0 submits" || bad "completed-at-limit: exit 4, 0 submits ($RC)"
+lim out/a.done "#@ allow timeout=1" "COMPLETED|0:0|259000|4320"; mkdir -p "$P/out"; touch "$P/out/a.done"; O=$(rw t.tsv --once --act)
+has "$O" 'DONE name=a .*done=out/a.done' "COMPLETED at-limit with its done-path: DONE"
 
 echo "-- adoption of rows run-watch never submitted --"
 reset; approved "#@ allow launch" "a fx-slurm - $ROW"
