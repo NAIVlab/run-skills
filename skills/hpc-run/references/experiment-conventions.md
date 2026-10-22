@@ -29,7 +29,8 @@ the harness already makes logs unique (slurm `logs/<name>_<jobid>.out`, nohup `l
 
 ## 3. Lineage: restart vs fork
 - Same task, config, seed and objective → the SAME logical run; resume the same wandb run when supported.
-  Bump only `a<attempt>` for a separately approved resubmit/relaunch. A Slurm requeue keeps the full job name;
+  Bump only `a<attempt>` for a separately approved resubmit/relaunch; a `run-watch` resubmit within an approved
+  budget continues the same attempt and keeps the name. A Slurm requeue keeps the full job name;
   its `restart=N` header records the restart. An approved segment chain (§6) also keeps one full name, including
   `a<attempt>`, for all segments; distinguish them by job id. Neither case requires renaming a running job.
 - Any meaningful change (config, data, reward, objective, seed) starting from a checkpoint → a NEW run: new
@@ -67,7 +68,8 @@ the first long submit; if the command cannot resume, say so in the plan line and
 atomic (temp name, then rename; keep the previous one): a signal or time limit landing mid-save otherwise
 corrupts the only resume point.
 - slurm: jobs are submitted with `--requeue` (auto-resume by default): preemption or a node failure re-runs
-  the SAME command — same job id, log appended, a `restart=N` header line marks the attempt. The harness forwards
+  the SAME command — same job id, log appended, a `restart=N` header line marks the attempt. A partition that
+  preempts by cancel ends the job PREEMPTED instead: resuming is a new submit (new id, same name). The harness forwards
   Slurm's `USR1` warning (~120 s before the time limit; on preemption only where the site sends it) and its `TERM`
   (cancel / preempt / final kill, then SIGKILL) to the trainer — handle them (a second TERM may follow on sites
   that signal children too), or rely on periodic saves. A run that cannot resume yet goes out with
@@ -88,7 +90,8 @@ corrupts the only resume point.
 
 ## 7. Monitor — cadence, milestones, what a check may decide
 An agent review normally starts with one deployed `status.sh` digest (procedure §5); investigate further as needed.
-Use your runtime's waiting and notification mechanisms; state the wake-up mechanism and its coverage.
+Use your runtime's waiting and notification mechanisms; state the wake-up mechanism and its coverage. For many
+jobs or long waits, follow one `run-watch` (procedure §5) instead of polling job by job.
 Waiting inside a command does not itself arrange a later review. Without a way to return later, report a snapshot
 and the next check time for re-invocation. Do not promise unattended monitoring without a working wake-up mechanism.
 - **Choose the cadence from evidence.** Start with frequent reviews and widen as both liveness (training advancing,
@@ -123,8 +126,9 @@ and the next check time for re-invocation. Do not promise unattended monitoring 
 - **A check decides only machine-checkable things** (alive / done / crashed / a non-finite value in the log).
   Done = the expected artifact exists, not a state word. "Is the result good" is judged once, after the run
   ends, raw numbers shown before interpretation.
-- **Detect, don't act:** a check never `scancel`s, `kill`s or resubmits. Clearly-bad → report the evidence (URL,
+- **Detect, don't act:** a check never `scancel`s, `kill`s or resubmits (sole exception: `run-watch --act` on rows the
+  user approved, within their budget — procedure §5). Clearly-bad → report the evidence (URL,
   last metrics, log lines, reason) plus a recommendation, then wait for the OK. The same failure twice after a
   fix → stop retrying and escalate.
-- A new session first lists what is running (`squeue -u $USER`, `ls -t logs/`); keep the run's receipt (job ids,
-  log path, ckpt dir, URL, ETA) where the next session finds it.
+- A new session first lists what is running (`squeue -u $USER`, `ls -t logs/`, `logs/run-watch/`); keep the run's
+  receipt (job ids, log path, ckpt dir, URL, ETA; a watched table's state file) where the next session finds it.

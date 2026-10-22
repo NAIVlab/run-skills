@@ -29,6 +29,7 @@ ssh <host> 'bash <REMOTE_DIR>/.<t>/submit.sh -p <partition> -g <ngpu> [-G <gputy
 ssh <host> 'squeue -u $USER -o "%.10i %.3t %.11M %R %j"'        # monitor: %R = pending reason, %j last = full name
 ssh <host> 'bash <REMOTE_DIR>/.<t>/status.sh <jobid>'          # start a review: bounded digest (state, attempt/footer, hints, last lines); -n 40 = deep read
 TARGET=<t> bash $ROOT/bin/run-pull [-n] <path>...  # copy results back (paths relative to REMOTE_DIR; -n = count + size first)
+bash $ROOT/bin/run-watch <table> [--act]   # many jobs or long waits: one batch watch (procedure §5); acts only on approved rows
 ```
 
 ## 3. Procedure
@@ -40,7 +41,7 @@ classes, naming, the wandb project/group/name mapping and the checkpoint/resume 
 ## Safety rails (always)
 - **Confirm before every submit.** Never `scancel` any job — the user's or anyone else's — without an explicit OK.
 - Partition and QOS are `submit.sh`'s decision: no raw `sbatch`/`srun`/`salloc`, no `scontrol update`, no
-  `--partition` inside `SBATCH_EXTRA`. A policy refusal (exit 3) is final; `-y` only clears availability warnings.
+  `--partition` inside `SBATCH_EXTRA`. A policy refusal (exit 3) is final; `-y` also confirms policy warnings (availability, occupancy, SU cost).
 - wandb uses the **user's own key** (the deployed `.wandb_env`), never a cluster's `~/.netrc`; no key → offline.
   Never `wandb login` on a cluster.
 - Never create a conda env: if `ENV_NAME` is missing on the target, stop and ask. uv venvs are different —
@@ -54,4 +55,5 @@ classes, naming, the wandb project/group/name mapping and the checkpoint/resume 
   need closer attention. Choose low-cost waiting or notifications supported by the runtime; state the wake-up mechanism
   and coverage, or report a snapshot and the next check time. Start reviews with `status.sh`; keep log reads
   byte-bounded. Report every finding promptly, healthy status in one line. Detect-only — stopping or resubmitting
-  a job is the user's call.
+  a job is the user's call. One exception: `run-watch --act` first-submits or resubmits only table rows the user
+  approved (rows + budget shown, their words recorded with `--approve`), within the table's `#@ allow` budget.

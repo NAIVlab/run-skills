@@ -30,6 +30,7 @@ ssh <host> "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory
 TARGET=<t> bash $ROOT/bin/run-launch -n 1 -N <name> -- <RUN>     # nohup on the idlest GPU(s); -d 0,1 picks ids explicitly
 ssh <host> "bash ~/<WS_REMOTE_DIR>/.ws/status.sh logs/<name>-<timestamp>.log"   # start a review: bounded digest (PID, log, hints, last lines); -n 40 = deep read
 TARGET=<t> bash $ROOT/bin/run-pull [-n] <path>...  # copy results back (paths relative to the project dir; -n = count + size first)
+bash $ROOT/bin/run-watch <table>                  # many runs or long waits: one batch watch (procedure §5), detect-only here
 ```
 
 ## 3. Procedure

@@ -75,6 +75,13 @@ AND the log not advancing across two checks — never one sample. A nohup'd run 
 relaunch with the next `a<attempt>` (conventions §3) and confirm it resumed. **Never `kill` a process without explicit approval**; after an
 OK: `ssh <host> "kill <pid>"`.
 
+**Many runs or long waits: `run-watch`** (cwd = project root; `bin/run-watch` header = the contract). A table
+`#@ run-watch v1` lists rows `name target done-path -` (the name = the log prefix `logs/<name>-<timestamp>.log`). Each
+round: one read-only ssh per box, one dated event per change (ADOPT DONE STALL WARN ATTENTION). On workstations it
+only detects: it never launches, relaunches or kills. Run it as this session's background task with a lease (`--for`,
+default 2 h) and follow its output; every exit is a review point. Without that, run `--once` at each review. Never
+detach it (no `nohup`, `setsid`, cron). ATTENTION is a finding — report it.
+
 ## 6. Pull results back — only with `run-pull`
 ```
 TARGET=<t> bash $ROOT/bin/run-pull -n <path>...   # dry run: file count + total size (rsync --stats); writes nothing
