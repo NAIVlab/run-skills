@@ -1,0 +1,658 @@
+#!/usr/bin/env bash
+# run-skills bin/run-watch — watch a project's runs, listed in run tables: per round ONE read-only BatchMode ssh per
+# target (all in parallel, one deadline), state changes printed as dated one-line events, state in logs/run-watch/.
+# It acts only with --act, inside the table's `#@ allow` budget, on rows whose `#@ ok` block checksum still matches:
+# a first submit of a never-submitted row (`launch`), or a resubmit, under the same name, of a job the controller
+# has purged and sacct calls PREEMPTED/NODE_FAIL/BOOT_FAIL (preempt=N), FAILED/OUT_OF_MEMORY (errors=N) or TIMEOUT
+# (timeout=N) — one row per submit ssh, always through the deployed submit.sh, never -y of its own. Never scancel,
+# scontrol, kill. A requeued job keeps its id in the queue, so it is only counted (requeue-storm past a threshold).
+#   run-watch TABLE... [--act] [--once] [--every S] [--for S] [--stall-after S] [--max-active N] [--release NAME] [--adopt NAME=JOBID]
+#   run-watch TABLE --approve "the user's words"   # writes `#@ ok` over every unapproved or stale block, nothing else
+# Exit 0 every row done; 2 table/conf/lock error; 3 lease over, or --once with rows still moving; 4 the rest waits on a human.
+set -uo pipefail
+RS_HOME=$(cd "$(dirname "$0")/.." && pwd)
+. "$RS_HOME/lib/common.sh"
+
+usage() { echo "usage: run-watch TABLE... [--act] [--once] [--every S] [--for S] [--stall-after S] [--max-active N] [--release NAME] [--adopt NAME=JOBID]  |  run-watch TABLE --approve \"words\"" >&2; exit 2; }
+num() { case "$1" in ''|*[!0-9]*) usage ;; esac; }
+ACT=0 ONCE=0 EVERY=300 LEASE=7200 STALL=3600 MAXACT="" RELEASE="" ADOPTS="" APPROVE="" APPROVING=0 TBL_PATH=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --act) ACT=1 ;; --once) ONCE=1 ;;
+    --every) EVERY=${2:-}; num "$EVERY"; shift ;;
+    --for) LEASE=${2:-}; num "$LEASE"; shift ;;
+    --stall-after) STALL=${2:-}; num "$STALL"; shift ;;
+    --max-active) MAXACT=${2:-}; num "$MAXACT"; shift ;;
+    --release) RELEASE=${2:-}; [ -n "$RELEASE" ] || usage; shift ;;
+    --adopt) case "${2:-}" in [A-Za-z0-9]*=[0-9]*) ;; *) usage ;; esac; case "${2#*=}" in *[!0-9]*) usage ;; esac; ADOPTS="$ADOPTS $2"; shift ;;
+    --approve) [ "$#" -ge 2 ] || usage; APPROVE=$2; APPROVING=1; shift ;;
+    -*) usage ;;
+    *) TBL_PATH+=("$1") ;;
+  esac; shift
+done
+[ "${#TBL_PATH[@]}" -ge 1 ] || usage
+[ "$EVERY" -ge 60 ] || die "--every must be >= 60 s"
+[ "$LEASE" -ge 1 ] && [ "$LEASE" -le 86400 ] || die "--for must be 1..86400 s"
+[ -z "$RELEASE" ] || [ "$ACT" = 1 ] || die "--release needs --act (and the user's OK for that one submit)"
+OBS_TO=${RS_WATCH_OBS_TIMEOUT:-180}; SUB_TO=${RS_WATCH_SUBMIT_TIMEOUT:-600}   # deadlines: observe round / one submit
+NK=0; NS=0; SD=logs/run-watch; W=$(mktemp -d); LOCK=$SD/.lock; LOCKED=0
+trap 'rm -rf "$W"; [ "$LOCKED" = 0 ] || rm -rf "$LOCK"' EXIT
+trap 'exit 130' INT TERM
+NL='
+'
+ts() { date +%Y-%m-%dT%H:%M:%S%z; }   # %z, not %:z (BSD date)
+sq() { printf "'%s'" "$(printf %s "$1" | sed "s/'/'\\\\''/g")"; }
+is_term() { case "$1" in COMPLETED|CANCELLED|FAILED|TIMEOUT|PREEMPTED|NODE_FAIL|BOOT_FAIL|DEADLINE|OUT_OF_MEMORY|REVOKED) return 0 ;; esac; return 1; }
+
+# ---------- tables: `#@ run-watch v1`, `#@ allow`, `#@ resume`, then blocks of rows, each opened by `#@ ok` ----------
+parse_row() {   # parse_row WHERE TI BLOCK LINENO LINE
+  local at=$1 ti=$2 b=$3 ln=$4 l=$5 name tgt dn w dd=0 p=0 after=0 x
+  set -f; set -- $l; set +f
+  [ "$#" -ge 4 ] || die "$at: a row is: name target done submit-args (or -)"
+  name=$1 tgt=$2 dn=$3; shift 3
+  case "$name" in [A-Za-z0-9]*) ;; *) die "$at: name '$name' must start with a letter or digit" ;; esac
+  case "$name" in *[!A-Za-z0-9._-]*) die "$at: name '$name': only A-Za-z0-9._-" ;; esac
+  for ((x = 0; x < NR; x++)); do [ "${R_NAME[x]}" != "$name" ] || die "$at: name '$name' appears twice (names are unique across tables)"; done
+  case "$dn" in -) ;; /*|*[!A-Za-z0-9._/-]*) die "$at: done '$dn': a path relative to the remote project dir, A-Za-z0-9._/- only" ;; esac
+  case "/$dn/" in */../*|*/./*) die "$at: done '$dn': no . or .. components" ;; esac
+  if [ "$*" != - ]; then
+    for w in "$@"; do
+      case "$w" in *[!A-Za-z0-9._,:=/@+%-]*) die "$at: submit word '$w': only A-Za-z0-9._,:=/@+%- (put quoting in a project script)" ;; esac
+      if [ "$dd" = 1 ]; then after=$((after + 1)); continue; fi
+      case "$w" in
+        --) dd=1 ;; -p) p=1 ;;
+        -n|--job-name*) die "$at: no -n: the job is named after the row" ;;
+        *-user-asked) die "$at: no *-user-asked flag: it is a per-submit user OK, never replayed" ;;
+      esac
+    done
+    [ "$dd" = 1 ] && [ "$after" -ge 1 ] || die "$at: the submit column needs '-- <command>'"
+    [ "$p" = 1 ] || die "$at: name the partition (-p): a conf default must not move an approved row"
+  fi
+  R_TB[NR]=$ti; R_NAME[NR]=$name; R_TGT[NR]=$tgt; R_DONE[NR]=$dn; R_SUB[NR]="$*"; R_BLK[NR]=$b; R_NORM[NR]="$name $tgt $dn $*"
+  NR=$((NR + 1)); B_N[b]=$((B_N[b] + 1)); [ "${B_FIRST[b]}" != 0 ] || B_FIRST[b]=$ln
+}
+new_block() { B_TB[NB]=$1; B_OK[NB]=$2; B_SUM[NB]=$3; B_FIRST[NB]=0; B_N[NB]=0; B_MATCH[NB]=0; B_CALC[NB]=""; NB=$((NB + 1)); }
+parse_table() {   # parse_table TI FILE
+  local ti=$1 f=$2 n=0 l w v hdr=0 body=0 r ok_re='^#@ ok [0-9]{4}-[0-9]{2}-[0-9]{2} sum=([0-9]+) "[^"]*"$'
+  [ -f "$f" ] || die "no table '$f'"
+  A_LINE[ti]="allow:"; A_LAUNCH[ti]=0; A_PRE[ti]=0; A_ERR[ti]=0; A_TO[ti]=0; A_RE[ti]=""; A_AFTER[ti]=15
+  new_block "$ti" 0 ""
+  while IFS= read -r l || [ -n "$l" ]; do
+    n=$((n + 1)); l=${l%$'\r'}
+    if [ "$hdr" = 0 ]; then case "$l" in '') continue ;; '#@ run-watch v1') hdr=1; continue ;; *) die "$f:$n: line 1 must be '#@ run-watch v1'" ;; esac; fi
+    case "$l" in
+      '#@ allow'|'#@ allow '*)
+        [ "$body" = 0 ] && [ "${A_LINE[ti]}" = "allow:" ] || die "$f:$n: one '#@ allow' line, before every row and '#@ ok'"
+        set -f; set -- $l; set +f; A_LINE[ti]="allow:$*"; shift 2
+        for w in "$@"; do
+          v=${w#*=}
+          case "$w" in
+            launch) A_LAUNCH[ti]=1 ;;
+            preempt=*|errors=*|timeout=*) case "$v" in ''|*[!0-9]*) die "$f:$n: '$w' needs a number" ;; esac
+              case "$w" in p*) A_PRE[ti]=$v ;; e*) A_ERR[ti]=$v ;; *) A_TO[ti]=$v ;; esac ;;
+            *) die "$f:$n: unknown '#@ allow' word '$w' (launch preempt=N errors=N timeout=N)" ;;
+          esac
+        done ;;
+      '#@ resume '*)
+        [ "$body" = 0 ] || die "$f:$n: '#@ resume' goes before every row and '#@ ok'"
+        r=${l#'#@ resume '}; A_AFTER[ti]=15
+        case "$r" in *' after='*) A_AFTER[ti]=${r##* after=}; r=${r% after=*}; num "${A_AFTER[ti]}" ;; esac
+        case "$r" in /?*/) r=${r#/}; r=${r%/} ;; *) die "$f:$n: '#@ resume /REGEX/ [after=MIN]'" ;; esac
+        echo x | RE="$r" awk '$0 ~ ENVIRON["RE"] { }' 2>/dev/null || die "$f:$n: '$r' is not an awk regular expression"
+        A_RE[ti]=$r ;;
+      '#@ ok'*) [[ $l =~ $ok_re ]] || die "$f:$n: malformed '#@ ok' line (write it with --approve)"
+        body=1; new_block "$ti" "$n" "${BASH_REMATCH[1]}" ;;
+      '#@'*) die "$f:$n: unknown directive (#@ allow, #@ resume, #@ ok)" ;;
+      '#'*|'') ;;
+      *) body=1; parse_row "$f:$n" "$ti" $((NB - 1)) "$n" "$l" ;;
+    esac
+  done < "$f"
+  [ "$hdr" = 1 ] || die "$f: empty table"
+}
+parse_all() {   # every table -> R_* rows, B_* blocks (checksum of the allow line + the block's rows), targets
+  local ti b i c f base x
+  NR=0; NB=0; R_TB=(); R_NAME=(); B_TB=(); TB_BASE=()
+  for ((ti = 0; ti < ${#TBL_PATH[@]}; ti++)); do
+    f=${TBL_PATH[ti]}; base=$(basename "$f"); base=${base%.*}
+    for ((x = 0; x < ti; x++)); do [ "${TB_BASE[x]}" != "$base" ] || die "tables '$f' and '${TBL_PATH[x]}' share the state name '$base'"; done
+    TB_BASE[ti]=$base; parse_table "$ti" "$f"
+  done
+  [ "$NR" -gt 0 ] || die "no rows in ${TBL_PATH[*]}"
+  for ((b = 0; b < NB; b++)); do
+    [ "${B_N[b]}" -gt 0 ] || continue
+    c=${A_LINE[${B_TB[b]}]}; for ((i = 0; i < NR; i++)); do [ "${R_BLK[i]}" != "$b" ] || c="$c$NL${R_NORM[i]}"; done
+    B_CALC[b]=$(printf '%s\n' "$c" | cksum | awk '{print $1}')
+    [ "${B_OK[b]}" != 0 ] && [ "${B_SUM[b]}" = "${B_CALC[b]}" ] && B_MATCH[b]=1
+  done
+  for ((i = 0; i < NR; i++)); do R_OKAY[i]=${B_MATCH[${R_BLK[i]}]}; done
+}
+load_targets() {   # T* per distinct target: kind host remote-dir recover; R_K[i] = the row's target index
+  local i k t out nslurm=0 rh="" keep=""
+  for ((k = 0; k < NK; k++)); do keep="$keep ${TG_NAME[k]}:${TG_FAILS[k]}:${TG_SEEN[k]}"; done; NK=0
+  for ((i = 0; i < NR; i++)); do
+    t=${R_TGT[i]}; k=""; for ((x = 0; x < NK; x++)); do [ "${TG_NAME[x]}" != "$t" ] || k=$x; done
+    if [ -z "$k" ]; then
+      k=$NK; NK=$((NK + 1)); TG_NAME[k]=$t
+      out=$( ( rs_load_target "$t"; rs_load_conf REMOTE_DIR WS_REMOTE_DIR REMOTE_HOST; d=$(rs_remote_dir) || exit 2
+               printf '%s\n%s\n%s\n%s\n%s\n' "$T_KIND" "$(rs_host)" "$d" "${T_WATCH_RECOVER:-1}" "${REMOTE_HOST:-}" ) ) || exit 2
+      { read -r TG_KIND[k]; read -r TG_HOST[k]; read -r TG_RDIR[k]; read -r TG_REC[k]; read -r x; } <<< "$out"
+      [ -z "$x" ] || rh=1; [ "${TG_KIND[k]}" != slurm ] || nslurm=$((nslurm + 1))
+      TG_FAILS[k]=0; TG_SEEN[k]=0
+      for x in $keep; do [ "${x%%:*}" != "$t" ] || { x=${x#*:}; TG_FAILS[k]=${x%%:*}; TG_SEEN[k]=${x#*:}; }; done
+    fi
+    R_K[i]=$k
+    [ "${TG_KIND[k]}" = slurm ] || [ "${R_SUB[i]}" = - ] || die "row ${R_NAME[i]}: workstation rows are detect-only (submit column '-')"
+  done
+  [ -z "$rh" ] || [ "$nslurm" -le 1 ] || die "REMOTE_HOST in the conf is not per target: one Slurm target per watch"
+}
+
+# ---------- --approve: the program computes every pending block's sum and writes its `#@ ok` line ----------
+approve() {
+  local f=${TBL_PATH[0]} b i rep="" ins="" n=0 tmp
+  case "$APPROVE" in ''|*'"'*|*"$NL"*) die "--approve needs the user's words, one line, no double quote" ;; esac
+  [ "${#TBL_PATH[@]}" = 1 ] && [ "$ACT" = 0 ] && [ -z "$ADOPTS$RELEASE" ] || die "--approve takes one table and no other action"
+  for ((b = 0; b < NB; b++)); do
+    [ "${B_N[b]}" -gt 0 ] && [ "${B_MATCH[b]}" = 0 ] || continue
+    n=$((n + 1))
+    if [ "${B_OK[b]}" != 0 ]; then rep="$rep ${B_OK[b]}=${B_CALC[b]}"; else ins="$ins ${B_FIRST[b]}=${B_CALC[b]}"; fi
+    echo "approving block at line $([ "${B_OK[b]}" != 0 ] && echo "${B_OK[b]}" || echo "${B_FIRST[b]}"):"
+    for ((i = 0; i < NR; i++)); do [ "${R_BLK[i]}" != "$b" ] || echo "  ${R_NORM[i]}"; done
+  done
+  [ "$n" -gt 0 ] || { echo "nothing to approve: every block's '#@ ok' matches"; exit 0; }
+  echo "under: $([ "${A_LINE[0]}" = allow: ] && echo "no '#@ allow' line (no launch, every budget 0)" || echo "#@ ${A_LINE[0]#allow:}")"
+  tmp="$f.approve.$$"
+  OKP="#@ ok $(date +%Y-%m-%d) sum=" OKW=" \"$APPROVE\"" awk -v rep="$rep" -v ins="$ins" '
+    BEGIN { n = split(rep, a, " "); for (i = 1; i <= n; i++) { split(a[i], kv, "="); R[kv[1]] = kv[2] }
+            n = split(ins, a, " "); for (i = 1; i <= n; i++) { split(a[i], kv, "="); I[kv[1]] = kv[2] } }
+    FNR in R { print ENVIRON["OKP"] R[FNR] ENVIRON["OKW"]; next }
+    FNR in I { print ENVIRON["OKP"] I[FNR] ENVIRON["OKW"] }
+    { print }' "$f" > "$tmp" && mv "$tmp" "$f" || { rm -f "$tmp"; die "could not rewrite $f"; }
+  parse_all; for ((b = 0; b < NB; b++)); do [ "${B_N[b]}" = 0 ] || [ "${B_MATCH[b]}" = 1 ] || die "BUG: block $b still stale after --approve"; done
+  echo "wrote $n '#@ ok' line(s) to $f"; exit 0
+}
+
+# ---------- state: logs/run-watch/<table>.state (TSV, '-' = empty), .prev = the version before ----------
+S_FIELDS=14   # name st jobs preempts errors timeouts requeues last storm resume tq gap release note
+new_state() { local j=$NS; NS=$((NS + 1)); S_NAME[j]=$1; S_TB[j]=$2; S_ST[j]=$3; S_JOBS[j]=-; S_PRE[j]=0; S_ERR[j]=0; S_TO[j]=0
+  S_RQ[j]=0; S_LAST[j]=-; S_STORM[j]=0; S_RES[j]=-; S_TQ[j]=-; S_GAP[j]=0; S_REL[j]=-; S_NOTE[j]=$4; }
+load_state() {
+  local ti f l k x
+  NS=0
+  for ((ti = 0; ti < ${#TBL_PATH[@]}; ti++)); do
+    f=$SD/${TB_BASE[ti]}.state; TB_LOST[ti]=0; TB_CREATED[ti]=$(date +%s)
+    if [ ! -f "$f" ]; then [ ! -f "$f.prev" ] || TB_LOST[ti]=1; continue; fi
+    [ "$(head -1 "$f")" = "#run-watch-state v1" ] || { TB_LOST[ti]=1; continue; }
+    while IFS= read -r l; do
+      case "$l" in
+        '#created '*) TB_CREATED[ti]=${l#'#created '} ;;
+        '#target '*) set -f; set -- $l; set +f
+          for ((k = 0; k < NK; k++)); do [ "${TG_NAME[k]}" != "$2" ] || { TG_FAILS[k]=${3#fails=}; TG_SEEN[k]=${4#seen=}; }; done ;;
+        '#'*|'') ;;
+        *) IFS='	' read -r -a x <<< "$l"
+          [ "${#x[@]}" = "$S_FIELDS" ] || { TB_LOST[ti]=1; continue; }
+          new_state "${x[0]}" "$ti" "${x[1]}" "${x[13]}"; k=$((NS - 1))
+          S_JOBS[k]=${x[2]}; S_PRE[k]=${x[3]}; S_ERR[k]=${x[4]}; S_TO[k]=${x[5]}; S_RQ[k]=${x[6]}; S_LAST[k]=${x[7]}
+          S_STORM[k]=${x[8]}; S_RES[k]=${x[9]}; S_TQ[k]=${x[10]}; S_GAP[k]=${x[11]}; S_REL[k]=${x[12]} ;;
+      esac
+    done < "$f"
+  done
+}
+save_state() {
+  local ti f j k
+  for ((ti = 0; ti < ${#TBL_PATH[@]}; ti++)); do
+    f=$SD/${TB_BASE[ti]}.state
+    { echo "#run-watch-state v1"; echo "#created ${TB_CREATED[ti]}"
+      for ((k = 0; k < NK; k++)); do echo "#target ${TG_NAME[k]} fails=${TG_FAILS[k]} seen=${TG_SEEN[k]}"; done
+      for ((j = 0; j < NS; j++)); do [ "${S_TB[j]}" = "$ti" ] || continue
+        printf '%s\t' "${S_NAME[j]}" "${S_ST[j]}" "${S_JOBS[j]}" "${S_PRE[j]}" "${S_ERR[j]}" "${S_TO[j]}" "${S_RQ[j]}" \
+          "${S_LAST[j]}" "${S_STORM[j]}" "${S_RES[j]}" "${S_TQ[j]}" "${S_GAP[j]}" "${S_REL[j]}"; printf '%s\n' "${S_NOTE[j]}"; done
+    } > "$f.tmp" || die "cannot write $f.tmp"
+    [ ! -f "$f" ] || cp "$f" "$f.prev"; mv "$f.tmp" "$f" || die "cannot write $f"
+  done
+}
+reconcile() {   # rows <-> state by name; a vanished row is kept as removed (status/note kept in note), a returning one restored
+  local i j hit
+  for ((j = 0; j < NS; j++)); do S_SEENROW[j]=0; done
+  for ((i = 0; i < NR; i++)); do
+    hit=""; for ((j = 0; j < NS; j++)); do [ "${S_NAME[j]}" != "${R_NAME[i]}" ] || hit=$j; done
+    if [ -z "$hit" ]; then
+      if [ "${TB_LOST[${R_TB[i]}]}" = 1 ]; then new_state "${R_NAME[i]}" "${R_TB[i]}" held state-lost; else new_state "${R_NAME[i]}" "${R_TB[i]}" pending -; fi
+      hit=$((NS - 1))
+    elif [ "${S_ST[hit]}" = removed ]; then
+      S_ST[hit]=${S_NOTE[hit]%%/*}; S_NOTE[hit]=${S_NOTE[hit]#*/}; ev NOTE "$i" "row back in the table, status ${S_ST[hit]}"
+    fi
+    S_TB[hit]=${R_TB[i]}; R_J[i]=$hit; S_SEENROW[hit]=1
+  done
+  for ((j = 0; j < NS; j++)); do
+    [ "${S_SEENROW[j]}" = 0 ] && [ "${S_ST[j]}" != removed ] || continue
+    EVQ="$EVQ$(ts) NOTE name=${S_NAME[j]} removed$([ "${S_ST[j]}" = active ] && echo " still-active job=${S_JOBS[j]##*,}")$NL"
+    S_NOTE[j]="${S_ST[j]}/${S_NOTE[j]}"; S_ST[j]=removed
+  done
+}
+
+# ---------- events: buffered, printed after the state is saved (at-least-once; SUMMARY re-lists what waits) ----------
+EVQ=""; SEEN=$NL; NEWSEEN=""
+ev() {   # ev KIND ROW TEXT...
+  local kind=$1 i=$2; shift 2
+  EVQ="$EVQ$(ts) $kind name=${R_NAME[i]} target=${R_TGT[i]}${*:+ $*}$NL"
+}
+once() { case "$SEEN" in *"$NL$1$NL"*) return 1 ;; esac; SEEN="$SEEN$1$NL"; NEWSEEN="$NEWSEEN$1$NL"; return 0; }
+attn() {   # attn ROW JOB REASON [TEXT...]: once per (name, job, reason+text key)
+  local i=$1 job=$2 reason=$3; shift 3
+  once "${R_NAME[i]}|$job|$reason|${1:-}" && ev ATTENTION "$i" "job=${job:--} reason=$reason${*:+ $*}"; return 0
+}
+flush() { save_state; [ -z "$NEWSEEN" ] || printf '%s' "$NEWSEEN" >> "$SD/attention.seen"; NEWSEEN=""; printf '%s' "$EVQ"; EVQ=""; }
+summary() {
+  local i j c="" s n
+  for s in pending active held submit-unknown done; do
+    n=0; for ((i = 0; i < NR; i++)); do [ "${S_ST[${R_J[i]}]}" != "$s" ] || n=$((n + 1)); done; c="$c $s=$n"
+  done
+  echo "$(ts) SUMMARY rows=$NR$c"
+  for ((i = 0; i < NR; i++)); do j=${R_J[i]}
+    case "${S_ST[j]}" in held|submit-unknown) echo "$(ts) SUMMARY name=${R_NAME[i]} target=${R_TGT[i]} status=${S_ST[j]} job=${S_JOBS[j]##*,} why=${S_NOTE[j]}" ;; esac
+  done
+}
+finish() { flush; echo "$(ts) EXIT code=$1"; summary; exit "$1"; }
+hold() { S_ST[${R_J[$1]}]=held; S_NOTE[${R_J[$1]}]=$3; R_WAIT[$1]=1; attn "$1" "$2" "$3" "${@:4}"; }
+
+# ---------- observation: one ssh per target, the script on stdin (inside a function: a cut-off script runs nothing) ----------
+OBS_SLURM='rw_main() {
+  echo @@start; U=${USER:-$(id -un)}; export SLURM_TIME_FORMAT=%s; echo "@@now $(date +%s)"
+  cd "$RDIR" 2>/dev/null || { echo "@@fail cd"; return; }
+  echo "@@pwd $(pwd)|$(pwd -P)|"
+  q=$(squeue -h -u "$U" --states=all -O "JobID:0|,Name:0|,State:0|,Reason:0|,RestartCnt:0|,StartTime:0|,WorkDir:0|") || { echo "@@fail squeue"; return; }
+  echo @@squeue; printf "%s\n" "$q" | grep -v "^$"
+  miss=""; for j in $JIDS; do printf "%s\n" "$q" | grep -q "^$j|" || miss="$miss,$j"; done
+  echo @@sacct-jobs
+  if [ -n "$miss" ]; then sacct -X -n -P -j "${miss#,}" -o JobID,JobName,State,ExitCode,WorkDir || { echo "@@fail sacct-jobs"; return; }; fi
+  echo @@sacct-names
+  if [ -n "$NAMES" ]; then sacct -X -n -P -u "$U" -S now-30days --name="$NAMES" -o JobID,JobName,State,ExitCode,WorkDir || { echo "@@fail sacct-names"; return; }; fi
+  echo @@stat
+  for e in $LOGS; do f="logs/${e#*:}_${e%%:*}.out"
+    if [ -e "$f" ]; then s=$(stat -c "%Y %s" "$f") || { echo "@@fail stat"; return; }; echo "${e%%:*} $s"; else echo "${e%%:*} absent"; fi; done
+  echo @@done
+  for e in $DONES; do if [ -e "${e#*:}" ]; then echo "${e%%:*} yes"; else echo "${e%%:*} no"; fi; done
+  echo @@resume
+  for e in $RESUME; do j=${e%%:*}; r=${e#*:}; n=${r#*:}; t=${n%%:*}; n=${n#*:}; r=${r%%:*}; f="logs/${n}_$j.out"; eval "re=\$RE_$t"
+    if [ ! -e "$f" ]; then echo "$j absent"; continue; fi
+    tail -c 8388608 "$f" | H=" job=$j restart=$r node=" RE="$re" awk "index(\$0, ENVIRON[\"H\"]) { f = 1; m = 0; next } f && \$0 ~ ENVIRON[\"RE\"] { m = 1 }
+      END { print \"$j\", (f ? (m ? \"match\" : \"nomatch\") : \"nohdr\") }"; done
+  echo @@end
+}
+rw_main'
+OBS_WS='rw_main() {
+  echo @@start; now=$(date +%s); echo "@@now $now"
+  cd "$RDIR" 2>/dev/null || { echo "@@fail cd"; return; }
+  echo @@ws
+  for n in $WSN; do
+    l=$(ls -1 logs/"$n"-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].log 2>/dev/null | tail -n 1)
+    [ -n "$l" ] || { echo "$n nolog"; continue; }
+    id=${l#logs/$n-}; id=${id%.log}; s=$(stat -c "%Y %s" "$l") || { echo "@@fail stat"; return; }; p=nopid
+    if [ -f "$l.pid" ]; then
+      pid=$(head -c 64 "$l.pid" | head -n 1 | tr -d " \t\r"); pm=$(stat -c %Y "$l.pid" 2>/dev/null); p=unknown
+      case "$pid" in ""|0*|*[!0-9]*) ;; *)
+        o=$(ps -o etimes=,stat= -p "$pid" 2>&1); prc=$?; set -f; set -- $o; set +f
+        if [ -z "$o" ] && [ "$prc" = 1 ]; then p=gone
+        elif [ "$prc" != 0 ] || [ "$#" -lt 2 ] || [ -n "${1//[0-9]/}" ] || [ -z "$pm" ]; then p=unknown
+        elif [ "$1" -lt $(( now - pm - 60 )) ]; then p=reused
+        elif [ "${2#Z}" != "$2" ]; then p=gone
+        else p="alive:$1"; fi ;;
+      esac
+    fi
+    echo "$n $id $s $p"
+  done
+  echo @@done
+  for e in $DONES; do if [ -e "${e#*:}" ]; then echo "${e%%:*} yes"; else echo "${e%%:*} no"; fi; done
+  echo @@end
+}
+rw_main'
+observe() {   # every target with a row not done: build the script, run all ssh in parallel under one deadline
+  local k i j st cur pids="" wd re
+  for ((k = 0; k < NK; k++)); do
+    TG_OBS[k]=0; local jids="" names="" logs="" dones="" res="" wsn="" rvars="" use=0
+    for ((i = 0; i < NR; i++)); do
+      [ "${R_K[i]}" = "$k" ] || continue; j=${R_J[i]}; st=${S_ST[j]}; cur=${S_JOBS[j]##*,}
+      case "$st" in done|removed) continue ;; esac; use=1
+      if [ "${TG_KIND[k]}" = nohup ]; then wsn="$wsn ${R_NAME[i]}"
+      else
+        [ "$st" != pending ] || names="$names,${R_NAME[i]}"
+        if [ "$st" = active ]; then jids="$jids $cur"; logs="$logs $cur:${R_NAME[i]}"
+          [ "${S_RES[j]}" = - ] || [ -z "${A_RE[${R_TB[i]}]}" ] || res="$res $cur:${S_RES[j]}:${R_TB[i]}:${R_NAME[i]}"; fi
+      fi
+      case "$st" in pending|active) [ "${R_DONE[i]}" = - ] || dones="$dones ${R_NAME[i]}:${R_DONE[i]}" ;; esac
+    done
+    [ "$use" = 1 ] || continue
+    for ((x = 0; x < ${#TBL_PATH[@]}; x++)); do rvars="${rvars}RE_$x=$(sq "${A_RE[x]}")$NL"; done
+    { echo "RDIR=$(sq "${TG_RDIR[k]}")"; echo "JIDS='$jids' NAMES='${names#,}' LOGS='$logs' DONES='$dones' RESUME='$res' WSN='$wsn'"
+      printf '%s' "$rvars"; [ "${TG_KIND[k]}" = slurm ] && echo "$OBS_SLURM" || echo "$OBS_WS"; } > "$W/obs$k.sh"
+    TG_OBS[k]=1; rm -rf "$W/t$k"; mkdir -p "$W/t$k"
+    ssh -o BatchMode=yes -o ConnectTimeout=60 "${TG_HOST[k]}" bash -s < "$W/obs$k.sh" > "$W/obs$k.out" 2> "$W/obs$k.err" &
+    echo "$!" > "$W/obs$k.pid"; pids="$pids $!"
+  done
+  [ -n "$pids" ] || return 0
+  ( sleep "$OBS_TO"; for p in $pids; do kill "$p" 2>/dev/null; done ) >/dev/null 2>&1 & local wdog=$!
+  for ((k = 0; k < NK; k++)); do [ "${TG_OBS[k]}" = 1 ] || continue; wait "$(cat "$W/obs$k.pid")"; echo "$?" > "$W/obs$k.rc"; done
+  kill "$wdog" 2>/dev/null; wait "$wdog" 2>/dev/null
+  for ((k = 0; k < NK; k++)); do
+    [ "${TG_OBS[k]}" = 1 ] || continue; wd=$W/t$k; : > "$wd/sq"; : > "$wd/sj"; : > "$wd/sn"; : > "$wd/st"; : > "$wd/dn"; : > "$wd/rs"; : > "$wd/ws"
+    awk -v d="$wd" '/^@@(squeue|sacct-jobs|sacct-names|stat|done|resume|ws)$/ { s = substr($0, 3); next }
+      /^@@now / { print $2 > (d "/now"); next } /^@@pwd / { print substr($0, 7) > (d "/pwd"); next } /^@@/ { s = ""; next }
+      s == "squeue" { print > (d "/sq") } s == "sacct-jobs" { print > (d "/sj") } s == "sacct-names" { print > (d "/sn") }
+      s == "stat" { print > (d "/st") } s == "done" { print > (d "/dn") } s == "resume" { print > (d "/rs") } s == "ws" { print > (d "/ws") }' "$W/obs$k.out"
+    re=""
+    if [ "$(cat "$W/obs$k.rc")" != 0 ]; then re="ssh rc=$(cat "$W/obs$k.rc"): $(grep -v '^$' "$W/obs$k.err" | head -n 1)"
+    elif grep -q '^@@fail' "$W/obs$k.out"; then re=$(grep -m1 '^@@fail' "$W/obs$k.out")
+    elif ! grep -qx '@@end' "$W/obs$k.out"; then re="incomplete output"
+    elif [ "${TG_KIND[k]}" = slurm ] && [ "${TG_SEEN[k]}" -gt 0 ] && [ ! -s "$wd/sq" ]; then re="empty squeue (had ${TG_SEEN[k]} jobs)"; TG_SEEN[k]=0; fi
+    if [ -n "$re" ]; then
+      TG_OBS[k]=2; TG_FAILS[k]=$((TG_FAILS[k] + 1))
+      EVQ="$EVQ$(ts) WARN target=${TG_NAME[k]} reason=observe-failed fails=${TG_FAILS[k]} -- ${re%%$NL*}$NL"
+      [ "${TG_FAILS[k]}" != 3 ] || EVQ="$EVQ$(ts) ATTENTION target=${TG_NAME[k]} reason=blind fails=3 -- no decisions on this target until it answers$NL"
+    else
+      [ "${TG_FAILS[k]}" -lt 3 ] || EVQ="$EVQ$(ts) NOTE target=${TG_NAME[k]} observing-again$NL"
+      TG_FAILS[k]=0; [ "${TG_KIND[k]}" != slurm ] || TG_SEEN[k]=$(grep -c . "$wd/sq")
+    fi
+  done
+}
+
+# ---------- decisions (design §5): the row's status, then this round's view of its target ----------
+TERM_RE='^(COMPLETED|CANCELLED|FAILED|TIMEOUT|PREEMPTED|NODE_FAIL|BOOT_FAIL|DEADLINE|OUT_OF_MEMORY|REVOKED)$'
+wd_ok() { case "|$(cat "$D/pwd")" in *"|$1|"*) return 0 ;; esac; return 1; }   # WorkDir is this project (pwd or pwd -P)
+done_of() { [ "${R_DONE[$1]}" != - ] || { echo -; return; }; awk -v n="${R_NAME[$1]}" '$1 == n { print $2; exit }' "$D/dn"; }
+live_jobs() { awk -F'|' -v n="${R_NAME[$1]}" -v t="$TERM_RE" '$2 == n && $3 !~ t { print $1 "|" $3 "|" $7 }' "$D/sq"; }
+lower() { printf %s "$1" | tr 'A-Z' 'a-z'; }
+track() {   # track ROW JOB: follow JOB from now on
+  local j=${R_J[$1]}
+  case ",${S_JOBS[j]}," in *",$2,") ;; ",-,") S_JOBS[j]=$2 ;; *) S_JOBS[j]="${S_JOBS[j]},$2" ;; esac
+  S_ST[j]=active; S_LAST[j]=-; S_STORM[j]=0; S_TQ[j]=-; S_GAP[j]=0; S_RES[j]=-; S_NOTE[j]=-
+}
+new_live() {   # the ONE live job of this name in this project not followed yet (a held/done row's manual resubmit)
+  local i=$1 j=${R_J[$1]} id st wd n=0 out=""
+  while IFS='|' read -r id st wd; do
+    [ -n "$id" ] || continue; case ",${S_JOBS[j]}," in *",$id,"*) continue ;; esac
+    case "$id" in *[!0-9]*) continue ;; esac; wd_ok "$wd" || continue; n=$((n + 1)); out=$id
+  done <<< "$(live_jobs "$i")"
+  [ "$n" = 1 ] && echo "$out"
+}
+enqueue() { local k=${R_K[$1]}; [ -z "${Q_ROW[k]}" ] || return 0; Q_ROW[k]=$1; Q_KIND[k]=$2; Q_PREV[k]=$3; Q_EXP[k]=$4; Q_CLS[k]=$5; }
+why_not() {   # why this row may not submit now ('' = it may): ROW
+  local i=$1
+  [ "${R_SUB[i]}" != - ] || { echo detect-only-row; return; }
+  [ "${R_OKAY[i]}" = 1 ] || { echo not-approved; return; }
+  [ "$ACT" = 1 ] || echo no-act
+}
+stall() {   # stall ROW JOB RESTART LOG_MTIME RUN_AGE: once per (job, restart, silent stretch)
+  [ "$STALL" -gt 0 ] || return 0; case "$4:$5" in *[!0-9:]*|:*|*:) return 0 ;; esac
+  [ $((NOW - $4)) -gt "$STALL" ] && [ "$5" -gt "$STALL" ] || return 0
+  once "${R_NAME[$1]}|$2|stall|$3|$4" && ev STALL "$1" "job=$2 quiet=$((NOW - $4))s -- log silent; review with status.sh"
+}
+launch_or_wait() {
+  local i=$1 j=${R_J[$1]} why
+  why=$(why_not "$i")
+  [ -n "$why" ] || [ "${A_LAUNCH[${R_TB[i]}]}" = 1 ] || [ "${S_REL[j]}" = armed ] || why=no-launch-allowed
+  if [ -n "$why" ]; then attn "$i" - not-submitted "why=$why" "action=needs-ok"; R_WAIT[i]=1; return; fi
+  [ -z "$MAXACT" ] || [ "${ACTIVE[${R_K[i]}]}" -lt "$MAXACT" ] || return 0   # a slot frees later: still moving
+  enqueue "$i" launch "" "" launch
+}
+eval_slurm() {
+  local i=$1 j=${R_J[$1]} st cur line id jn jst why rc0 start wd n prev thr fst by dn cls used max r
+  st=${S_ST[j]}; cur=${S_JOBS[j]##*,}
+  case "$st" in
+    submit-unknown) R_WAIT[i]=1
+      attn "$i" - submit-unknown "candidates=$(live_jobs "$i" | cut -d'|' -f1 | paste -sd, -)" \
+        "-- the last submit's outcome is unknown: --adopt NAME=JOBID, or --release NAME once the user confirms nothing was queued"
+      return ;;
+    held|done) id=$(new_live "$i") || { [ "$st" = done ] || R_WAIT[i]=1; return; }
+      track "$i" "$id"; ev ADOPT "$i" "job=$id note=new-job"; cur=$id ;;
+    pending)
+      if [ "$(done_of "$i")" = yes ]; then S_ST[j]=done; ev DONE "$i" "artifact-present done=${R_DONE[i]}"; return; fi
+      line=$(live_jobs "$i"); n=$(printf '%s' "$line" | grep -c .)
+      if [ "$n" -gt 1 ]; then hold "$i" - name-ambiguous "jobs=$(printf '%s\n' "$line" | cut -d'|' -f1 | paste -sd, -)"; return; fi
+      if [ "$n" = 1 ]; then
+        IFS='|' read -r id jst wd <<< "$line"
+        case "$id" in *[!0-9]*) hold "$i" "$id" unsupported-job "-- array or het job"; return ;; esac
+        wd_ok "$wd" || { hold "$i" "$id" workdir-mismatch "workdir=$wd"; return; }
+        track "$i" "$id"; ev ADOPT "$i" "job=$id state=$jst"; cur=$id
+      else   # no live job: the newest of this name's ended jobs here (unpurged queue rows + 30 days of sacct)
+        line=$( { awk -F'|' -v n="${R_NAME[i]}" '$2 == n { print $1 "|" $3 "|" $7 }' "$D/sq"
+                  awk -F'|' -v n="${R_NAME[i]}" '$2 == n { print $1 "|" $3 "|" $5 }' "$D/sn"; } |
+          while IFS='|' read -r id jst wd; do case "$id" in ''|*[!0-9]*) continue ;; esac; wd_ok "$wd" && echo "$id|$jst"; done |
+          sort -t'|' -k1,1n | tail -n 1)
+        if [ -n "$line" ]; then
+          S_JOBS[j]=${line%%|*}; hold "$i" "${line%%|*}" adopted-terminal "state=$(printf %s "${line#*|}" | tr ' ' _)" \
+            "-- it ended before run-watch saw it: review it, then --release NAME (one resubmit) or --adopt"
+        else launch_or_wait "$i"; fi
+        return
+      fi ;;
+  esac
+  line=$(awk -F'|' -v j="$cur" '$1 == j { print; exit }' "$D/sq")
+  if [ -n "$line" ]; then   # still in the controller: watch it (a requeue keeps the id: count, never act)
+    IFS='|' read -r id jn jst why rc0 start wd <<< "$line"
+    case "$rc0" in ''|*[!0-9]*) rc0=0 ;; esac; S_GAP[j]=0; prev=${S_LAST[j]#*:}
+    if [ "${S_LAST[j]}" != - ] && [ "$rc0" -gt "$prev" ]; then
+      S_RQ[j]=$((S_RQ[j] + rc0 - prev)); ev REQUEUE "$i" "job=$cur restarts=$rc0 state=$jst -- confirm it resumed (status.sh)"
+      [ -z "${A_RE[${R_TB[i]}]}" ] || S_RES[j]=$rc0
+    fi
+    thr=${A_PRE[${R_TB[i]}]}; [ "$thr" -gt 0 ] || thr=6
+    if [ $((rc0 / thr)) -gt "${S_STORM[j]}" ]; then S_STORM[j]=$((rc0 / thr))
+      attn "$i" "$cur" requeue-storm "restarts=$rc0" "-- requeued again and again; run-watch never cancels or holds it"; fi
+    S_LAST[j]="$jst:$rc0"
+    if is_term "$jst"; then   # ended, not purged yet (MinJobAge): wait; a job that never leaves is reported once
+      if [ "${S_TQ[j]}" = - ]; then S_TQ[j]=$NOW
+      elif [ $((NOW - S_TQ[j])) -ge 3600 ]; then attn "$i" "$cur" not-purged "state=$jst" "-- ended but still in the queue after 1 h: no action"; fi
+      return
+    fi
+    S_TQ[j]=-
+    case "$jst" in
+      REQUEUE_HOLD|SPECIAL_EXIT|SUSPENDED|STOPPED|RESV_DEL_HOLD) attn "$i" "$cur" sched-hold "state=$jst" ;;
+      PENDING) case "$why" in *[Hh]eld*|DependencyNeverSatisfied|PartitionTimeLimit|PartitionNodeLimit|BadConstraints|InvalidAccount|InvalidQOS|AssocGrp*Minutes)
+                 attn "$i" "$cur" pending-blocked "why=$(printf %s "$why" | tr ' ' _)" ;; esac ;;
+      RUNNING)
+        set -f; set -- $(awk -v j="$cur" '$1 == j { print $2, $3; exit }' "$D/st"); set +f
+        case "$start" in ''|*[!0-9]*) start="" ;; esac
+        [ -z "$start" ] || stall "$i" "$cur" "$rc0" "${1:-}" $((NOW - start))
+        if [ "${S_RES[j]}" != - ] && [ -n "${A_RE[${R_TB[i]}]}" ] && [ -n "$start" ]; then
+          r=$(awk -v j="$cur" '$1 == j { print $2; exit }' "$D/rs")
+          if [ "$r" = match ]; then S_RES[j]=-
+          elif [ -n "$r" ] && [ "$r" != nohdr ] && [ $((NOW - start)) -ge $((A_AFTER[${R_TB[i]}] * 60)) ]; then
+            attn "$i" "$cur" no-resume "restarts=${S_RES[j]}" "-- running ${A_AFTER[${R_TB[i]}]} min, no line matching the #@ resume pattern since this (re)start: check it resumed from its checkpoint"
+          fi
+        fi ;;
+    esac
+    return
+  fi
+  # gone from the controller: settled only with a terminal sacct row (the submit ssh checks both again)
+  IFS='|' read -r id jn jst why wd <<< "$(awk -F'|' -v j="$cur" '$1 == j { print; exit }' "$D/sj")"
+  fst=${jst%% *}
+  case "$fst" in   # known, not final: accounting lags the controller; anything unknown is held below
+    ''|PENDING|RUNNING|REQUEUED|REQUEUE_FED|REQUEUE_HOLD|RESIZING|SUSPENDED|COMPLETING|CONFIGURING|SIGNALING|STAGE_OUT|STOPPED|SPECIAL_EXIT) ;;
+    *) is_term "$fst" || { hold "$i" "$cur" unknown-state "state=$(printf %s "$jst" | tr ' ' _)"; return; } ;;
+  esac
+  if ! is_term "$fst"; then
+    S_GAP[j]=$((S_GAP[j] + 1))
+    if [ "${S_GAP[j]}" -ge 3 ]; then attn "$i" "$cur" accounting-gap "sacct=${fst:-none}" "-- gone from the queue without a final sacct state: never read as not-submitted"
+    else ev WARN "$i" "job=$cur reason=accounting-gap n=${S_GAP[j]} sacct=${fst:-none}"; fi
+    return
+  fi
+  S_GAP[j]=0; S_TQ[j]=-; S_LAST[j]="$fst:${S_LAST[j]#*:}"; dn=$(done_of "$i")
+  if [ "$fst" = COMPLETED ]; then
+    case "$dn" in
+      -) S_ST[j]=done; ev DONE "$i" "job=$cur artifact=unchecked" ;;
+      yes) S_ST[j]=done; ev DONE "$i" "job=$cur done=${R_DONE[i]}" ;;
+      *) hold "$i" "$cur" completed-not-done "done=${R_DONE[i]}" ;;
+    esac; return
+  fi
+  [ "$dn" != yes ] || { hold "$i" "$cur" "artifact-but-$(lower "$fst")" "done=${R_DONE[i]}"; return; }
+  case "$fst" in
+    PREEMPTED|NODE_FAIL|BOOT_FAIL) cls=preempt used=${S_PRE[j]} max=${A_PRE[${R_TB[i]}]} ;;
+    FAILED|OUT_OF_MEMORY) cls=errors used=${S_ERR[j]} max=${A_ERR[${R_TB[i]}]} ;;
+    TIMEOUT) cls=timeout used=${S_TO[j]} max=${A_TO[${R_TB[i]}]} ;;
+    CANCELLED|DEADLINE|REVOKED)   # never resubmitted on its own: the user may have pressed cancel
+      if [ "${S_REL[j]}" = armed ] && [ -z "$(why_not "$i")" ]; then enqueue "$i" resubmit "$cur" "$fst" release; return; fi
+      by=""; case "$jst" in "CANCELLED by "*) by="by=${jst#CANCELLED by }" ;; esac
+      hold "$i" "$cur" "$(lower "$fst")" $by; return ;;
+  esac
+  why=$(why_not "$i")
+  [ -n "$why" ] || [ "${TG_REC[${R_K[i]}]}" != 0 ] || why=recover-off
+  [ -n "$why" ] || [ "$used" -lt "$max" ] || why=budget
+  case "$why:${S_REL[j]}" in recover-off:armed|budget:armed) why=""; cls=release ;; esac   # the user's one-off OK
+  if [ -n "$why" ]; then attn "$i" "$cur" "$(lower "$fst")" "why=$why" "action=needs-ok $cls=$used/$max"; R_WAIT[i]=1; return; fi
+  enqueue "$i" resubmit "$cur" "$fst" "$cls"
+}
+eval_ws() {   # workstations: detect only (no scheduler, no preemption: a re-run is a new launch the user confirms)
+  local i=$1 j=${R_J[$1]} st cur line dn
+  st=${S_ST[j]}; cur=${S_JOBS[j]##*,}
+  line=$(awk -v n="${R_NAME[i]}" '$1 == n { print; exit }' "$D/ws")
+  set -f; set -- $line; set +f
+  if [ "$#" -lt 5 ]; then
+    case "$st" in held) R_WAIT[i]=1; return ;; done) return ;; esac
+    S_GAP[j]=$((S_GAP[j] + 1))
+    if [ "${S_GAP[j]}" -ge 3 ]; then R_WAIT[i]=1
+      attn "$i" - "$([ "$st" = active ] && echo ws-unknown || echo not-launched)" "-- no logs/${R_NAME[i]}-<timestamp>.log: run-watch never launches"
+    else ev WARN "$i" "reason=no-log n=${S_GAP[j]}"; fi
+    return
+  fi
+  if [ "$2" != "$cur" ]; then
+    case "$st:$5" in held:alive:*|done:alive:*|pending:*|active:*) ;; held:*) R_WAIT[i]=1; return ;; *) return ;; esac
+    track "$i" "$2"; ev ADOPT "$i" "job=$2 proc=${5%%:*}$([ "$cur" = - ] || echo " note=new-job")"
+  else case "$st" in held) R_WAIT[i]=1; return ;; done) return ;; esac; fi
+  case "$5" in
+    alive:*) S_GAP[j]=0; stall "$i" "$2" 0 "$3" "${5#alive:}" ;;
+    gone) S_GAP[j]=0; dn=$(done_of "$i")
+      case "$dn" in
+        yes) S_ST[j]=done; ev DONE "$i" "job=$2 exit=unknown done=${R_DONE[i]}" ;;
+        -) hold "$i" "$2" ended-unverified "-- the process is gone and nothing records a nohup exit: review the log" ;;
+        *) hold "$i" "$2" ended-no-artifact "done=${R_DONE[i]}" ;;
+      esac ;;
+    *) S_GAP[j]=$((S_GAP[j] + 1))
+      if [ "${S_GAP[j]}" -ge 3 ]; then attn "$i" "$2" ws-unknown "proc=$5"; R_WAIT[i]=1; else ev WARN "$i" "job=$2 proc=$5 n=${S_GAP[j]}"; fi ;;
+  esac
+}
+
+# ---------- submit: one row per ssh; re-check on the login node, then exactly one submit.sh call ----------
+SUBMIT_SH='rw_main() {
+  echo @@start; U=${USER:-$(id -un)}
+  cd "$RDIR" 2>/dev/null || { echo "@@fail cd"; return; }
+  q=$(squeue -h -u "$U" --states=all -O "JobID:0|,Name:0|,State:0|") || { echo "@@fail squeue"; return; }
+  [ "$SEEN" = 0 ] || [ -n "$q" ] || { echo "@@fail empty-squeue"; return; }
+  if [ -n "$PREV" ]; then
+    printf "%s\n" "$q" | grep -q "^$PREV|" && { echo "@@fail back-in-queue"; return; }
+    s=$(sacct -X -n -P -j "$PREV" -o State) || { echo "@@fail sacct"; return; }
+    s=$(printf "%s\n" "$s" | head -n 1); [ "${s%% *}" = "$EXPECT" ] || { echo "@@fail sacct-now=${s%% *}"; return; }
+  else
+    s=$(sacct -X -n -P -u "$U" -S now-30days --name="$NAME" -o JobID) || { echo "@@fail sacct"; return; }
+    [ -z "$s" ] || { echo "@@fail name-in-sacct"; return; }
+  fi
+  printf "%s\n" "$q" | awk -F"|" -v n="$NAME" -v t="$TERM_RE" "\$2 == n && \$3 !~ t { f = 1 } END { exit !f }" && { echo "@@fail name-live"; return; }
+  [ -f "$DEPLOY/submit.sh" ] || { echo "@@fail no-deploy (run-sync)"; return; }
+  echo @@begin; bash "$DEPLOY/submit.sh" -n "$NAME" "$@" 2>&1; echo "@@rc $?"
+}'
+do_submit() {
+  local k=$1 i=${Q_ROW[$1]} j kind prev exp cls old rel w rc jid out cnt verb
+  j=${R_J[i]}; kind=${Q_KIND[k]}; prev=${Q_PREV[k]}; exp=${Q_EXP[k]}; cls=${Q_CLS[k]}; old=${S_ST[j]}; rel=${S_REL[j]}
+  case "$cls" in preempt) S_PRE[j]=$((S_PRE[j] + 1)) ;; errors) S_ERR[j]=$((S_ERR[j] + 1)) ;; timeout) S_TO[j]=$((S_TO[j] + 1)) ;; esac
+  S_ST[j]=submitting; S_REL[j]=-; flush   # the intent is on disk before the ssh: a crash leaves submitting -> submit-unknown
+  { echo "RDIR=$(sq "${TG_RDIR[k]}") DEPLOY=$(sq ".${TG_NAME[k]}") NAME=$(sq "${R_NAME[i]}") PREV='$prev' EXPECT='$exp' SEEN='${TG_SEEN[k]}' TERM_RE='$TERM_RE'"
+    echo "$SUBMIT_SH"; printf rw_main; set -f; for w in ${R_SUB[i]}; do printf ' %s' "$(sq "$w")"; done; set +f; echo; } > "$W/sub.sh"
+  ssh -o BatchMode=yes -o ConnectTimeout=60 "${TG_HOST[k]}" bash -s < "$W/sub.sh" > "$W/sub.out" 2> "$W/sub.err" & local p=$!
+  ( sleep "$SUB_TO"; kill "$p" 2>/dev/null ) >/dev/null 2>&1 & local wdog=$!
+  wait "$p"; rc=$?; kill "$wdog" 2>/dev/null; wait "$wdog" 2>/dev/null
+  jid=$(sed -n "s|^log: .*/logs/${R_NAME[i]}_\([0-9][0-9]*\)\.out .*|\1|p" "$W/sub.out" | head -n 1)
+  refund() { case "$cls" in preempt) S_PRE[j]=$((S_PRE[j] - 1)) ;; errors) S_ERR[j]=$((S_ERR[j] - 1)) ;; timeout) S_TO[j]=$((S_TO[j] - 1)) ;; esac; }
+  if [ -n "$jid" ]; then
+    track "$i" "$jid"; [ "$kind" = launch ] || [ -z "${A_RE[${R_TB[i]}]}" ] || S_RES[j]=0
+    case "$cls" in
+      launch) ev LAUNCH "$i" "job=$jid log=logs/${R_NAME[i]}_$jid.out"; return ;;
+      preempt) verb=RESUBMIT cnt="preempts=${S_PRE[j]}/${A_PRE[${R_TB[i]}]}" ;;
+      errors) verb=RETRY cnt="errors=${S_ERR[j]}/${A_ERR[${R_TB[i]}]}" ;;
+      timeout) verb=RESUBMIT cnt="timeouts=${S_TO[j]}/${A_TO[${R_TB[i]}]}" ;;
+      *) verb=RESUBMIT cnt="release=1" ;;
+    esac
+    ev "$verb" "$i" "job=$jid prev=$prev state=$exp $cnt log=logs/${R_NAME[i]}_$jid.out"
+  elif ! grep -q '^@@begin' "$W/sub.out" && grep -q '^@@fail' "$W/sub.out"; then   # re-check failed: nothing ran
+    refund; S_ST[j]=$old; S_REL[j]=$rel; ev WARN "$i" "reason=submit-skipped -- $(grep -m1 '^@@fail' "$W/sub.out" | cut -c8-)"
+  elif grep -q '^@@rc [1-9]' "$W/sub.out" && ! grep -q '^+ sbatch' "$W/sub.out"; then   # submit.sh refused before sbatch
+    refund; out=$(grep -m1 -E '^(ERROR|WARNING|REFUSED)' "$W/sub.out" || sed -n '/^@@begin/,/^@@rc/p' "$W/sub.out" | sed -n '2p')
+    hold "$i" "${prev:--}" submit-refused "$(grep -m1 '^@@rc' "$W/sub.out" | sed 's/^@@rc /rc=/')" "-- $out"; R_WAIT[i]=1
+  else   # sbatch may have run: never retried, never adopted by name on its own
+    S_ST[j]=submit-unknown; S_NOTE[j]=submit-unknown; R_WAIT[i]=1
+    attn "$i" - submit-unknown "ssh-rc=$rc" "-- $(grep -v '^$' "$W/sub.err" "$W/sub.out" 2>/dev/null | tail -n 1 | cut -c1-160) — the remote side may still be running; --adopt NAME=JOBID or (user OK) --release NAME"
+  fi
+}
+
+# ---------- one round, the lock, main ----------
+round() {
+  local i j k b
+  observe
+  for ((k = 0; k < NK; k++)); do Q_ROW[k]=""; ACTIVE[k]=0; done
+  for ((i = 0; i < NR; i++)); do R_WAIT[i]=0; j=${R_J[i]}; k=${R_K[i]}; D=$W/t$k
+    [ "${TG_OBS[k]}" = 1 ] || continue
+    case "${S_ST[j]}" in
+      submit-unknown) ACTIVE[k]=$((ACTIVE[k] + 1)) ;;
+      active) [ -z "$(awk -F'|' -v j="${S_JOBS[j]##*,}" -v t="$TERM_RE" '$1 == j && $3 !~ t' "$D/sq")" ] || ACTIVE[k]=$((ACTIVE[k] + 1)) ;;
+    esac
+  done
+  for ((b = 0; b < NB; b++)); do
+    [ "${B_N[b]}" -gt 0 ] && [ "${B_OK[b]}" != 0 ] && [ "${B_MATCH[b]}" = 0 ] || continue
+    once "block|${TB_BASE[${B_TB[b]}]}|${B_OK[b]}|${B_CALC[b]}" && EVQ="$EVQ$(ts) ATTENTION table=${TBL_PATH[${B_TB[b]}]} line=${B_OK[b]} reason=approval-stale -- its rows or the #@ allow line changed since the #@ ok: detect-only until the user OKs them again (--approve)$NL"
+  done
+  for ((i = 0; i < NR; i++)); do
+    j=${R_J[i]}; k=${R_K[i]}; D=$W/t$k
+    if [ "${TG_OBS[k]}" != 1 ]; then case "${S_ST[j]}" in held|submit-unknown) R_WAIT[i]=1 ;; esac; continue; fi
+    NOW=$(cat "$D/now"); case "$NOW" in ''|*[!0-9]*) NOW=$(date +%s) ;; esac
+    if [ "${TG_KIND[k]}" = slurm ]; then eval_slurm "$i"; else eval_ws "$i"; fi
+  done
+  for ((k = 0; k < NK; k++)); do [ -z "${Q_ROW[k]}" ] || do_submit "$k"; done
+  flush
+}
+take_lock() {
+  local p waited=0
+  until mkdir "$LOCK" 2>/dev/null; do
+    p=$(cat "$LOCK/pid" 2>/dev/null)
+    if [ -z "$p" ] && [ "$waited" = 0 ]; then waited=1; sleep 5; continue; fi   # its owner may be writing the pid
+    if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then die "another run-watch (pid $p) holds $LOCK: one per project"; fi
+    rm -rf "$LOCK"; EVQ="$EVQ$(ts) NOTE stale-lock pid=${p:-none}$NL"
+  done
+  echo "$$" > "$LOCK/pid"; LOCKED=1
+}
+row_of() { local i; for ((i = 0; i < NR; i++)); do [ "${R_NAME[i]}" != "$1" ] || { echo "$i"; return 0; }; done; die "no row named '$1'"; }
+
+parse_all
+[ "$APPROVING" = 0 ] || approve
+for ((ti = 0; ti < ${#TBL_PATH[@]}; ti++)); do
+  [ "$ACT" = 0 ] || [ -n "$MAXACT" ] || [ "${A_LAUNCH[ti]}" = 0 ] || die "--max-active N is required with --act when a table allows launch"
+done
+load_targets
+mkdir -p "$SD" || die "cannot create $SD"; take_lock
+load_state; [ -f "$SD/attention.seen" ] && SEEN="$NL$(cat "$SD/attention.seen")$NL"
+reconcile
+for ((i = 0; i < NR; i++)); do j=${R_J[i]}
+  [ "${S_ST[j]}" = submitting ] || continue
+  S_ST[j]=submit-unknown; S_NOTE[j]=submit-unknown; ev ATTENTION "$i" "reason=submit-interrupted -- a submit was in flight when the last run stopped: --adopt or (user OK) --release"
+done
+for a in $ADOPTS; do i=$(row_of "${a%%=*}") || exit 2; track "$i" "${a#*=}"; ev ADOPT "$i" "job=${a#*=} note=manual"; done
+if [ -n "$RELEASE" ]; then
+  i=$(row_of "$RELEASE") || exit 2; j=${R_J[i]}
+  case "${S_ST[j]}" in
+    held|submit-unknown) [ "${S_JOBS[j]}" = - ] && S_ST[j]=pending || S_ST[j]=active; S_NOTE[j]=- ;;
+    pending|active) ;; *) die "nothing to release: $RELEASE is ${S_ST[j]}" ;;
+  esac
+  S_REL[j]=armed; ev RELEASE "$i" "job=${S_JOBS[j]##*,} -- one submit past the budget or the hold, at its next decision"
+fi
+TGS=""; for ((k = 0; k < NK; k++)); do TGS="$TGS,${TG_NAME[k]}"; done
+EVQ="$(ts) START tables=$(printf '%s,' "${TBL_PATH[@]}" | sed 's/,$//') act=$ACT once=$ONCE every=$EVERY for=$LEASE targets=${TGS#,}$NL$EVQ"
+flush; summary
+T0=$(date +%s)
+while :; do
+  round
+  np=0; nw=0
+  for ((i = 0; i < NR; i++)); do
+    case "${S_ST[${R_J[i]}]}" in done) ;; held|submit-unknown) nw=$((nw + 1)) ;; *) [ "${R_WAIT[i]}" = 1 ] && nw=$((nw + 1)) || np=$((np + 1)) ;; esac
+  done
+  [ "$np" -gt 0 ] || { [ "$nw" = 0 ] && finish 0 || finish 4; }
+  [ "$ONCE" = 0 ] || finish 3
+  w=$((EVERY / 10)); s=$((EVERY - w + RANDOM % (2 * w + 1)))
+  [ $(($(date +%s) + s - T0)) -le "$LEASE" ] || finish 3
+  sleep "$s"
+  parse_all; load_targets; reconcile
+done
