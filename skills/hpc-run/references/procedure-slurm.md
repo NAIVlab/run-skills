@@ -14,7 +14,7 @@ follow `project-setup.md` (ask for `REMOTE_DIR`, env kind, run command); local a
 
 ## 1. Sync — push code, deploy the harness
 ```
-TARGET=<t> bash $ROOT/bin/run-sync        # additive; -n dry-run; -D also delete remote files gone locally
+TARGET=<t> bash $ROOT/bin/run-sync        # additive; -n dry-run; -D also delete remote files gone locally; --also <path>
 ```
 First line printed: `[<t>] remote: <host>:<dir>  tag: <TAG>  deploy: .<t>` — check it on a new project (use `-n`). With a
 transfer host it also prints `transfer host: <xfer>` and ends `sync done -> … ; files via <xfer>`.
@@ -22,16 +22,33 @@ Never deletes remote `.venv* .cache .local .config bin tmp wandb wandb-artifacts
 outputs videos data .wandb_env` or any `.<target>/` dir; `EXTRA_EXCLUDES` adds patterns, `SYNC_ALSO` force-pushes
 excluded paths. Also pushes the conf, the profile, and your wandb key file as `<REMOTE_DIR>/.wandb_env` (mode 600),
 and warns `WARN: … is not honoured` for a `<TAG>_KEY` line whose KEY is not prefixable.
+Every sync stamps `<REMOTE_DIR>/.run-source` (local path, host, branch, commit, dirty-file count, time; never pruned):
+it prints `[<t>] source: <branch>@<commit> dirty=N`, jobs see it as `$RS_SOURCE_COMMIT` and the job log header as
+`source: …`. A remote dir last synced from **another local checkout** (a second worktree with the same remote dir;
+decided by the local path, the host is only reported)
+is refused — `ERROR: … was last synced from another checkout: <path> (…)`, exit 2 — because the sync would overwrite
+that checkout's code under any job still running from it. Tell the user; with their OK (and no job of the other
+checkout running) re-run with `--take-over`. `--also <path>` force-pushes one excluded path for this sync only
+(a new container image, a wheelhouse); `SYNC_ALSO` is the every-sync form.
 
 ## 2. Bootstrap the env — first run, and after any dependency change (idempotent)
 ```
 TARGET=<t> bash $ROOT/bin/run-bootstrap   # = ssh <host> "cd <REMOTE_DIR> && export PROJ=$PWD TARGET=<t> && bash .<t>/bootstrap.sh"
+TARGET=<t> bash $ROOT/bin/run-bootstrap --job [-p <partition> -c <cpus> -m <mem> -t <time>]   # the same, as a batch job
 ```
 uv: finds `uv` (PATH, `~/.local/bin`, else installs into `$RS_ENV_ROOT/bin`), then `uv sync` into the target's venv
 — or runs `BOOTSTRAP_HOOK` instead when the conf sets one. Refuses a venv outside `$PROJ` / `T_ENV_ROOT` / `VENV_DIR`,
 and a derived venv owned by another project (`… belongs to … — set VENV_DIR to share it on purpose`).
 conda: only *verifies* `ENV_NAME` exists (`conda env 'X' MISSING on <t>` otherwise) — never creates it. Stop and ask.
-Ends with `bootstrap done (<t>).`; any `ERROR:` or `env.sh: … refusing to continue` line means fix the conf/profile first.
+none: builds nothing (runs `BOOTSTRAP_HOOK` if set). Ends with `bootstrap done (<t>).`; any `ERROR:` or
+`env.sh: … refusing to continue` line means fix the conf/profile first.
+**On the login node or as a job.** A login node with a virtual-memory cap prints `NOTE: ulimit -v = N GB here …`
+before `uv sync`; a torch-sized env then dies with `memory allocation failed`. Build it on a compute node instead:
+`--job` submits `bash <REMOTE_DIR>/.<t>/bootstrap.sh` through `submit.sh` (flags as for any job, `-p` required; default
+= the profile's `T_BOOTSTRAP_JOB`; name `<JOB_NAME>-bootstrap`) and returns with the job id and log path. A CPU partition
+is enough when its nodes reach the internet (uv, PyPI) and share the GPU nodes' OS — the target's reference says
+which partition qualifies. It is a job: state the plan and wait for the go as in §3, then follow it with
+`status.sh <jobid>` until the log shows `bootstrap done (<t>).` `job.sbatch` lets exactly this payload start without a venv.
 
 ## 3. Decide resources, then CONFIRM (required)
 Collect partition / GPU count / GPU type / walltime / run command from the user's words, the target's reference and

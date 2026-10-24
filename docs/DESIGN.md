@@ -70,14 +70,18 @@ project scripts and interactive shells — so it never uses `set -e` and must be
 - puts the venv, uv caches and small-file state under `T_ENV_ROOT` (default: the project), because some project
   filesystems are fast for large files and slow or quota-limited for many small ones;
 - chooses `TMPDIR` (`project` or the job's own `inherit`ed one) and compile caches (`project`, `tmp`, or a path);
-- suffixes architecture-specific state with `T_SUFFIX` when targets share a filesystem but not an OS or GPU arch;
+- suffixes architecture-specific state with `T_SUFFIX` when targets share a filesystem but not an OS or GPU arch
+  (exported as `RS_SUFFIX`, so a project naming its own extra venv can follow the same rule);
 - keeps `RAY_TMPDIR` node-local (AF_UNIX socket paths are limited to ~107 bytes);
 - exports `RUN_ENV_READY=$PROJ` only if every step succeeded.
 
 **Fail closed.** Every consumer unsets the sentinel, sources `env.sh`, requires `RUN_ENV_READY == $PROJ`, and then
 checks that the environment actually materialised: the venv's python exists (and, for workstation launches, is the
 python on `PATH`), or the named conda env is active. The bootstrap snapshots the allowed venv roots *before*
-sourcing, so a project hook that runs last cannot move the guard. A misconfigured job therefore stops with a
+sourcing, so a project hook that runs last cannot move the guard. `ENV_KIND=none` has nothing to materialise (the
+payload brings its own runtime, typically a container); the containment variables still apply. The one payload
+`job.sbatch` starts without a venv is the deployed bootstrap itself (`run-bootstrap --job`): login nodes with a
+virtual-memory cap cannot run a torch-sized `uv sync`, so the env is built where the jobs run. A misconfigured job therefore stops with a
 one-line reason instead of training for a day in the wrong environment.
 
 ## Submission (`remote/submit.sh` + `policy.sh`)

@@ -74,6 +74,12 @@ conf "$W" 'WS_REMOTE_DIR=projects/x
 RUN=c'
 O=$(launch "$W" -N t); has "$(cat "$T/launch.log")" 'RS_VENV' "no ENV_KIND -> uv gate (never conda)"
 conf "$W" 'WS_REMOTE_DIR=projects/x
+ENV_KIND=none
+RUN=c'
+O=$(launch "$W" -N t); RC=$?; L=$(cat "$T/launch.log")
+[ "$RC" = 0 ] && has "$O" 'started PID' "ENV_KIND=none: launches without ENV_NAME" || bad "ENV_KIND=none launches (rc=$RC)"
+hasnt "$L" 'RS_VENV\|not active' "none: neither the venv nor the conda gate"; has "$L" 'RUN_ENV_READY' "none: still gates on the sentinel"
+conf "$W" 'WS_REMOTE_DIR=projects/x
 WSBOX_REMOTE_DIR=projects/y
 RUN=c'
 O=$(launch "$W" -N t); has "$(cat "$T/launch.log")" "cd 'projects/y'" "WSBOX_REMOTE_DIR beats WS_REMOTE_DIR"

@@ -2,7 +2,7 @@
 # Full key list + semantics: references/conf-keys.md of the installed hpc-run skill (~/.agents/skills/hpc-run/).
 # Precedence: CLI flag > <TAG>_KEY > KEY > default; <TAG> = target name uppercased, no punctuation (my-hpc -> MYHPC_).
 REMOTE_DIR='/project/<group>/<user>/<project>'  # absolute project dir on the cluster. REQUIRED, never guessed.
-ENV_KIND=uv                                  # uv (default: venv built from pyproject.toml) | conda
+ENV_KIND=uv                                  # uv (default: venv built from pyproject.toml) | conda | none (container payload)
 ENV_NAME=                                    # conda env name (if ENV_KIND=conda; must already exist)
 RUN="python -m train --config configs/base.yaml"   # python = the target venv's python (uv run also works)
 DEFAULT_GPUS=1

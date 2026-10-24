@@ -1,8 +1,8 @@
 #!/bin/bash
 # run-skills remote/job.sbatch — generic batch script (requeue-aware; forwards the time-limit USR1, records TERM). Submitted by <REMOTE_DIR>/.<target>/submit.sh,
-# which sets resources (partition/gres/cpus/mem/time/name) on the sbatch CLI and exports PROJ + CLUSTER/TARGET.
-# The run command is passed as ARGUMENTS after the script name. Sources ../.<target>/env.sh and fails closed
-# unless env.sh completed (RUN_ENV_READY) and the requested env (uv venv | conda env) actually exists.
+# which sets resources (partition/gres/cpus/mem/time/name) on the sbatch CLI and exports PROJ + CLUSTER/TARGET. The run
+# command is passed as ARGUMENTS after the script name. Sources ../.<target>/env.sh and fails closed unless env.sh
+# completed (RUN_ENV_READY) and the requested env (uv venv | conda env; none = nothing to check) actually exists.
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --requeue
 #SBATCH --open-mode=append
@@ -22,11 +22,12 @@ set +u; source "$PROJ/.$CLUSTER/env.sh"; set -u
 # Fail closed (1): env.sh exports RUN_ENV_READY=$PROJ as its LAST line — a partial sync / bad conf would otherwise
 # run with caches escaping to $HOME. (An explicit sentinel, so a project ENV_HOOK may legitimately override HF_HOME.)
 [ "${RUN_ENV_READY:-}" = "$PROJ" ] || { echo "[$(date)] ERROR: containment env not loaded (RUN_ENV_READY='${RUN_ENV_READY:-}') — aborting." >&2; exit 1; }
-case "${ENV_KIND:-uv}" in uv|conda) ;; *) echo "[$(date)] ERROR: invalid ENV_KIND='${ENV_KIND:-}' in .hpc.conf — aborting." >&2; exit 1 ;; esac
+case "${ENV_KIND:-uv}" in uv|conda|none) ;; *) echo "[$(date)] ERROR: invalid ENV_KIND='${ENV_KIND:-}' in .hpc.conf — aborting." >&2; exit 1 ;; esac
 
 # Fail closed (2): env.sh cannot abort a sourced job — verify the requested env materialized. uv: the venv must
 # EXIST (`uv run` would otherwise AUTO-SYNC on the compute node, burning the allocation). conda: must be ACTIVE.
-if [ "${ENV_KIND:-uv}" = "uv" ] && [ ! -x "${UV_PROJECT_ENVIRONMENT:-$PROJ/.venv}/bin/python" ]; then
+boot=0; [ "$*" != "bash $PROJ/.$CLUSTER/bootstrap.sh" ] || boot=1   # except `run-bootstrap --job`: it builds the venv
+if [ "$boot" = 0 ] && [ "${ENV_KIND:-uv}" = "uv" ] && [ ! -x "${UV_PROJECT_ENVIRONMENT:-$PROJ/.venv}/bin/python" ]; then
   echo "[$(date)] ERROR: uv venv missing (${UV_PROJECT_ENVIRONMENT:-$PROJ/.venv}) — run run-bootstrap first. Aborting." >&2
   exit 1
 fi
@@ -47,7 +48,7 @@ trap on_usr1 USR1; trap on_term TERM
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-max_split_size_mb:128}"
 
 echo "[$(date)] target=$CLUSTER job=${SLURM_JOB_ID:-?} restart=${SLURM_RESTART_COUNT:-0} node=${SLURM_NODELIST:-?} cpus=${SLURM_CPUS_ON_NODE:-?} gpus=${SLURM_JOB_GPUS:-${CUDA_VISIBLE_DEVICES:-?}}"
-nvidia-smi -L 2>/dev/null || true
+[ ! -f "$PROJ/.run-source" ] || echo "[$(date)] source: $(awk -F= '$1 ~ /^(branch|commit|dirty|synced)$/ {printf "%s=%s ", $1, substr($0, length($1) + 2)}' "$PROJ/.run-source")(run-sync stamp)"; nvidia-smi -L 2>/dev/null || true
 
 [ "$#" -gt 0 ] || { echo "ERROR: no run command passed to job.sbatch" >&2; exit 2; }
 [ "$term" = 0 ] || { echo "[$(date)] EXIT rc=143 usr1=$usr1 term=$term (TERM before the trainer started)"; exit 143; }

@@ -11,12 +11,19 @@ then `ENV_NAME`), `RUN`; full list in `conf-keys.md`. Missing → follow `projec
 
 ## 1. Sync — push code, deploy the harness
 ```
-TARGET=<t> bash $ROOT/bin/run-sync        # additive; -n dry-run; -D also delete remote files gone locally
+TARGET=<t> bash $ROOT/bin/run-sync        # additive; -n dry-run; -D also delete remote files gone locally; --also <path>
 ```
 First line printed: `[<t>] remote: <host>:<dir>  tag: <TAG>  deploy: .ws`. Never deletes remote `.venv* .cache
 .local .config bin tmp wandb wandb-artifacts logs run_logs ckpts checkpoints runs outputs videos data .wandb_env`
 or any `.<target>/` dir. Pushes the conf, the profile and your wandb key file as `.wandb_env` (mode 600).
 With a transfer host (`T_XFER_HOST`) it prints `transfer host: <xfer>` and ends `sync done -> … ; files via <xfer>`.
+Every sync stamps `<REMOTE_DIR>/.run-source` (local path, host, branch, commit, dirty-file count, time; never pruned):
+it prints `[<t>] source: <branch>@<commit> dirty=N`, and every run sees it as `$RS_SOURCE_COMMIT` (env.sh). A remote
+dir last synced from **another local checkout** (decided by the local path; the host is only reported) (a second worktree with the same remote dir)
+is refused — `ERROR: … was last synced from another checkout: <path> (…)`, exit 2 — because the sync would overwrite
+that checkout's code under any job still running from it. Tell the user; with their OK (and no job of the other
+checkout running) re-run with `--take-over`. `--also <path>` force-pushes one excluded path for this sync only
+(a new container image, a wheelhouse); `SYNC_ALSO` is the every-sync form.
 
 ## 2. Bootstrap the env — first run, and after any dependency change (idempotent)
 ```
@@ -25,7 +32,8 @@ TARGET=<t> bash $ROOT/bin/run-bootstrap   # = ssh <host> "cd <WS_REMOTE_DIR> && 
 uv (default): puts `uv` on PATH (the box's own, `~/.local/bin/uv`, else a private copy in `<project>/bin`) and
 `uv sync`s the per-box venv (`.venv`, never rsynced, so each box compiles its own wheels) — or runs `BOOTSTRAP_HOOK`
 instead. conda: only *verifies* `ENV_NAME` exists in the box's conda (`T_CONDA_INIT` in its profile) — **never
-creates it**; on `conda env 'X' MISSING`, stop and ask. Ends with `bootstrap done (<t>).`
+creates it**; on `conda env 'X' MISSING`, stop and ask. none: builds nothing (runs `BOOTSTRAP_HOOK` if set; the
+payload brings its own runtime). Ends with `bootstrap done (<t>).`
 
 ## 3. Check GPUs, then CONFIRM (required)
 Unless the user fixed the placement, `run-avail` first (INDEX Routing: Placement) — it also shows the Slurm clusters,

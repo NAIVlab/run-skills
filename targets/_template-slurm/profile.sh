@@ -8,7 +8,7 @@ T_DESC='My University cluster — gpu partition, 4x A100 per node'   # one line,
 T_TRIGGERS='mycluster'           # verbatim words that route a request here (merged into the skill description)
 T_GPUS='4x A100 80GB per node'
 T_CUDA_ARCH='8.0'                # exported as RS_CUDA_ARCH for hooks (may be empty)
-T_SUFFIX=''                      # '' or '-<tag>': tags the venv + compiled caches when targets share a filesystem
+T_SUFFIX=''                      # '' or '-<tag>': tags the venv + compiled caches when targets share a filesystem (RS_SUFFIX)
 T_CONDA_INIT='source $HOME/miniconda3/etc/profile.d/conda.sh'   # ENV_KIND=conda only (a shared lab install works too)
 T_CUDA_HOME=''                   # '' = unset any inherited CUDA_HOME (wheels bundle CUDA)
 T_ENV_ROOT=''                    # '' = $PROJ; e.g. '$HOME/.run-skills' when the project fs is slow on small files
@@ -22,3 +22,4 @@ T_MAXTIME=7-00:00:00             # cluster-wide walltime cap; policy.sh lowers i
 T_FORBIDDEN_QOS=''               # QOS names rejected when found in SBATCH_EXTRA
 T_PARTITIONS='gpu cpu'           # listed in error messages/docs; policy.sh is the authority
 T_WATCH_RECOVER=1                # 0 = run-watch never resubmits here (reports needs-ok); 1 = within a table's approved budget
+T_BOOTSTRAP_JOB=''                # submit.sh flags for `run-bootstrap --job` (e.g. '-p cpu -c 8 -m 32G -t 02:00:00'); '' = pass them

@@ -1,7 +1,7 @@
 # .ws.conf — copy to your project's repo root and edit. Sourced as shell: quote values with spaces.
 # Full key list + semantics: references/conf-keys.md of the installed ws-run skill (~/.agents/skills/ws-run/).
 # Precedence: CLI flag > <TAG>_KEY > KEY > default; <TAG> = target name uppercased, no punctuation (my-box -> MYBOX_).
-ENV_KIND=uv                                  # uv (default: per-box .venv built from pyproject.toml) | conda
+ENV_KIND=uv                                  # uv (default: per-box .venv built from pyproject.toml) | conda | none (container)
 ENV_NAME=                                    # conda env name (only for ENV_KIND=conda; must already exist)
 RUN="python train.py --config configs/base.yaml --device cuda:0"   # `python` = the in-project .venv
 WS_REMOTE_DIR='projects/<project>'           # relative to the workstation's $HOME. REQUIRED.

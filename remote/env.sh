@@ -3,7 +3,7 @@
 # bootstrap.sh, the nohup launch chain, project scripts and interactive shells (bash or zsh).
 #   export PROJ=<remote project dir> [TARGET=<name>|CLUSTER=<name>]; . $PROJ/.<target>/env.sh
 # Reads <deploy dir>/profile.sh (T_* storage policy) + .hpc.conf/.ws.conf, pins caches/tmp/venv per that policy,
-# activates uv|conda, sources ENV_HOOK last, then exports RUN_ENV_READY=$PROJ (+ HPC_/WS_ENV_READY).
+# activates uv|conda (none: the payload brings its own runtime, e.g. a container), sources ENV_HOOK last, then exports RUN_ENV_READY=$PROJ (+ HPC_/WS_ENV_READY).
 # zsh-safe: no arrays, [[ ]], ${var^^}, ${!var}, BASH_SOURCE. Never set -e; every failure withholds READY.
 # Scratch state is _rs_-prefixed and unset at the end: only the documented exports reach the caller's shell.
 _rs_fail() { echo "env.sh: $1 — refusing to continue" >&2; return 1; }
@@ -27,7 +27,10 @@ _rs_env() {
   _rs_user=${USER:-$(id -un)}
   _rs_tag=$(printf %s "$TARGET" | tr -cd '[:alnum:]' | tr '[:lower:]' '[:upper:]')
   _rs_suf=${T_SUFFIX:-}
-  export TARGET RS_TARGET="$TARGET" RS_KIND="$T_KIND" RS_CUDA_ARCH="${T_CUDA_ARCH:-}"
+  export TARGET RS_TARGET="$TARGET" RS_KIND="$T_KIND" RS_CUDA_ARCH="${T_CUDA_ARCH:-}" RS_SUFFIX="$_rs_suf"
+  # provenance: run-sync stamps <PROJ>/.run-source (commit, branch, dirty count) on every sync
+  RS_SOURCE_COMMIT=""; [ ! -f "$PROJ/.run-source" ] || RS_SOURCE_COMMIT=$(sed -n 's/^commit=//p' "$PROJ/.run-source" | head -n 1)
+  export RS_SOURCE_COMMIT
   if [ "$T_KIND" = slurm ]; then export CLUSTER="$TARGET"; unset WS_TAG
   else WS_TAG=$(printf %s "$_rs_tag" | tr '[:upper:]' '[:lower:]'); export WS_TAG; unset CLUSTER; fi
   # 3. storage roots
@@ -80,7 +83,8 @@ _rs_env() {
       export PATH="$_rs_root/bin:$PATH"                  # before activate: the conda env's bin stays first
       conda activate "$ENV_NAME" || { _rs_fail "conda activate '$ENV_NAME' failed"; return 1; }
       ;;
-    *) _rs_fail "invalid ENV_KIND='${ENV_KIND:-}' (use uv|conda)"; return 1 ;;
+    none) unset UV_PROJECT_ENVIRONMENT RS_VENV; export PATH="$_rs_root/bin:$PATH" ;;   # the payload brings its own (container)
+    *) _rs_fail "invalid ENV_KIND='${ENV_KIND:-}' (use uv|conda|none)"; return 1 ;;
   esac
   # 8. wandb creds: OUR key only
   [ -f "$PROJ/.wandb_env" ] && . "$PROJ/.wandb_env"
