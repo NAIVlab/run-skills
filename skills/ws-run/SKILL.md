@@ -23,7 +23,7 @@ for `WS_REMOTE_DIR`; never guess it.
 ## 2. Commands (cwd = the project root; `<t>` = target name, `<host>` = its host column)
 ```
 bash $ROOT/bin/run-avail [--type T] [--min N] # free GPUs on EVERY target (workstations + clusters), read-only
-TARGET=<t> bash $ROOT/bin/run-sync             # push code + deploy the harness to ~/<WS_REMOTE_DIR>/.ws/ (-n dry-run, -D prune)
+TARGET=<t> bash $ROOT/bin/run-sync             # push code + deploy the harness to ~/<WS_REMOTE_DIR>/.ws/ (-n dry-run, -D prune, --also <path>)
 TARGET=<t> bash $ROOT/bin/run-bootstrap        # first run / deps changed: uv sync the venv, or verify the conda env
 ssh <host> "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --format=csv,noheader"   # who uses what
 # >>> print a one-line plan (target / GPU ids / run command) and wait for an explicit go, then:

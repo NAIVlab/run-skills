@@ -34,7 +34,7 @@ rs_load_target() {   # sets T_NAME T_TAG T_DIR T_LOCAL_DIR + every T_* from prof
   T_DIR=$(rs_target_dir "$1") || exit 2
   T_LOCAL_DIR=$(rs_target_local_dir "$1")
   unset T_KIND T_HOST T_DESC T_TRIGGERS T_GPUS T_CUDA_ARCH T_SUFFIX T_CONDA_INIT T_CUDA_HOME T_ENV_ROOT T_TMPDIR \
-    T_COMPILE_CACHE T_REMOTE_DIR_REQUIRED T_CONF_KEYS T_DEFAULT_PARTITION T_DEFAULT_GPU_TYPE T_MAXTIME T_FORBIDDEN_QOS T_PARTITIONS T_XFER_HOST T_WATCH_RECOVER
+    T_COMPILE_CACHE T_REMOTE_DIR_REQUIRED T_CONF_KEYS T_DEFAULT_PARTITION T_DEFAULT_GPU_TYPE T_MAXTIME T_FORBIDDEN_QOS T_PARTITIONS T_XFER_HOST T_WATCH_RECOVER T_BOOTSTRAP_JOB
   . "$T_DIR/profile.sh"
   T_NAME=$1; T_TAG=$(rs_tag "$1")
   case "${T_KIND:-}" in slurm|nohup) ;; *) die "$T_DIR/profile.sh: T_KIND must be slurm|nohup (got '${T_KIND:-}')" ;; esac
@@ -73,7 +73,7 @@ rs_sync_excludes() {   # run-sync's exclude patterns, one per line (static on pu
   # Generated/output dirs are ANCHORED (leading /) so a same-named SOURCE dir (mypkg/data/) is kept; junk matches at any depth.
   printf '%s\n' .git .claude/ .codex/ .agent/ .agents/ '.vscode*/' .idea/ __pycache__/ '*.pyc' .pytest_cache/ .mypy_cache/ \
     .ruff_cache/ .DS_Store node_modules/ '*.parquet' /.venv '/.venv-*' /.cache/ /.local/ /.config/ /bin/ /tmp/ /wandb/ \
-    /wandb-artifacts/ /logs/ /run_logs/ /ckpts/ /checkpoints/ /runs/ /outputs/ /videos/ /data/ .wandb_env
+    /wandb-artifacts/ /logs/ /run_logs/ /ckpts/ /checkpoints/ /runs/ /outputs/ /videos/ /data/ .wandb_env /.run-source
   local n g; for n in $(rs_targets) ws; do echo ".$n/"; done   # every deploy dir: targets sharing a filesystem see each other's
   set -f; for g in ${EXTRA_EXCLUDES:-}; do echo "$g"; done; set +f   # -f: keep the conf's patterns literal
 }

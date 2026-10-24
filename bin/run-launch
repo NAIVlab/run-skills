@@ -15,8 +15,8 @@ rs_load_conf REMOTE_DIR WS_REMOTE_DIR ENV_NAME ENV_KIND ENV_HOOK WANDB_MODE DEFA
 RDIR=$(rs_remote_dir); HOST=$T_HOST
 ENV_NAME=$(ovr ENV_NAME); DEF_NGPU=$(ovr DEFAULT_NGPU 1); GPUX=$(ovr GPU_EXCLUDE); NICE=$(ovr NICE); RUN=$(ovr RUN)
 NAME=$(ovr JOB_NAME "$(basename "$RDIR")")
-case "${ENV_KIND:-uv}" in uv|conda) ;; *) die "ENV_KIND must be uv|conda (got '${ENV_KIND:-}')" ;; esac
-[ "${ENV_KIND:-uv}" = uv ] || [ -n "$ENV_NAME" ] || die "ENV_NAME required in .ws.conf for ENV_KIND=conda"
+case "${ENV_KIND:-uv}" in uv|conda|none) ;; *) die "ENV_KIND must be uv|conda|none (got '${ENV_KIND:-}')" ;; esac
+[ "${ENV_KIND:-uv}" != conda ] || [ -n "$ENV_NAME" ] || die "ENV_NAME required in .ws.conf for ENV_KIND=conda"
 GPUX="${GPUX//[[:space:]]/}"     # '0, 1' -> '0,1' (else the exclude regex silently fails open)
 if [ -n "$GPUX" ] && ! printf %s "$GPUX" | grep -Eq '^[0-9]+(,[0-9]+)*$'; then
   die "GPU_EXCLUDE must be comma-separated GPU ids (got '$GPUX')"
@@ -73,6 +73,8 @@ echo "          RUN: $RUN_CMD"
 # set -e (a failure makes ssh return nonzero); only the nohup is backgrounded inside { } so $! is the run's PID.
 if [ "${ENV_KIND:-uv}" = conda ]; then
   GATE="[ \"\${CONDA_DEFAULT_ENV:-}\" = '$ENV_NAME' ] || { echo \"ERROR: conda env '$ENV_NAME' not active (got '\${CONDA_DEFAULT_ENV:-none}')\" >&2; exit 1; }"
+elif [ "${ENV_KIND:-uv}" = none ]; then
+  GATE=":"   # no managed env: the payload brings its own runtime (containment env vars still apply)
 else
   GATE="_p=\$(command -v python || true); [ -n \"\$_p\" ] && [ \"\$_p\" -ef \"\$RS_VENV/bin/python\" ] || { echo \"ERROR: uv venv not active (python=\${_p:-none}, want \$RS_VENV/bin/python; run: TARGET=$T_NAME bash ~/.agents/run-skills/bin/run-bootstrap)\" >&2; exit 1; }"
 fi

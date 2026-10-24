@@ -91,3 +91,26 @@ O=$(boot "$W" "$W/.ws"); RC=$?
 O=$(boot "$P" "$P/.fx-slurm" -u TARGET -u CLUSTER); RC=$?
 [ "$RC" = 2 ] && ok "slurm project without TARGET -> exit 2" || bad "slurm project without TARGET -> exit 2 (rc=$RC)"
 rm -rf "/tmp/ray_$U-fx" "/tmp/ray_$U"
+
+echo "-- none + login vmem note --"
+N=$(mk_proj fx-slurm 'REMOTE_DIR=/x
+ENV_KIND=none') || { bad "mk_proj none"; exit 1; }
+O=$(boot "$N" "$N/.fx-slurm" TARGET=fx-slurm); RC=$?
+[ "$RC" = 0 ] && has "$O" 'ENV_KIND=none: no env to build' "none: nothing built, rc 0" || bad "none bootstrap (rc=$RC)"
+hasnt "$O" 'uv sync' "none: no uv sync"; has "$O" 'bootstrap done (fx-slurm)' "none: final line"
+[ -d "$N/.cache/huggingface" ] && ok "none: env.sh ran (containment dirs exist)" || bad "none: env.sh ran"
+printf 'REMOTE_DIR=/x\nENV_KIND=none\nBOOTSTRAP_HOOK=pull.sh\n' > "$N/.hpc.conf"; printf 'echo PULLED hf=$HF_HOME\n' > "$N/pull.sh"
+O=$(boot "$N" "$N/.fx-slurm" TARGET=fx-slurm); has "$O" "PULLED hf=$N/.cache/huggingface" "none: BOOTSTRAP_HOOK runs inside the env"
+printf 'REMOTE_DIR=/x\nENV_KIND=none\nBOOTSTRAP_HOOK=gone.sh\n' > "$N/.hpc.conf"
+boot "$N" "$N/.fx-slurm" TARGET=fx-slurm >/dev/null && bad "none: missing hook aborts" || ok "none: missing hook aborts"
+printf 'REMOTE_DIR=/x\nENV_KIND=none\nENV_HOOK=nope.sh\n' > "$N/.hpc.conf"
+O=$(boot "$N" "$N/.fx-slurm" TARGET=fx-slurm RUN_ENV_READY="$N") && bad "none: broken env.sh trusted" || has "$O" 'did not complete' "none: inherited sentinel cannot mask a broken env.sh"
+vboot() { local lim=$1; shift; env "$@" USER="$U" PATH="$T/bin:$PATH" bash -c "ulimit -v $lim 2>/dev/null || exit 9; export PROJ='$P'; bash '$P/.fx-slurm/bootstrap.sh' 2>&1"; }
+printf 'REMOTE_DIR=/x\nENV_KIND=uv\n' > "$P/.hpc.conf"; rm -f "$P/.venv-fx/.run-skills-proj"
+O=$(vboot 8388608 TARGET=fx-slurm); RC=$?
+if [ "$RC" = 9 ]; then ok "ulimit -v not settable here (skipped)"; else
+  has "$O" 'NOTE: ulimit -v = 8 GB here' "login vmem cap < 16 GB -> NOTE names it"; has "$O" 'run-bootstrap --job' "NOTE points at --job"
+  O=$(vboot 8388608 TARGET=fx-slurm SLURM_JOB_ID=1); hasnt "$O" 'NOTE: ulimit' "no NOTE inside a job"
+  O=$(vboot 33554432 TARGET=fx-slurm); hasnt "$O" 'NOTE: ulimit' "no NOTE at 32 GB"
+fi
+O=$(boot "$P" "$P/.fx-slurm" TARGET=fx-slurm); hasnt "$O" 'NOTE: ulimit' "no NOTE without a cap"

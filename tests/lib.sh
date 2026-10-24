@@ -1,7 +1,7 @@
 # run-skills tests/lib.sh — stub + helper library, sourced by every tests/NN-*.sh and targets/*/tests.sh.
 # Caller sets RS_HOME (harness root) and RS_USER_DIR (fixtures in phase A, the real overlay in phase B).
 # Scratch dir $T (removed on exit); counters PASS/FAIL; helpers ok bad has hasnt nosub mk_proj sub with_path
-# stub_sinfo stub_fail stub_rsync. Stubs sbatch scontrol squeue sinfo ssh uv live in $T/bin, on PATH ONLY
+# stub_sinfo stub_fail stub_rsync. ssh prints $T/run-source.remote for run-sync's stamp read. Stubs sbatch scontrol squeue sinfo ssh uv live in $T/bin, on PATH ONLY
 # for invocations prefixed PATH="$T/bin:$PATH" (sub/with_path do this) — forget it and you hit real binaries.
 : "${RS_HOME:?tests/lib.sh: set RS_HOME}"
 export RS_USER_DIR="${RS_USER_DIR:-$HOME/.config/run-skills}"
@@ -31,6 +31,7 @@ shift; cmd="\$*"          # \$1 is the host
 case "\$cmd" in
   *query-gpu=index,name*) printf '0, F, 0 %%, 8000 MiB, 49140 MiB\n1, F, 0 %%, 2 MiB, 49140 MiB\n2, F, 0 %%, 5 MiB, 49140 MiB\n3, F, 0 %%, 9000 MiB, 49140 MiB\n' ;;
   *query-gpu=index,memory.used*) printf '0, 8000\n1, 2\n2, 5\n3, 9000\n' ;;
+  *run-source*) echo "\$cmd" >> "$T/launch.log"; cat "$T/run-source.remote" 2>/dev/null; true ;;   # run-sync's stamp read
   *) echo "\$cmd" >> "$T/launch.log"; echo "[fake] started PID 4242" ;;
 esac
 EOS

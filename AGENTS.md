@@ -89,9 +89,9 @@ bin/*, submit.sh's list); env.sh trusts that cleared environment. Extend those l
 `_rs_fail MSG; return 1` (`env.sh: … — refusing to continue`) and whose last lines export `RUN_ENV_READY=$PROJ` plus
 the kind's legacy sentinel (`HPC_ENV_READY` | `WS_ENV_READY`). Every consumer does `unset RUN_ENV_READY HPC_ENV_READY
 WS_ENV_READY CONDA_DEFAULT_ENV` → source → require `RUN_ENV_READY == $PROJ`, then verifies the env materialised:
-`job.sbatch` needs `$UV_PROJECT_ENVIRONMENT/bin/python` (`uv venv missing`) or `CONDA_DEFAULT_ENV == ENV_NAME`; the
-`run-launch` chain needs `python -ef $RS_VENV/bin/python` (`uv venv not active`) or the conda env active;
-`bootstrap.sh` (uv branch only — conda never sources env.sh) needs `UV_PROJECT_ENVIRONMENT` under a root snapshotted
+`job.sbatch` needs `$UV_PROJECT_ENVIRONMENT/bin/python` (`uv venv missing`; waived only for the payload `bash $PROJ/.<t>/bootstrap.sh`
+= `run-bootstrap --job`) or `CONDA_DEFAULT_ENV == ENV_NAME` (`ENV_KIND=none`: nothing); the `run-launch` chain needs `python -ef $RS_VENV/bin/python` (`uv venv not active`) or the conda env active;
+`bootstrap.sh` (uv and none source env.sh, conda never does; uv additionally) needs `UV_PROJECT_ENVIRONMENT` under a root snapshotted
 **before** sourcing (`$PROJ`, `T_ENV_ROOT`, `VENV_DIR`), so an `ENV_HOOK` (sourced last, may override anything) cannot
 move the guard; a derived venv's owner file `.run-skills-proj` must match unless `VENV_DIR` is explicit. New early
 exits in env.sh and new consumers keep this pattern and get a test.
@@ -104,7 +104,8 @@ when `ENV_ROOT != $PROJ`, small-file state under `state/<proj>$SUF`. `T_TMPDIR`:
 → the preset `$TMPDIR` if writable else `/tmp/$USER/run-skills$SUF`. `T_COMPILE_CACHE`: `project` | `tmp` | path;
 compile dirs are `$SUF`-suffixed except `nv`, not mkdir'd when in `$TMPDIR`. `RAY_TMPDIR` stays under `/tmp`.
 `PATH="$VENV/bin:$ENV_ROOT/bin:$PATH"` for both kinds, `UV_NO_SYNC=1`. Exports `TARGET RS_TARGET RS_KIND RS_CUDA_ARCH
-RS_ENV_ROOT RS_VENV` and `CLUSTER` (slurm) **xor** `WS_TAG` (nohup, lowercase). `T_SUFFIX` is empty or hyphen-prefixed
+RS_SUFFIX RS_SOURCE_COMMIT RS_ENV_ROOT RS_VENV` (`RS_SOURCE_COMMIT` from the `.run-source` stamp each run-sync writes, which
+also makes run-sync refuse a second local checkout of the same remote dir without `--take-over`) and `CLUSTER` (slurm) **xor** `WS_TAG` (nohup, lowercase). `T_SUFFIX` is empty or hyphen-prefixed
 (sync protects the literal glob `/.venv-*`). The protected-exclude list (`rs_sync_excludes`; run-pull's push-back
 check reuses it) is static on purpose (hand-built `.venv-foo` dirs must survive `-D`); any dir env.sh creates under
 `$PROJ` must be an anchored entry there.

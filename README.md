@@ -139,7 +139,8 @@ trainer that cannot resume from a checkpoint. Nothing runs until you say go.
    │
    ├─ run-sync        rsync the code (caches, venvs, data, logs, checkpoints excluded and protected)
    │                  + deploy the harness into <remote dir>/.<target>/ (Slurm) or .ws/ (workstation)
-   ├─ run-bootstrap   uv sync into the target's venv — or verify the conda env exists
+   │                  + stamp the commit it pushed; refuse a dir another checkout of the project owns
+   ├─ run-bootstrap   uv sync into the target's venv (--job: on a compute node) — or verify the conda env exists
    ├─ one-line plan   … waits for your explicit "go"
    ├─ submit          Slurm: submit.sh → site policy → partition limits → MaxTime → availability → sbatch
    │                  workstation: run-launch → nohup on the idlest GPUs (shown to you first)
@@ -187,7 +188,7 @@ CLI flag → `<TAG>_KEY` → `KEY` → default, where `<TAG>` is the target name
 `OTHERHPC_REMOTE_DIR=/scratch/me/x`. Every key, and which ones accept a tag:
 [hpc-run conf keys](skills/hpc-run/references/conf-keys.md), [ws-run conf keys](skills/ws-run/references/conf-keys.md).
 Hooks cover the unusual cases: `ENV_HOOK` (sourced at the end of the environment), `BOOTSTRAP_HOOK` (replaces
-`uv sync`), `UV_SYNC_ARGS`, `SYNC_ALSO`, `EXTRA_EXCLUDES`.
+`uv sync`), `UV_SYNC_ARGS`, `SYNC_ALSO`, `EXTRA_EXCLUDES`; `ENV_KIND=none` for container-only payloads.
 
 ## Safety rails
 

@@ -24,6 +24,8 @@ only what it reports. Read every launch script you found (bounded: `head -60`) �
 | `pyproject.toml` with `[project] dependencies` | `ENV_KIND=uv` (default): `run-bootstrap` runs `uv sync` into the target's own venv. Deps only under `[tool.poetry]` or in requirements files → treat as the next row |
 | only `requirements*.txt` | ask: convert (`uv init --bare` + `uv add -r requirements.txt` — this edits the repo), or keep it and add `BOOTSTRAP_HOOK=scripts/rs_bootstrap.sh` (below) |
 | `conda activate X` in scripts / `environment.yml` | `ENV_KIND=conda`, `ENV_NAME=X` — only verified on the target; missing there → stop and ask (never create it) |
+| every run goes through a container (`apptainer exec` / `singularity exec` / `docker run`) and no host python is needed | `ENV_KIND=none`: no venv is built or required; the image is a large file → `EXTRA_EXCLUDES="/img.sif"` and ship it once with `run-sync --also img.sif` |
+| a second checkout (git worktree) of the same project | its own `REMOTE_DIR` when both run jobs; sharing one makes `run-sync` refuse the other checkout (`--take-over` moves it, with the user's OK) |
 | `#SBATCH -p/--partition` | `<TAG>_DEFAULT_PARTITION` (a generic `DEFAULT_PARTITION` is ignored) |
 | `-N` > 1, `--ntasks` > 1, `srun torchrun` across nodes | not supported (one node per job): report it as a gap; single-node `torchrun` in `RUN` is fine |
 | `--gres=gpu:N` / `--gres=gpu:<type>:N` / `--gpus=N` | `DEFAULT_GPUS=N` (+ `<TAG>_DEFAULT_GPU_TYPE=<type>`) |

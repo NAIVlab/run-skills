@@ -1,17 +1,42 @@
 #!/usr/bin/env bash
 # run-skills bin/run-bootstrap — run the deployed bootstrap.sh on the target (uv sync / conda check) over ssh.
 # Runs LOCALLY from the repo root (cwd with .hpc.conf / .ws.conf), after run-sync. Idempotent.
-#   TARGET=<name> bash ~/.agents/run-skills/bin/run-bootstrap
+#   TARGET=<name> bash ~/.agents/run-skills/bin/run-bootstrap                      on the login node / workstation
+#   TARGET=<name> bash ~/.agents/run-skills/bin/run-bootstrap --job [submit flags]  slurm: as a batch job
+# --job submits `bash .<t>/bootstrap.sh` through the deployed submit.sh (flags: -p -c -m -t -n -y, as for any job;
+# default = the profile's T_BOOTSTRAP_JOB) — for login nodes whose memory cap kills a torch-sized uv sync. It prints
+# the job id and log and returns at once: follow it like any job (status.sh); the log ends `bootstrap done (<t>).`
 # The remote side sources env.sh (containment) and refuses a venv outside the project / T_ENV_ROOT / VENV_DIR.
 # CLUSTER= / STATION= are accepted as aliases of TARGET=.
 set -euo pipefail
 RS_HOME=$(cd "$(dirname "$0")/.." && pwd)
 . "$RS_HOME/lib/common.sh"
 rs_init
-rs_load_conf REMOTE_DIR WS_REMOTE_DIR REMOTE_HOST
+rs_load_conf REMOTE_DIR WS_REMOTE_DIR REMOTE_HOST JOB_NAME
 RDIR=$(rs_remote_dir); DEPLOY=$(rs_deploy_dir); HOST=$(rs_host)
-[ "$#" -eq 0 ] || { echo "usage: TARGET=<name> run-bootstrap   (no arguments)" >&2; exit 2; }
+usage() { echo "usage: TARGET=<name> run-bootstrap [--job [submit.sh flags: -p -c -m -t -n -y ...]]" >&2; exit 2; }
 
-echo "[$T_NAME] bootstrap on $HOST:$RDIR  ($DEPLOY/bootstrap.sh)"
-# nohup REMOTE_DIR is $HOME-relative, so `cd` from the login shell resolves it; PROJ is taken from the remote pwd.
-exec ssh "$HOST" "cd '$RDIR' && export PROJ=\$PWD TARGET='$T_NAME' && bash '$DEPLOY/bootstrap.sh'"
+if [ "$#" -eq 0 ]; then
+  echo "[$T_NAME] bootstrap on $HOST:$RDIR  ($DEPLOY/bootstrap.sh)"
+  # nohup REMOTE_DIR is $HOME-relative, so `cd` from the login shell resolves it; PROJ is taken from the remote pwd.
+  exec ssh "$HOST" "cd '$RDIR' && export PROJ=\$PWD TARGET='$T_NAME' && bash '$DEPLOY/bootstrap.sh'"
+fi
+[ "$1" = --job ] || usage
+shift
+[ "$T_KIND" = slurm ] || die "--job needs a Slurm target ('$T_NAME' is $T_KIND); on a workstation run plain run-bootstrap"
+ARGS=("$@")
+if [ "${#ARGS[@]}" -eq 0 ]; then
+  [ -n "$(printf %s "${T_BOOTSTRAP_JOB:-}" | tr -d '[:space:]')" ] || die "target '$T_NAME' sets no T_BOOTSTRAP_JOB: pass the job's flags, e.g. run-bootstrap --job -p <cpu partition> -c 8 -m 32G -t 02:00:00"
+  set -f; for a in $T_BOOTSTRAP_JOB; do ARGS+=("$a"); done; set +f
+fi
+NAME="$(ovr JOB_NAME "$(basename "$RDIR")")-bootstrap"
+case " ${ARGS[*]} " in *" -n "*) ;; *) ARGS+=(-n "$NAME") ;; esac
+case " ${ARGS[*]} " in *" -p "*) ;; *) die "--job needs -p <partition> (a CPU partition is enough; else the default GPU partition holds a GPU)" ;; esac
+for a in "${ARGS[@]}"; do
+  case "$a" in --) die "--job takes submit.sh flags only; the payload is always the deployed bootstrap.sh" ;;
+    *[\'\"\\\$\`]*) die "--job flag '$a': no quotes, backslashes, \$ or backticks (JOB_NAME too)" ;; esac
+done
+QARGS=$(printf " '%s'" "${ARGS[@]}")
+echo "[$T_NAME] bootstrap as a job on $HOST:$RDIR  (submit.sh$QARGS -- bash <dir>/$DEPLOY/bootstrap.sh)"
+# The payload string is exactly what job.sbatch recognises as the bootstrap (it then skips its venv-present gate).
+exec ssh "$HOST" "cd '$RDIR' && bash '$DEPLOY/submit.sh'$QARGS -- bash \"\$PWD/$DEPLOY/bootstrap.sh\""

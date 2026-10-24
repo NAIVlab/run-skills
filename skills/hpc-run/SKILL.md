@@ -22,8 +22,8 @@ target when its repo root has a `.hpc.conf`; if it is missing (or the user asks 
 ## 2. Commands (cwd = the project root; `<t>` = target name, `<host>` = its host column)
 ```
 bash $ROOT/bin/run-avail [--type T] [--min N] # free GPUs on EVERY target (clusters + workstations), read-only
-TARGET=<t> bash $ROOT/bin/run-sync             # push code + deploy the harness to <REMOTE_DIR>/.<t>/ (-n dry-run, -D prune)
-TARGET=<t> bash $ROOT/bin/run-bootstrap        # first run / deps changed: uv sync the target venv, or verify the conda env
+TARGET=<t> bash $ROOT/bin/run-sync             # push code + deploy the harness to <REMOTE_DIR>/.<t>/ (-n dry-run, -D prune, --also <path>)
+TARGET=<t> bash $ROOT/bin/run-bootstrap        # first run / deps changed: uv sync the target venv, or verify the conda env (--job: on a compute node)
 # >>> print a one-line plan (target / partition / GPUs / time / run command) and wait for an explicit go, then:
 ssh <host> 'bash <REMOTE_DIR>/.<t>/submit.sh -p <partition> -g <ngpu> [-G <gputype>] -t <time> [-y] -- <RUN>'
 ssh <host> 'squeue -u $USER -o "%.10i %.3t %.11M %R %j"'        # monitor: %R = pending reason, %j last = full name

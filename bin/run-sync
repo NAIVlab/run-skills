@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # run-skills bin/run-sync — push the current project (cwd, must hold .hpc.conf / .ws.conf) to a target and
 # deploy the harness into <REMOTE_DIR>/.<target>/ (slurm) or <REMOTE_DIR>/.ws/ (nohup). Runs LOCALLY.
-#   TARGET=<name> bash ~/.agents/run-skills/bin/run-sync [-n|--dry-run (itemized)] [-D|--delete]
+#   TARGET=<name> bash ~/.agents/run-skills/bin/run-sync [-n|--dry-run (itemized)] [-D|--delete] [--also PATH]... [--take-over]
 # Additive by default: caches / venvs / wandb / logs / ckpts / outputs / data on the remote are excluded, so a
 # code sync never deletes them (not even with -D). .wandb_env is pushed separately as mode 600.
+# --also PATH: force-push one excluded path for this sync only (a one-off SYNC_ALSO, e.g. a new container image).
+# Every sync stamps <REMOTE_DIR>/.run-source (local path, branch, commit, dirty count) — the code's provenance for jobs
+# (env.sh exports RS_SOURCE_COMMIT; job.sbatch logs it). A remote dir last synced from ANOTHER local checkout (a second
+# worktree pointing at the same REMOTE_DIR) is refused, since this sync would overwrite its code: --take-over moves it here.
+# Ownership is the local path alone (host is recorded for the message): clones at the same path on two machines pass.
 # CLUSTER= / STATION= are accepted as aliases of TARGET= (v1 forwarders rely on that).
 set -euo pipefail
 RS_HOME=$(cd "$(dirname "$0")/.." && pwd)
@@ -13,12 +18,19 @@ rs_load_conf REMOTE_DIR WS_REMOTE_DIR REMOTE_HOST EXTRA_EXCLUDES SYNC_ALSO   # t
 CONF=$(rs_conf_file); RDIR=$(rs_remote_dir); DEPLOY=$(rs_deploy_dir); HOST=$(rs_host)
 XHOST=$(rs_xfer_host)   # every rsync below goes to the transfer host (if any); ssh mkdir/chmod stay on $HOST
 
-DRY=""; DEL=""
+DRY=""; DEL=""; ALSO=""; TAKE=0
+usage() { echo "usage: TARGET=<name> run-sync [-n|--dry-run] [-D|--delete] [--also PATH]... [--take-over]" >&2; exit 2; }
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -n|--dry-run) DRY="--dry-run --itemize-changes" ;;   # -n shows every file it would transfer
     -D|--delete)  DEL="--delete" ;;
-    *) echo "usage: TARGET=<name> run-sync [-n|--dry-run] [-D|--delete]" >&2; exit 2 ;;
+    --also)       [ "$#" -ge 2 ] && [ -n "$2" ] || usage
+                  case "$2" in *[[:space:]]*) die "--also '$2': no spaces in paths (rsync -R semantics)" ;; esac
+                  ALSO="$ALSO $2"; shift ;;
+    --also=?*)    case "$1" in *[[:space:]]*) die "--also '${1#--also=}': no spaces in paths (rsync -R semantics)" ;; esac
+                  ALSO="$ALSO ${1#--also=}" ;;
+    --take-over)  TAKE=1 ;;
+    *) usage ;;
   esac; shift
 done
 
@@ -29,19 +41,47 @@ EXC=(); while IFS= read -r g; do EXC+=(--exclude="$g"); done < <(rs_sync_exclude
 echo "[$T_NAME] remote: $HOST:$RDIR  tag: $T_TAG  deploy: $DEPLOY"
 [ "$XHOST" = "$HOST" ] || echo "[$T_NAME] transfer host: $XHOST (rsync only; ssh mkdir/chmod stay on $HOST)"
 echo "[$T_NAME] rsync ${DRY:+(dry) }$(pwd)/  ->  $XHOST:$RDIR/   (delete=${DEL:-off})"
-if [ -z "$DRY" ]; then ssh "$HOST" "mkdir -p '$RDIR/$DEPLOY' '$RDIR/logs'"; fi
+# provenance of what is about to be pushed; the remote's previous stamp decides whether this checkout owns the dir
+HERE=$(pwd -P)
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  S_BR=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo -); S_CM=$(git rev-parse -q --verify HEAD 2>/dev/null || echo none)
+  S_DIRTY=$(git status --porcelain 2>/dev/null | grep -c . || true)
+else S_BR=-; S_CM=none; S_DIRTY=-; fi
+if [ -z "$DRY" ]; then
+  PREV=$(ssh "$HOST" "mkdir -p '$RDIR/$DEPLOY' '$RDIR/logs' && { cat '$RDIR/.run-source' 2>/dev/null || true; }")
+  P_PATH=$(printf '%s\n' "$PREV" | sed -n 's/^path=//p' | head -n 1)
+  if [ -n "$P_PATH" ] && [ "$P_PATH" != "$HERE" ]; then
+    P_DESC=$(printf '%s\n' "$PREV" | awk -F= '$1=="host"{h=$2} $1=="branch"{b=$2} $1=="commit"{c=substr($2,1,9)} $1=="synced"{t=$2}
+      END{printf "%s, %s@%s, %s", h, b, c, t}')
+    if [ "$TAKE" = 1 ]; then echo "[$T_NAME] take-over: $RDIR was synced from $P_PATH ($P_DESC); it follows $HERE from now on"
+    else
+      echo "ERROR: $RDIR was last synced from another checkout: $P_PATH ($P_DESC), not $HERE." >&2
+      echo "  This sync would overwrite that checkout's code, under any job still running from it. Check the" >&2
+      echo "  target's jobs first (status.sh), then re-run with --take-over if this checkout should own the dir now." >&2
+      exit 2
+    fi
+  fi
+fi
 
 # 1) project code (additive unless -D; generated dirs excluded either way)
 rsync -az $DRY $DEL "${EXC[@]}" ./ "$XHOST:$RDIR/"
 # 1b) SYNC_ALSO: force-push these repo-relative paths although the default excludes drop them (e.g. "data/prompts").
 #     Additive, structure preserved (-R). Space-separated in the conf.
-for p in ${SYNC_ALSO:-}; do
+for p in ${SYNC_ALSO:-} $ALSO; do
   if [ -e "$p" ]; then rsync -azR $DRY "$p" "$XHOST:$RDIR/"; echo "[$T_NAME] sync-also: $p"
   else echo "[$T_NAME] sync-also: '$p' not found locally — skipped" >&2; fi
 done
 
-# 2) harness + this target's profile (with T_NAME pinned, so the remote never guesses) -> <RDIR>/<DEPLOY>/
+# 1c) provenance stamp (excluded from the code sync, so -D never prunes it)
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+if [ -z "$DRY" ]; then
+  printf 'path=%s\nhost=%s\nbranch=%s\ncommit=%s\ndirty=%s\nsynced=%s\n' "$HERE" "$(hostname -s 2>/dev/null || hostname)" \
+    "$S_BR" "$S_CM" "$S_DIRTY" "$(date +%Y-%m-%dT%H:%M:%S%z)" > "$TMP/run-source"
+  rsync -a "$TMP/run-source" "$XHOST:$RDIR/.run-source"
+fi
+echo "[$T_NAME] source: $S_BR@$(printf %s "$S_CM" | cut -c1-9) dirty=$S_DIRTY${DRY:+ (dry: stamp not written)}"
+
+# 2) harness + this target's profile (with T_NAME pinned, so the remote never guesses) -> <RDIR>/<DEPLOY>/
 { cat "$T_DIR/profile.sh"; printf '\nT_NAME=%s\n' "'$T_NAME'"; } > "$TMP/profile.sh"   # \n: profile may lack a final newline
 FILES=(); while IFS= read -r f; do FILES+=("$f"); done < <(rs_deploy_files)
 rsync -az $DRY "${FILES[@]}" "$TMP/profile.sh" "$XHOST:$RDIR/$DEPLOY/"

@@ -82,4 +82,23 @@ printf 'REMOTE_DIR=/x\nENV_KIND=conda\nENV_NAME=good\n' > "$J/.hpc.conf"
 O=$(job "$J" PROJ="$J" CLUSTER=fx-slurm HOME="$T/home") && has "$O" '^hi$' "conda: active env -> runs" || { bad "conda: active env -> runs"; echo "$O" | sed 's/^/    | /'; }
 printf 'conda() { case "$1" in activate) export CONDA_DEFAULT_ENV=other ;; *) return 1 ;; esac; }\n' > "$T/home/miniconda3/etc/profile.d/conda.sh"
 O=$(job "$J" PROJ="$J" CLUSTER=fx-slurm HOME="$T/home") && bad "conda: wrong env active -> blocked" || has "$O" 'not active' "conda: wrong env active -> blocked"
+echo "-- bootstrap payload, ENV_KIND=none, source stamp --"
+B=$(mk_proj fx-slurm 'REMOTE_DIR=/x
+ENV_KIND=uv') || { bad "mk_proj boot"; exit 1; }
+: > "$B/pyproject.toml"
+O=$(cd "$B" && PROJ="$B" CLUSTER=fx-slurm SLURM_JOB_ID=t1 USER="$U" PATH="$T/bin:$PATH" bash .fx-slurm/job.sbatch bash "$B/.fx-slurm/bootstrap.sh" 2>&1); RC=$?
+[ "$RC" = 0 ] && has "$O" '\[stub\] uv sync' "the deployed bootstrap runs as a job without a venv (it builds it)" || { bad "bootstrap job (rc=$RC)"; echo "$O" | sed 's/^/    | /'; }
+has "$O" 'bootstrap done (fx-slurm)' "bootstrap job log ends with its done line"
+O=$(cd "$B" && PROJ="$B" CLUSTER=fx-slurm SLURM_JOB_ID=t1 USER="$U" PATH="$T/bin:$PATH" bash .fx-slurm/job.sbatch bash "$B/.fx-slurm/bootstrap.sh" extra 2>&1)
+has "$O" 'uv venv missing' "any other payload (even bootstrap.sh + args) still needs the venv"
+rm -rf "$B/.venv-fx"
+O=$(cd "$B" && PROJ="$B" CLUSTER=fx-slurm SLURM_JOB_ID=t1 USER="$U" PATH="$T/bin:$PATH" bash .fx-slurm/job.sbatch bash ./.fx-slurm/bootstrap.sh 2>&1)
+has "$O" 'uv venv missing' "a relative spelling is not the bootstrap payload"
+printf 'REMOTE_DIR=/x\nENV_KIND=none\n' > "$B/.hpc.conf"
+O=$(job "$B" PROJ="$B" CLUSTER=fx-slurm) && has "$O" '^hi$' "ENV_KIND=none: runs without a venv" || { bad "ENV_KIND=none runs"; echo "$O" | sed 's/^/    | /'; }
+hasnt "$O" 'source:' "no stamp -> no source line"
+printf 'path=/l\nhost=h\nbranch=main\ncommit=abc123\ndirty=2\nsynced=2026-01-01T00:00:00+0000\n' > "$B/.run-source"
+O=$(job "$B" PROJ="$B" CLUSTER=fx-slurm); has "$O" 'source: branch=main commit=abc123 dirty=2 synced=2026-01-01T00:00:00+0000 (run-sync stamp)' "header logs the sync stamp"
+printf 'REMOTE_DIR=/x\nENV_KIND=pip\n' > "$B/.hpc.conf"
+O=$(job "$B" PROJ="$B" CLUSTER=fx-slurm) && bad "invalid ENV_KIND blocked" || hasnt "$O" '^hi$' "invalid ENV_KIND blocked"
 rm -rf "/tmp/ray_$U-fx" "/tmp/ray_$U"

@@ -124,3 +124,16 @@ printf 'REMOTE_DIR=/x\n' > "$F/.hpc.conf"
 printf 'T_KIND=other\nT_NAME=fx-slurm\n' > "$F/.fx-slurm/profile.sh"; refuse "bad T_KIND in profile" "T_KIND='other'" TARGET=fx-slurm
 rm "$F/.fx-slurm/profile.sh"; refuse "missing profile" 'MISSING .*profile.sh (partial sync?)' TARGET=fx-slurm
 rm -rf "/tmp/ray_$U-fx" "/tmp/ray_$U"
+
+echo "-- RS_SUFFIX, provenance, ENV_KIND=none --"
+N=$(mk_proj fx-slurm 'REMOTE_DIR=/x
+ENV_KIND=none') || { bad "mk_proj fx-slurm none"; exit 1; }
+QN='echo ready=${RUN_ENV_READY:-unset} suf=${RS_SUFFIX-unset} src=${RS_SOURCE_COMMIT-unset} venv=${UV_PROJECT_ENVIRONMENT:-unset} rsvenv=${RS_VENV:-unset} path0=${PATH%%:*} hf=${HF_HOME:-unset}'
+R=$(envq "$N" "$N/.fx-slurm" "$QN" TARGET=fx-slurm UV_PROJECT_ENVIRONMENT=/stale RS_VENV=/stale)
+has "$R" "ready=$N " "ENV_KIND=none -> READY"; has "$R" 'suf=-fx ' "RS_SUFFIX = the profile's T_SUFFIX"
+has "$R" 'venv=unset rsvenv=unset' "none: no venv exported (inherited ones dropped)"; has "$R" "path0=$N/bin " "none: ENV_ROOT/bin first on PATH"
+has "$R" "hf=$N/.cache/huggingface" "none: caches still contained"; has "$R" 'src= ' "no .run-source -> RS_SOURCE_COMMIT empty"
+printf 'path=/l\nbranch=main\ncommit=abc123\n' > "$N/.run-source"
+R=$(envq "$N" "$N/.fx-slurm" "$QN" TARGET=fx-slurm RS_SOURCE_COMMIT=stale); has "$R" 'src=abc123 ' "RS_SOURCE_COMMIT from <PROJ>/.run-source"
+printf 'REMOTE_DIR=/x\nENV_KIND=pip\n' > "$N/.hpc.conf"
+R=$(envq "$N" "$N/.fx-slurm" "$QN" TARGET=fx-slurm); has "$R" 'ready=unset' "invalid ENV_KIND -> no READY"; has "$R" 'uv|conda|none' "error lists none"

@@ -9,7 +9,7 @@ Only the keys marked **prefixable** honour `<TAG>_`; `run-sync` warns about any 
 | key | prefixable | meaning / default |
 |---|---|---|
 | `REMOTE_DIR` | yes | absolute remote project dir. **Required; never guessed.** When the target's profile sets `T_REMOTE_DIR_REQUIRED=1`, its `<TAG>_REMOTE_DIR` is mandatory |
-| `ENV_KIND` | no | `uv` (default: a venv built by `run-bootstrap` from `pyproject.toml`) or `conda` (a named env that must already exist) |
+| `ENV_KIND` | no | `uv` (default: a venv built by `run-bootstrap` from `pyproject.toml`), `conda` (a named env that must already exist) or `none` (no managed env: the payload brings its own runtime, e.g. `apptainer exec img.sif …`; containment env vars still apply, PATH is otherwise left as inherited, `BOOTSTRAP_HOOK` still runs) |
 | `ENV_NAME` | yes | conda env name (`ENV_KIND=conda` only); exported to the job |
 | `RUN` | yes | default run command (the agent pastes it after `--`; submit.sh has no fallback); `python` is the target venv's python (`uv run` also works) |
 | `DEFAULT_PARTITION` | **prefixed only** | `<TAG>_DEFAULT_PARTITION` replaces the profile's `T_DEFAULT_PARTITION`; a generic `DEFAULT_PARTITION=` line is ignored (partition names are target-specific) |
@@ -22,12 +22,12 @@ Only the keys marked **prefixable** honour `<TAG>_`; `run-sync` warns about any 
 | `SBATCH_EXTRA` | yes | extra sbatch flags, space-separated, one option per word (`"--qos=high --exclude=n1"`; `--no-requeue` opts out of the default auto-requeue; no bundled short flags). May not contain `-p/--partition`, `-J/--job-name`, `-o/--output`, `-e/--error` (the harness owns name and log path), `--array`, `--wait`, a hetjob `:`, a forbidden QOS, or a trailing `-q/--qos` without a value. Accepted, e.g.: `--dependency=singleton` (segment chains, conventions §6), `--signal=B:USR1@600` (a longer save warning: the command line overrides `job.sbatch`'s `#SBATCH` 120 s), `--mail-type=END,FAIL` |
 | `JOB_NAME` | yes | default job/log name (else the project dir basename); log = `logs/<name>_<jobid>.out` |
 | `VENV_DIR` | yes | explicit uv venv path, single-quoted (`'$HOME/.venvs/proj'` expands on the remote); accepted by the containment guard and shared between projects on purpose |
-| `ENV_HOOK` | no | repo-relative script sourced at the END of `env.sh` (job, bootstrap, interactive) — may override managed vars; branch on `$RS_TARGET` / `$RS_CUDA_ARCH` inside; mkdir any dir you repoint; missing file = fail closed |
+| `ENV_HOOK` | no | repo-relative script sourced at the END of `env.sh` (job, bootstrap, interactive) — may override managed vars; branch on `$RS_TARGET` / `$RS_CUDA_ARCH` inside, name your own per-target state with `$RS_SUFFIX` (the profile's `T_SUFFIX`, e.g. `.venv-train$RS_SUFFIX`); mkdir any dir you repoint; missing file = fail closed |
 | `BOOTSTRAP_HOOK` | no | repo-relative script that `bootstrap.sh` runs **instead of** `uv sync` (env already exported, uv on PATH) |
 | `UV_SYNC_ARGS` | no | extra words for `uv sync`, e.g. `--python-platform x86_64-manylinux_2_35` |
 | `WANDB_MODE` | no | `online` (default) / `offline` / `disabled`; forced `offline` when no `WANDB_API_KEY` (an explicit `disabled` is kept) is available. Smoke runs always use `disabled` (`experiment-conventions.md`) |
 | `EXTRA_EXCLUDES` | no | extra rsync exclude patterns, space-separated (also protects those paths from `-D`) |
-| `SYNC_ALSO` | no | repo-relative paths force-pushed even though excluded (`rsync -R` semantics; no spaces in paths) |
+| `SYNC_ALSO` | no | repo-relative paths force-pushed even though excluded (`rsync -R` semantics; no spaces in paths) on every sync; for a one-off (a new container image) use `run-sync --also <path>` instead |
 | `REMOTE_HOST` | no | override the profile's ssh alias for sync/bootstrap (rare) |
 | `DEFAULT_CLUSTER` | no | target to use when the user names none (skill routing only) |
 

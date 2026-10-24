@@ -9,7 +9,7 @@ Only the keys marked **prefixable** honour `<TAG>_`; `run-sync` warns about any 
 | key | prefixable | meaning / default |
 |---|---|---|
 | `WS_REMOTE_DIR` | via `<TAG>_REMOTE_DIR` | project dir **relative to the box's `$HOME`** (`projects/<name>`). **Required; never guessed.** `<TAG>_REMOTE_DIR` overrides it per box; a generic `REMOTE_DIR=` line is not read here |
-| `ENV_KIND` | no | `uv` (default: a per-box `.venv` built by `run-bootstrap` from `pyproject.toml`) or `conda` (a named env that must already exist) |
+| `ENV_KIND` | no | `uv` (default: a per-box `.venv` built by `run-bootstrap` from `pyproject.toml`), `conda` (a named env that must already exist) or `none` (no managed env: the payload brings its own runtime, e.g. a container; containment env vars still apply, PATH is otherwise left as inherited) |
 | `ENV_NAME` | yes | conda env name (`ENV_KIND=conda` only); the launch chain requires it to be the active env |
 | `RUN` | yes | default run command (used when `run-launch` gets no `--`); `python` is the venv's python; keep it simple — quoting is not preserved across ssh + nohup |
 | `DEFAULT_NGPU` | yes | GPUs auto-picked when `-d`/`-n` are absent (1); must be a positive integer |
@@ -22,7 +22,7 @@ Only the keys marked **prefixable** honour `<TAG>_`; `run-sync` warns about any 
 | `UV_SYNC_ARGS` | no | extra words for `uv sync` |
 | `WANDB_MODE` | no | `online` (default) / `offline` / `disabled`; forced `offline` when no `WANDB_API_KEY` (an explicit `disabled` is kept) is available. Smoke runs always use `disabled` (`experiment-conventions.md`) |
 | `EXTRA_EXCLUDES` | no | extra rsync exclude patterns, space-separated (also protects those paths from `-D`) |
-| `SYNC_ALSO` | no | repo-relative paths force-pushed even though excluded (`rsync -R` semantics; no spaces in paths) |
+| `SYNC_ALSO` | no | repo-relative paths force-pushed even though excluded (`rsync -R` semantics; no spaces in paths) on every sync; one-off: `run-sync --also <path>` |
 | `DEFAULT_STATION` | no | target to use when the user names none (skill routing only) |
 
 Not a conf key: the data-transfer node (`T_XFER_HOST`) is a site fact and lives only in the profile — every file
