@@ -22,6 +22,7 @@ FXHOME_ENV_KIND=uv') || { bad "mk_proj"; exit 1; }
 O=$(sync_in "$P" TARGET=fx-slurm); RC=$?
 [ "$RC" = 0 ] && ok "run-sync exits 0 with stubs" || { bad "run-sync exits 0 (rc=$RC)"; echo "$O" | sed 's/^/    | /'; }
 has "$(echo "$O" | head -1)" '^\[fx-slurm\] remote: fx:/x  *tag: FXSLURM  *deploy: \.fx-slurm' "first line: remote, tag, deploy dir"
+has "$O" '^\[fx-slurm\] reference: /.*/fx-slurm/reference\.md — the target rules: re-read' "sync re-prints the reference path (survives a context summary)"
 RL=$(cat "$T/rsync.log")
 for e in .git .claude/ .codex/ __pycache__/ '*.pyc' '*.parquet' /.venv '/.venv-*' /.cache/ /.local/ /.config/ /bin/ /tmp/ /wandb/ \
          /wandb-artifacts/ /logs/ /ckpts/ /checkpoints/ /outputs/ /data/ .wandb_env .fx-slurm/ .fx-home/ .ws/ .fx-packed/ '*.bin' scratch/; do

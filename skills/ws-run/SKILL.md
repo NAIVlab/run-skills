@@ -12,7 +12,9 @@ lists every registered workstation: name, ssh host, GPUs, description, and its r
 the user's words (its name or trigger words). For a new launch whose placement they did not fix (only a range like
 "a free box" / "2 GPUs", or nothing), run `run-avail` first and place by what is free now (INDEX Routing: Placement) — a Slurm
 cluster may fit better; `DEFAULT_STATION` in `.ws.conf` is preferred when it can start the job. **Then read exactly
-that target's reference file** (the path in its table row).
+that target's reference file** (the path in its table row). A summary of a file is not the file: once your context was
+summarized, re-read the reference (every path in the row; the harness re-prints them as `reference:` / `ref=`) before
+each plan unless its text is verbatim in context; the plan ends `ref: <path>`.
 If INDEX says no workstation is registered yet (or the user wants another one), register it with the user: Steps 2–6
 of `$ROOT/INSTALL.md` (read-only discovery with `$ROOT/bin/run-probe`, then `~/.config/run-skills/targets/<alias>/`
 from `$ROOT/targets/_template-nohup/`, then `install.sh`) — or install the user's lab target pack.

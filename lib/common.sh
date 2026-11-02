@@ -106,6 +106,12 @@ rs_wandb_env_file() {
   for f in ./.wandb_env "$RS_USER_DIR/wandb_env" "$HOME/.config/hpc-run/wandb_env"; do [ -f "$f" ] && { echo "$f"; return 0; }; done
   return 0
 }
+rs_ref() {   # rs_ref [ROOT]: the loaded target's reference file(s), as INDEX lists them and the harness re-prints them
+  case "$T_DIR" in "$RS_HOME/targets/"*) printf %s "${1:-$RS_HOME}/targets/$T_NAME/reference.md" ;; *) printf %s "$T_DIR/reference.md" ;; esac
+  [ -n "$T_LOCAL_DIR" ] && [ -f "$T_LOCAL_DIR/reference.local.md" ] && printf ' + %s' "$T_LOCAL_DIR/reference.local.md"; echo; }
+rs_deploy_profile() {   # rs_deploy_profile OUT: profile.sh + T_NAME + T_REF as run-sync deploys it (a path with ' gets no T_REF)
+  local r; r=$(rs_ref); case "$r" in *\'*) r="" ;; esac
+  { cat "$T_DIR/profile.sh"; printf '\nT_NAME=%s\n' "'$T_NAME'"; [ -z "$r" ] || printf 'T_REF=%s\n' "'$r'"; } > "$1"; }
 rs_gen_index() {   # rs_gen_index slurm|nohup OUT [ROOT]: references/INDEX.md for the installed skill of that kind
   local kind=$1 out=$2 root=${3:-$HOME/.agents/run-skills} skill rows=0 ref t seen='|' real
   [ "$kind" = slurm ] && skill=hpc-run || skill=ws-run
@@ -113,8 +119,7 @@ rs_gen_index() {   # rs_gen_index slurm|nohup OUT [ROOT]: references/INDEX.md fo
     echo '| target | host | GPUs | default | max time | description | reference |'; echo '|---|---|---|---|---|---|---|'
     for t in $(rs_targets); do
       ( rs_load_target "$t"; [ "$T_KIND" = "$kind" ] || exit 1
-        case "$T_DIR" in "$RS_HOME"/*) ref="$root/targets/$t/reference.md" ;; *) ref="$T_DIR/reference.md" ;; esac
-        [ -n "$T_LOCAL_DIR" ] && [ -f "$T_LOCAL_DIR/reference.local.md" ] && ref="$ref + $T_LOCAL_DIR/reference.local.md"
+        ref=$(rs_ref "$root")
         [ "$kind" = slurm ] && d="${T_DEFAULT_PARTITION:--} / ${T_DEFAULT_GPU_TYPE:--}" || d=-
         echo "| $t | $T_HOST | ${T_GPUS:--} | $d | ${T_MAXTIME:--} | ${T_DESC:--}${T_XFER_HOST:+; files via \`$T_XFER_HOST\` (run-sync/run-pull only)} | $ref |" ) && rows=$((rows+1))
     done

@@ -43,8 +43,9 @@ ssh <host> "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory
 ssh <host> "ps -eo pid,etime,cmd | grep -i '[p]ython'"      # what is already running, and whose
 ```
 Auto-pick takes the **idlest** GPUs by `memory.used`, not necessarily free ones: read the table and use `-d` when the
-pick would land on a busy card. **Print a one-line plan (target / GPU ids / run command) and wait for an explicit
-go.** Never launch onto a GPU another job is using without the user's OK.
+pick would land on a busy card. **Print a one-line plan (target / GPU ids / run command / `ref: <reference path>` —
+re-read it if only a summary of it is in context) and wait for an explicit go.** Never launch onto a GPU another job
+is using without the user's OK.
 Classify and name the run per `experiment-conventions.md` (run class, structured `-N` name, wandb mapping). A smoke
 goes out with `WANDB_MODE=disabled` (prepend `env WANDB_MODE=disabled` to the payload). A pilot/train/ablate must
 checkpoint and resume: nothing restarts a nohup run after a crash or reboot. A relaunch must use the logical run's

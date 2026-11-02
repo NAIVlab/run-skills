@@ -11,6 +11,8 @@ This document explains *why* run-skills is shaped the way it is. The user-facing
 3. **Storage policy is declared per target**, because sites differ: a fast project filesystem here, a quota on
    small files there, a per-job `$TMPDIR` somewhere else.
 4. **The agent reads little and guesses nothing**: an index of targets plus one self-contained page per target.
+   A long session's context gets summarized, and a summary of that page is not the page: `run-sync`, `run-launch`,
+   `submit.sh` and `status.sh` re-print its path (`rs_ref`, deployed as `T_REF`) so it can be re-read; one line each.
 5. **Unsafe actions need a human**: submissions, launches, cancellations, new conda envs, remote directories. One
    narrow, pre-approved exception: `run-watch --act` (below).
 

@@ -41,8 +41,8 @@ hardcode the check count.
    Prologue: `RS_HOME=$(cd "$(dirname "$0")/.." && pwd)`; `TARGET` (aliases `CLUSTER`/`STATION`) → `rs_load_target`.
 3. **Remote:** `remote/env.sh`, `remote/bootstrap.sh`, `remote/status.sh` (both kinds; status.sh = the agent's one bounded
    monitoring read), `remote/submit.sh`, `remote/job.sbatch` (slurm),
-   deployed by `run-sync` with the target's `profile.sh` (+ `T_NAME='<t>'` appended), `policy.sh` and the user's
-   `policy.local.sh`. Remote scripts never source `lib/`; `env.sh` and `bootstrap.sh` carry the same 10-line resolver
+   deployed by `run-sync` with the target's `profile.sh` (+ `T_NAME='<t>'` and `T_REF` = `rs_ref`, the local reference
+   path(s) that submit.sh/status.sh re-print, appended), `policy.sh` and the user's `policy.local.sh`. Remote scripts never source `lib/`; `env.sh` and `bootstrap.sh` carry the same 10-line resolver
    (`TARGET` → `$PROJ/.<t>` if it exists else `$PROJ/.ws` → `profile.sh` → conf).
 
 ### Where each script runs

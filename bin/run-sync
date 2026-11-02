@@ -82,7 +82,7 @@ fi
 echo "[$T_NAME] source: $S_BR@$(printf %s "$S_CM" | cut -c1-9) dirty=$S_DIRTY${DRY:+ (dry: stamp not written)}"
 
 # 2) harness + this target's profile (with T_NAME pinned, so the remote never guesses) -> <RDIR>/<DEPLOY>/
-{ cat "$T_DIR/profile.sh"; printf '\nT_NAME=%s\n' "'$T_NAME'"; } > "$TMP/profile.sh"   # \n: profile may lack a final newline
+rs_deploy_profile "$TMP/profile.sh"
 FILES=(); while IFS= read -r f; do FILES+=("$f"); done < <(rs_deploy_files)
 rsync -az $DRY "${FILES[@]}" "$TMP/profile.sh" "$XHOST:$RDIR/$DEPLOY/"
 # single known files: a dry run only names them (rsync -n to a file inside a not-yet-existing project dir fails)
@@ -101,4 +101,5 @@ else
 fi
 VIA=""; [ "$XHOST" = "$HOST" ] || VIA="; files via $XHOST (copy only with run-sync/run-pull)"   # survives | tail -1
 rs_lint_conf "./$CONF"   # stale <TAG>_KEY lines that nothing reads (WARN on stderr)
+echo "[$T_NAME] reference: $(rs_ref) — the target rules: re-read before the next plan unless verbatim in your context"
 echo "[$T_NAME] ${DRY:+dry run: nothing written; }sync done -> $HOST:$RDIR  (harness in $RDIR/$DEPLOY)$VIA"

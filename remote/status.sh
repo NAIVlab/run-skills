@@ -33,7 +33,7 @@ N=$(printf %s "$N" | sed 's/^0*//'); case "$N" in ''|*[!0-9]*) echo "ERROR: -n n
 ID=$1; CK=${2:-}; now=$(date +%s)
 case "$CK" in -*) echo "ERROR: '$CK' is not a checkpoint dir (flags go before the id / log)" >&2; exit 2 ;; esac
 case "$ID" in */*|*.*) ;; [0-9]*[_+][0-9]*) echo "ERROR: '$ID' looks like an array / hetjob id — pass the base job id or the log path" >&2; exit 2 ;; esac
-echo "observed=$(date +%FT%T) proj=$PROJ"; echo "target=${TNAME:-unknown} kind=$KIND$note"
+echo "observed=$(date +%FT%T) proj=$PROJ"; echo "target=${TNAME:-unknown} kind=$KIND$note"; REF=$(pf T_REF); [ -z "$REF" ] || echo "ref=$REF"   # the target rules (local paths): re-read unless verbatim in context
 clip() { awk -v n="$1" '{ if (length($0) <= n) { print; next } s = substr($0, 1, n); sub(/[\300-\377][\200-\277]*$/, "", s); print s "…" }'; }   # cut marked, no partial UTF-8
 norm() { tr '\r' '\n' | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' | tr -d '\000-\010\013-\037\177'; }   # CR → newline; ANSI + control bytes out
 g() { grep -aoE "$1" || { s=$?; [ "$s" = 1 ] && return 0; return "$s"; }; }     # no match is not a failure; a real grep error keeps its status

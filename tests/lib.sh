@@ -45,12 +45,12 @@ stub_rsync(){ printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" >> "%s/rsync.log
 with_path(){ PATH="$T/bin:$PATH" "$@"; }
 
 # mk_proj TARGET CONF_TEXT -> prints $T/proj_N holding the deploy dir (.<t>/ or .ws/) with the remote scripts,
-# the target's profile.sh (+ T_NAME line, as run-sync deploys it), any policy*.sh, and the conf file.
+# the target's profile.sh (+ T_NAME/T_REF via rs_deploy_profile, as run-sync deploys it), any policy*.sh, and the conf file.
 mk_proj(){
   local t="$1" conf="$2" n p; n=$(ls -d "$T"/proj_* 2>/dev/null | wc -l); p="$T/proj_$((n+1))"
   ( . "$RS_HOME/lib/common.sh"; rs_load_target "$t"; d="$p/$(rs_deploy_dir)"; mkdir -p "$d" || exit 1
     for f in $(rs_deploy_files); do cp "$f" "$d/" || exit 1; done
-    { cat "$T_DIR/profile.sh"; printf '\nT_NAME=%s\n' "'$t'"; } > "$d/profile.sh"
+    rs_deploy_profile "$d/profile.sh"
     chmod +x "$d"/*.sh; printf '%s\n' "$conf" > "$p/$(rs_conf_file)" ) || return 1
   echo "$p"
 }

@@ -47,6 +47,8 @@ has "$E" 'exits 0 without training' "conventions: chain precondition (exit 0 whe
 #   the dependent job will never be run, even if the preceding job is requeued".
 has "$E" 'after a FAILURE' "conventions: singleton continues after a failure (said)"; has "$E" 'Every finding is reported' "conventions: every finding reported"
 has "$E" 'wake-up mechanism' "conventions: the wake-up mechanism is stated, never assumed"
+for f in skills/hpc-run/SKILL.md skills/ws-run/SKILL.md skills/hpc-run/references/procedure-slurm.md skills/ws-run/references/procedure-nohup.md; do
+  has "$(cat "$RS_HOME/$f")" 'summary of' "$f: a summary of the reference is not the reference"; has "$(cat "$RS_HOME/$f")" 'ref: <' "$f: the plan cites the reference"; done
 for f in skills/hpc-run/SKILL.md skills/ws-run/SKILL.md; do has "$(cat "$RS_HOME/$f")" 'wake-up mechanism' "$f rail: state the wake-up mechanism"; done
 for f in skills/hpc-run/references/procedure-slurm.md skills/ws-run/references/procedure-nohup.md; do
   has "$(cat "$RS_HOME/$f")" 'resume=unverified' "$f: ckpt_entry is not proof of resume"; has "$(cat "$RS_HOME/$f")" 'Never read a log unbounded' "$f: byte-bounded reads rail"
@@ -166,10 +168,10 @@ for f in "$RS_HOME"/bin/* "$RS_HOME"/lib/*.sh "$RS_HOME"/remote/* "$RS_HOME"/tar
 done
 budget() { [ -f "$RS_HOME/$1" ] || { bad "$1 exists"; return; }; local n; n=$(wc -l < "$RS_HOME/$1")
   [ "$n" -le "$2" ] && ok "$1 within $2 lines ($n)" || bad "$1 within $2 lines ($n)"; }
-budget lib/common.sh 130; budget remote/env.sh 170; budget remote/bootstrap.sh 90; budget remote/submit.sh 190; budget remote/job.sbatch 65
+budget lib/common.sh 133; budget remote/env.sh 170; budget remote/bootstrap.sh 90; budget remote/submit.sh 190; budget remote/job.sbatch 65   # common +3: rs_ref, rs_deploy_profile
 budget remote/status.sh 175   # generous on purpose: every lookup has an explicit failure branch; compressing them hides bugs
 budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 240; budget AGENTS.md 165; budget INSTALL.md 230
-budget skills/hpc-run/SKILL.md 60; budget skills/ws-run/SKILL.md 60; budget bin/run-watch 700
+budget skills/hpc-run/SKILL.md 62; budget skills/ws-run/SKILL.md 62; budget bin/run-watch 700   # SKILL +2: a summary is not the reference
 budget skills/hpc-run/references/experiment-conventions.md 135;   # +4: the run-watch exception (§3, §6, §7); +1: a USR1 death is FAILED
 budget skills/hpc-run/references/project-setup.md 100
 for d in hpc-run ws-run; do [ -d "$RS_HOME/$d" ] && bad "legacy $d/ tree removed" || ok "legacy $d/ tree removed"; done

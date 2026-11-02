@@ -135,8 +135,8 @@ load_targets() {   # T* per distinct target: kind host remote-dir recover; R_K[i
     if [ -z "$k" ]; then
       k=$NK; NK=$((NK + 1)); TG_NAME[k]=$t
       out=$( ( rs_load_target "$t"; rs_load_conf REMOTE_DIR WS_REMOTE_DIR REMOTE_HOST; d=$(rs_remote_dir) || exit 2
-               printf '%s\n%s\n%s\n%s\n%s\n' "$T_KIND" "$(rs_host)" "$d" "${T_WATCH_RECOVER:-1}" "${REMOTE_HOST:-}" ) ) || exit 2
-      { read -r TG_KIND[k]; read -r TG_HOST[k]; read -r TG_RDIR[k]; read -r TG_REC[k]; read -r x; } <<< "$out"
+               printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$T_KIND" "$(rs_host)" "$d" "${T_WATCH_RECOVER:-1}" "$(rs_ref)" "${REMOTE_HOST:-}" ) ) || exit 2
+      { read -r TG_KIND[k]; read -r TG_HOST[k]; read -r TG_RDIR[k]; read -r TG_REC[k]; read -r TG_REF[k]; read -r x; } <<< "$out"
       [ -z "$x" ] || rh=1; [ "${TG_KIND[k]}" != slurm ] || nslurm=$((nslurm + 1))
       TG_FAILS[k]=0; TG_SEEN[k]=0
       for x in $keep; do [ "${x%%:*}" != "$t" ] || { x=${x#*:}; TG_FAILS[k]=${x%%:*}; TG_SEEN[k]=${x#*:}; }; done
@@ -251,6 +251,7 @@ summary() {
     n=0; for ((i = 0; i < NR; i++)); do [ "${S_ST[${R_J[i]}]}" != "$s" ] || n=$((n + 1)); done; c="$c $s=$n"
   done
   echo "$(ts) SUMMARY rows=$NR$c"
+  for ((i = 0; i < NK; i++)); do echo "$(ts) SUMMARY target=${TG_NAME[i]} reference=${TG_REF[i]} -- re-read before acting on an event unless verbatim in context"; done
   for ((i = 0; i < NR; i++)); do j=${R_J[i]}
     case "${S_ST[j]}" in held|submit-unknown) echo "$(ts) SUMMARY name=${R_NAME[i]} target=${R_TGT[i]} status=${S_ST[j]} job=${S_JOBS[j]##*,} why=${S_NOTE[j]}" ;; esac
   done

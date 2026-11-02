@@ -32,6 +32,7 @@ has "$O" "ARG:--chdir=$P\$" "--chdir=\$PROJ"; has "$O" "ARG:--export=ALL,PROJ=$P
 has "$O" 'ARG:--requeue$' "--requeue"; has "$O" "ARG:$P/.fx-slurm/job.sbatch\$" "job.sbatch path"; has "$O" 'ARG:hi$' "payload passed through"
 has "$O" 'log: .*/logs/jn_1\.out' "prints the log path (job name + id from 'Submitted batch job N')"
 has "$(subo "$P" -- echo hi)" '^+ sbatch .*--partition=gpu .*job\.sbatch echo hi$' "prints the exact sbatch argv line (replaces set -x)"
+has "$(subo "$P" -- echo hi)" '^reference: /.*/fx-slurm/reference\.md — re-read it' "submit re-prints the deployed reference path (T_REF)"
 has "$(subo "$P" -- sh -c 'printf x; exit 0')" 'sh -c printf\\ x\\;\\ exit\\ 0' "argv line keeps argument boundaries (printf %q)"
 has "$O" "ARG:--output=$P/logs/%x_%j.out\$" "absolute --output is passed on the CLI"; has "$O" "ARG:--error=$P/logs/%x_%j.out\$" "absolute --error too (stderr stays in the one log)"
 LX=$(echo "$O" | grep -n 'ARG:--exclude=n1$' | cut -d: -f1)   # the LAST SBATCH_EXTRA word; every owned option must follow it

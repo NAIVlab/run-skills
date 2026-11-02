@@ -247,6 +247,7 @@ O=$(rw t.tsv --once --stall-after 0); has "$O" 'reason=no-resume restarts=1' "no
 printf 'resumed from step 400\n' >> "$P/logs/a_1000.out"; q "1000|a|RUNNING|None|2|$((NOW - 120))|$P|"
 printf '[x] target=fx-slurm job=1000 restart=2 node=n1\nresumed from step 900\n' >> "$P/logs/a_1000.out"
 rw t.tsv --once --stall-after 0 >/dev/null; O=$(rw t.tsv --once --stall-after 0); hasnt "$O" 'no-resume' "a matching line after the restart header: quiet"
+has "$O" ' SUMMARY target=fx-slurm reference=/.*/fx-slurm/reference\.md -- re-read' "the summary names each target's reference (survives a context summary)"
 reset; approved "a fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$((NOW - 120))|$P|"; rw t.tsv --once --adopt a=1000 >/dev/null
 hasnt "$(tail -n 40 "$WORLD/scripts.log")" 'RESUME=. [0-9]' "no '#@ resume': the log is never read"
 
