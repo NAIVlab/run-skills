@@ -12,6 +12,7 @@ PROJ="$(cd "$SELF/.." && pwd)"
 [ -f "$SELF/policy.sh" ] && . "$SELF/policy.sh"
 [ -f "$SELF/policy.local.sh" ] && . "$SELF/policy.local.sh"
 CLUSTER="${T_NAME:?$SELF/profile.sh lacks T_NAME — deploy with run-sync}"
+[ -z "${T_REF:-}" ] || echo "reference: $T_REF — re-read it (not a summary) before acting on any warning or refusal below"
 TAG=$(printf %s "$CLUSTER" | tr -cd '[:alnum:]' | tr '[:lower:]' '[:upper:]')
 # trust only .hpc.conf for conf-owned keys — never stale login-shell exports (which --export=ALL would also forward)
 for _k in DEFAULT_PARTITION DEFAULT_GPU_TYPE DEFAULT_GPUS DEFAULT_CPUS DEFAULT_MEM DEFAULT_TIME ACCOUNT SBATCH_EXTRA \

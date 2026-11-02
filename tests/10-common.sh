@@ -148,6 +148,14 @@ RS_USER_DIR=$T/user2 C 'rs_gen_index slurm "$T/idx-slurm.md" /root' >/dev/null; 
 has "$(head -1 "$T/idx-slurm.md")" '^root: /root$' "index line 1 is root:"
 has "$I" '^| target | host | GPUs | default | max time | description | reference |$' "index table header"
 has "$I" "^| fx-slurm | fx | 4x fake | gpu / any | 1-00:00:00 | fixture slurm cluster | $T/user2/targets/fx-slurm/reference.md + $T/user2/targets/fx-slurm/reference.local.md |$" "overlay row: absolute reference + reference.local.md"
+has "$(RS_USER_DIR=$T/user2 C 'rs_load_target fx-slurm; rs_ref /root')" "^$T/user2/targets/fx-slurm/reference.md + $T/user2/targets/fx-slurm/reference.local.md$" "rs_ref = the INDEX reference column (harness re-prints it)"
+hasnt "$(RS_USER_DIR=$T/user2 C 'rs_load_target fx-home; rs_ref /root')" ' + ' "rs_ref: no reference.local.md, one path"
+RS_USER_DIR=$T/user2 C 'rs_load_target fx-slurm; rs_deploy_profile "$T/dp.sh"' >/dev/null
+has "$(sh -c '. "$1"; echo "$T_NAME|$T_REF"' x "$T/dp.sh")" "^fx-slurm|$T/user2/targets/fx-slurm/reference.md + " "deployed profile: T_NAME + T_REF, sourceable by sh"
+mkdir -p "$T/q'd"; printf 'T_KIND=slurm\nT_HOST=h\n' > "$T/q'd/profile.sh"; QD="$T/q'd" RS_USER_DIR=$T/user2 C 'rs_load_target fx-slurm; T_DIR=$QD; T_LOCAL_DIR=""; rs_deploy_profile "$T/dq.sh"' >/dev/null
+hasnt "$(cat "$T/dq.sh")" '^T_REF=' "a reference path with a quote is not deployed (never a corrupted path)"
+mkdir -p "$T/nest/packs/p/targets/nt"; printf 'T_KIND=slurm\nT_HOST=h\n' > "$T/nest/packs/p/targets/nt/profile.sh"
+has "$(RS_HOME=$T/nest RS_PACKS_DIR=$T/nest/packs RS_USER_DIR=/nonexistent C 'rs_load_target nt; rs_ref /root')" "^$T/nest/packs/p/targets/nt/reference.md$" "a pack under RS_HOME is not mistaken for a shipped target"
 has "$I" '^| fx-home | fx | - | gpu / any | 1-00:00:00 | ' "row with '-' for missing T_GPUS"
 hasnt "$I" 'ws-box' "slurm index has no nohup rows"
 has "$I" "^| fx-packed | fxp | - | gpu / any | 1-00:00:00 | fixture pack cluster | $RS_PACKS_DIR/fx-pack/targets/fx-packed/reference.md |$" "pack row: absolute reference"

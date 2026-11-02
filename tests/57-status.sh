@@ -212,6 +212,8 @@ W2=$(mk_proj ws-box 'WS_REMOTE_DIR=projects/z'); mkdir -p "$W2/logs"; cp "$NL" "
 rewrite "$W2/.ws/profile.sh" 's/^T_KIND=nohup;/   export T_KIND=nohup;/'; O=$(st "$W2" ws logs/u.log)
 has "$O" "^proc=alive pid=$SP " "an indented / exported T_KIND line is still the kind"; hasnt "$O" 'no usable T_KIND' "…and not reported unknown"
 has "$O" '^target=ws-box kind=nohup$' "the digest always names the target and kind it used"
+has "$O" '^ref=/.*/ws-box/reference\.md$' "the digest names the reference to re-read (T_REF)"
+rewrite "$W2/.ws/profile.sh" '/^T_REF=/d'; O=$(st "$W2" ws logs/u.log); hasnt "$O" '^ref=' "a deploy without T_REF prints no ref= line"
 W3=$(mk_proj ws-box 'WS_REMOTE_DIR=projects/q'); mkdir -p "$W3/logs"; printf 'step 1 loss=0.9\n' > "$W3/logs/u.log"
 rewrite "$W3/.ws/profile.sh" "s/^T_KIND=nohup;/T_KIND='nohup extra';/"; O=$(st "$W3" ws logs/u.log)
 has "$O" '^target=ws-box kind=unknown (no usable T_KIND in ' "a quoted profile value is read whole, not truncated into a valid one"

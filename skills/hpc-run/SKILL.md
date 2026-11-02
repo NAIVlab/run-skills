@@ -13,6 +13,8 @@ Pick the target from the user's words (its name or trigger words). For a new lau
 fix (only a range like "an H200" / "4 GPUs", or nothing), run `run-avail` first and place by what is free now (INDEX Routing:
 Placement); `DEFAULT_CLUSTER` in `.hpc.conf` is preferred when it can start the job. **Then read exactly that target's
 reference file** (the path in its table row): partitions, caps, storage model, gotchas, and a card of its values.
+A summary of a file is not the file: once your context was summarized, re-read the reference (every path in the row; the
+harness re-prints them as `reference:` / `ref=`) before each plan unless its text is verbatim in context; the plan ends `ref: <path>`.
 If INDEX says no cluster is registered yet (or the user wants another one), register it with the user: Steps 2–6 of
 `$ROOT/INSTALL.md` (read-only discovery with `$ROOT/bin/run-probe`, then `~/.config/run-skills/targets/<name>/` from
 `$ROOT/targets/_template-slurm/`, then `install.sh`) — or install the user's lab target pack. A project runs on a

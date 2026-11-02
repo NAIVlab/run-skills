@@ -21,6 +21,7 @@ WSBOX_JOB_NAME=jobx') || { bad "mk_proj ws-box"; exit 1; }
 O=$(launch "$W" -N t); RC=$?
 [ "$RC" = 0 ] && ok "launches (rc 0)" || { bad "launches (rc=$RC)"; echo "$O" | sed 's/^/    | /'; }
 has "$O" 'GPU(s) \[2,3\]' "spaced exclude + DEFAULT_NGPU=2 -> picks 2,3"; has "$O" 'started PID' "prints the PID line"
+has "$O" '^\[ws-box\] reference: /.*/ws-box/reference\.md — the target rules' "launch re-prints the reference path"
 has "$O" "verify:.*\.ws/status\.sh' 'logs/t-[0-9-]*\.log'\"" "prints the verify line: status.sh + the PROJECT-relative log, both quoted (never tail -f)"
 L=$(cat "$T/launch.log")
 has "$L" 'nice -n 7 env' "per-station NICE injected"; has "$L" 'tagcmd --flag' "<TAG>_RUN fallback used"

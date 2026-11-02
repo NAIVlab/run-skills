@@ -54,8 +54,9 @@ which partition qualifies. It is a job: state the plan and wait for the go as in
 Collect partition / GPU count / GPU type / walltime / run command from the user's words, the target's reference and
 the conf defaults. Unless the user fixed the placement, `run-avail` comes first (INDEX Routing: Placement):
 the plan then cites what is free (`max/node` = GPUs on one node; `planned` = held by backfill for a pending job; free is
-not schedulable — QOS and per-user caps apply), and why this target and partition. **Print a one-line plan and wait for an explicit "go" / "确认" / "跑".** Never submit on implicit
-consent. Prefer the target's default partition unless the user or the reference says otherwise.
+not schedulable — QOS and per-user caps apply), and why this target and partition. **Print a one-line plan, ending
+`ref: <reference path>` (re-read it if only a summary of it is in context), and wait for an explicit "go" / "确认" /
+"跑".** Never submit on implicit consent. Prefer the target's default partition unless the user or the reference says otherwise.
 Classify and name the run per `experiment-conventions.md` (run class, structured `-n` name, wandb mapping). A smoke
 goes out with `WANDB_MODE=disabled` (prepend `env WANDB_MODE=disabled` to the payload). For a pilot/train/ablate,
 confirm the command checkpoints AND auto-resumes — jobs are submitted `--requeue`, so a requeued job re-runs the
