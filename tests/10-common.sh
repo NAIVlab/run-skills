@@ -101,6 +101,11 @@ cp -R "$RS_USER_DIR" "$T/user2"; : > "$T/user2/targets/fx-slurm/policy.local.sh"
 has "$(RS_USER_DIR=$T/user2 C 'rs_load_target fx-slurm; rs_deploy_files')" "^$T/user2/targets/fx-slurm/policy.local.sh$" "policy.local.sh deployed when present"
 has "$O" "^$RS_HOME/remote/launch.sh$" "nohup deploys remote/launch.sh"
 hasnt "$(C 'rs_load_target fx-slurm; rs_deploy_files')" 'launch' "slurm never deploys launch.sh"
+has "$O" "^$RS_HOME/remote/API$" "nohup deploys remote/API (the protocol version)"
+has "$(C 'rs_load_target fx-slurm; rs_deploy_files')" "^$RS_HOME/remote/API$" "slurm deploys remote/API"
+[ "$(cat "$RS_HOME/remote/API")" = api=3 ] && [ "$(wc -l < "$RS_HOME/remote/API" | tr -d ' ')" = 1 ] && ok "remote/API is the one line api=3" || bad "remote/API is the one line api=3"
+for s in submit.sh launch.sh; do   # the plan block's api= line is the deployed API file's value
+  has "$(grep -o "@@plan v1\\\\napi=[0-9]*" "$RS_HOME/remote/$s")" "api=$(sed -n 's/^api=//p' "$RS_HOME/remote/API")\$" "$s prints the api= that remote/API says"; done
 
 echo "-- the .rs/ attempt journal: reserved name, never synced or pruned; MANIFEST hashing --"
 O=$(C 'rs_load_target rs'); RC=$?

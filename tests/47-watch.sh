@@ -4,14 +4,18 @@
 # the REAL deployed submit.sh. Covers: table rules, --approve and stale blocks, launch / max-active / one submit per
 # target per round, settle = purged + terminal sacct (re-checked in the submit ssh), the empty-squeue guard, budgets,
 # CANCELLED never resubmitted, requeue + requeue-storm, adoption rules, submit refused / unknown / interrupted,
-# --adopt / --release, workstations detect-only, stall + resume checks, blind targets, lock, lost state, exit codes.
+# --adopt / --release, workstations detect-only, stall + resume checks, blind targets, lock, lost state, exit codes;
+# P3: grep -a, <log>.rc, --rs-attempt nonces + the journal read, sticky unknowns across tables, --adopt identity,
+# '#@ ok … conf=', the lock's pid/host/start, '#@ allow fail-stop'.
 set -u
 . "$RS_HOME/tests/lib.sh"
 export WORLD=$T/world RBIN=$T/rbin TBIN=$T/bin; mkdir -p "$WORLD" "$RBIN"
 cat > "$RBIN/squeue" <<'EOS'
 #!/usr/bin/env bash
 [ ! -f "$WORLD/squeue.fail" ] || exit 1
-[ ! -f "$WORLD/squeue" ] || grep -v '^$' "$WORLD/squeue"; exit 0
+[ -f "$WORLD/squeue" ] || exit 0
+case "$*" in *UserName*) awk -F'|' -v u="${USER:-$(id -un)}" 'NF { print $1 "|" $2 "|" ($8 != "" ? $8 : u) "|" $7 "|" $3 "|" }' "$WORLD/squeue" ;;
+  *) grep -av '^$' "$WORLD/squeue" ;; esac; exit 0
 EOS
 cat > "$RBIN/sacct" <<'EOS'
 #!/usr/bin/env bash
@@ -19,22 +23,25 @@ cat > "$RBIN/sacct" <<'EOS'
 ids="" names="" fields=""
 while [ "$#" -gt 0 ]; do case "$1" in -j) ids=$2; shift ;; --name=*) names=${1#--name=} ;; -o) fields=$2; shift ;; esac; shift; done
 [ -f "$WORLD/sacct" ] || exit 0
-while IFS='|' read -r id n st ec wd el lim; do
+while IFS='|' read -r id n st ec wd el lim u; do
   [ -n "$id" ] || continue
   [ -z "$ids" ] || case ",$ids," in *",$id,"*) ;; *) continue ;; esac
   [ -z "$names" ] || case ",$names," in *",$n,"*) ;; *) continue ;; esac
-  case "$fields" in State) [ -f "$WORLD/now-running" ] && echo RUNNING || echo "$st" ;; JobID) echo "$id" ;; JobID,WorkDir) echo "$id|$wd" ;; *ElapsedRaw*) echo "$id|$n|$st|$ec|$wd|$el|$lim" ;; *) echo "$id|$n|$st|$ec|$wd" ;; esac
+  case "$fields" in State) [ -f "$WORLD/now-running" ] && echo RUNNING || echo "$st" ;; JobID) echo "$id" ;; JobID,WorkDir) echo "$id|$wd" ;; *ElapsedRaw*) echo "$id|$n|$st|$ec|$wd|$el|$lim" ;;
+    JobID,JobName,User,WorkDir) echo "$id|$n|${u:-${USER:-$(id -un)}}|$wd" ;; *) echo "$id|$n|$st|$ec|$wd" ;; esac
 done < "$WORLD/sacct"
 EOS
 cat > "$RBIN/sbatch" <<'EOS'
 #!/usr/bin/env bash
 [ ! -f "$WORLD/sbatch.fail" ] || { echo "sbatch: error: Batch job submission failed: Socket timed out on send/recv operation" >&2; exit 1; }
+[ ! -f "$WORLD/sbatch.reject" ] || { echo "sbatch: error: Batch job submission failed: Invalid partition name specified" >&2; exit 1; }
 n=$(cat "$WORLD/nextjid"); echo $((n + 1)) > "$WORLD/nextjid"; printf '%s\n' "$*" >> "$WORLD/sbatch.log"; echo "Submitted batch job $n"
 EOS
 cat > "$RBIN/ps" <<'EOS'
 #!/usr/bin/env bash
 for a in "$@"; do p=$a; done; [ -f "$WORLD/ps.$p" ] && cat "$WORLD/ps.$p" || exit 1
 EOS
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$WORLD/scancel.log"\n' > "$RBIN/scancel"
 cat > "$T/bin/ssh" <<'EOS'
 #!/usr/bin/env bash
 while [ "$#" -gt 0 ]; do case "$1" in -o) shift 2 ;; -*) shift ;; *) break ;; esac; done
@@ -43,6 +50,12 @@ h=$1; shift; echo "$h" >> "$WORLD/ssh.log"
 [ "$*" = "bash -s" ] || { echo "$*" >> "$WORLD/ssh-bad.log"; exit 99; }
 s=$(cat); printf '%s\n@@@@\n' "$s" >> "$WORLD/scripts.log"
 [ ! -f "$WORLD/ssh.hang.$h" ] || sleep 20
+[ ! -f "$WORLD/grab-lock" ] || cp "$(cat "$WORLD/grab-lock")/info" "$WORLD/lock.info" 2>/dev/null
+[ -z "${RW_LC:-}" ] || export LC_ALL=$RW_LC   # a remote login shell in a UTF-8 locale (ssh forwards LANG)
+case "$s" in *"DEPLOY="*)   # a submit ssh: the connection drops after it ran, or the watcher dies right after it
+  if [ -f "$WORLD/ssh.drop-after" ]; then printf '%s\n' "$s" | PATH="$RBIN:$TBIN:$PATH" bash -s > /dev/null 2>&1
+    echo "client_loop: send disconnect: Broken pipe" >&2; exit 255; fi
+  if [ -f "$WORLD/crash.after-submit" ]; then rm -f "$WORLD/crash.after-submit"; printf '%s\n' "$s" | PATH="$RBIN:$TBIN:$PATH" bash -s; kill -KILL "$PPID"; exit 0; fi ;; esac
 printf '%s\n' "$s" | PATH="$RBIN:$TBIN:$PATH" bash -s
 EOS
 chmod +x "$RBIN"/* "$T/bin/ssh"
@@ -80,7 +93,7 @@ O=$(rw t.tsv --once --every 10); [ "$?" = 2 ] && ok "--every below 60 refused" |
 echo "-- --approve: the program writes the checksum; edits and budget changes go stale --"
 reset; q; table "#@ allow launch preempt=2" "a fx-slurm - $ROW" "b fx-slurm - $ROW"
 O=$(rw t.tsv --approve 'yes, run a and b'); has "$O" 'approving block' "--approve prints what it approves"
-has "$(sed -n 3p "$P/t.tsv")" '^#@ ok [0-9-]* sum=[0-9]* "yes, run a and b"$' "--approve inserts '#@ ok' above the rows"
+has "$(sed -n 3p "$P/t.tsv")" '^#@ ok [0-9-]* sum=[0-9]* conf=[0-9a-f]\{12\} "yes, run a and b"$' "--approve inserts '#@ ok … conf=<sha256[:12] of .hpc.conf>' above the rows"
 cp "$P/t.tsv" "$T/t.before"; O=$(rw t.tsv --approve 'again'); has "$O" 'nothing to approve' "a second --approve changes nothing"
 cmp -s "$P/t.tsv" "$T/t.before" && ok "table untouched when nothing is pending" || bad "table untouched when nothing is pending"
 for w in '' 'say "hi"'; do O=$(rw t.tsv --approve "$w"); [ "$?" = 2 ] && ok "--approve '$w' refused" || bad "--approve '$w' refused"; done
@@ -305,3 +318,114 @@ reset; approved "#@ allow preempt=5" "a fx-slurm - $ROW"; q "1000|a|RUNNING|None
 q; acct "1000|a|PREEMPTED|0:0|$P"; touch "$WORLD/now-running"; for n in 1 2 3; do O=$(rw t.tsv --once --act); done; rm -f "$WORLD/now-running"
 has "$O" 'reason=submit-skipped n=3' "three skipped submits in a row: held for a human"; [ "$(st a 2)" = held ] && ok "skips escalate to held" || bad "skips escalate"
 
+echo "-- P3: grep -a, <log>.rc, attempt nonces + the journal, sticky unknowns, --adopt identity, conf=, lock, fail-stop --"
+UL=$(locale -a 2>/dev/null | grep -aim1 -E '^(c|en_us)\.utf-?8$'); B=$(printf '\377')
+reset; approved "a fx-slurm - $ROW"; printf '%s\n' "9|some${B}one|RUNNING|None|0|$NOW|/elsewhere|" "1000|a|PENDING|Resources$B|0|N/A|$P|" > "$WORLD/squeue"
+O=$(RW_LC=$UL rw t.tsv --once); has "$O" 'ADOPT name=a .*job=1000' "a squeue row with a byte that is not UTF-8 is still read (grep -a; locale ${UL:-default})"
+reset; { echo '#@ run-watch v1'; echo "w5 ws-box - -"; echo "w6 ws-box - -"; echo "w7 ws-box out/w7.done -"; } > "$WP/t.tsv"; rm -rf "$WP/out"
+for w in w5 w6 w7; do printf 'x\n' > "$WP/logs/$w-20261023-130000.log"; echo 4005 > "$WP/logs/$w-20261023-130000.log.pid"; done   # ps: gone
+printf 'rc=1 term=0 at=%s\n' "$NOW" > "$WP/logs/w5-20261023-130000.log.rc"; printf 'rc=0 term=0 at=%s\n' "$NOW" > "$WP/logs/w6-20261023-130000.log.rc"
+printf 'rc=0 term=1 at=%s\n' "$NOW" > "$WP/logs/w7-20261023-130000.log.rc"; O=$(rww t.tsv --once)
+has "$O" 'ATTENTION name=w5 .*reason=ended rc=1 term=0' "nohup: <log>.rc read: ended rc=N term=K"; hasnt "$O" 'ended-unverified' "  ...never ended-unverified with an .rc"
+has "$O" 'DONE name=w6 .*exit=0 term=0 artifact=unchecked' "nohup rc=0 term=0, done '-': DONE (as Slurm's COMPLETED)"
+has "$O" 'ATTENTION name=w7 .*reason=ended-no-artifact done=out/w7.done rc=0 term=1' "nohup: no artifact, the exit record shown"
+
+reset; q; approved "#@ allow launch" "a fx-slurm - $ROW"; O=$(rw t.tsv --once --act --max-active 2); N=$(st a 16)
+has "$O" 'LAUNCH name=a .*job=1000' "launch with an attempt nonce"
+has "$(grep -a 'DEPLOY=' "$WORLD/scripts.log")" "NONCE='rw-[0-9]\{8\}T[0-9]\{6\}Z-[0-9]*-1'" "the submit ssh carries rw-<UTC>-<pid>-<n>"
+printf %s "$N" | grep -Eq '^rw-[A-Za-z0-9][A-Za-z0-9._-]{0,60}$' && ok "the state records the nonce ($N)" || bad "state nonce ($N)"
+has "$(cat "$WORLD/sbatch.log")" "rs=$N" "submit.sh got --rs-attempt: the job's comment carries rs=<nonce>"
+[ -f "$P/.rs/attempts/$N/receipt" ] && ok "the attempt journal holds the receipt" || bad "journal receipt for $N"
+sub1() { reset; approved "#@ allow preempt=2" "a fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --act --adopt a=1000 >/dev/null
+  q; acct "1000|a|PREEMPTED|0:0|$P"; echo 2000 > "$WORLD/nextjid"; }
+sub1; touch "$WORLD/ssh.drop-after"; O=$(rw t.tsv --once --act); rm -f "$WORLD/ssh.drop-after"
+has "$O" 'reason=submit-unknown .*attempt=rw-' "ssh lost after the submit: submit-unknown, its attempt named"
+[ "$(st a 2)" = submit-unknown ] && [ "$(st a 4)" = 1 ] && ok "  ...sticky, budget spent once" || bad "drop: state $(st a 2) preempts $(st a 4)"
+q "2000|a|PENDING|Priority|0|N/A|$P|"; O=$(rw t.tsv --once --act)
+has "$O" 'ADOPT name=a .*job=2000 note=receipt attempt=rw-' "the next read finds the attempt's receipt: job adopted"
+[ "$(st a 2)" = active ] && [ "$(st a 4)" = 1 ] && [ "$(nsub)" = 1 ] && ok "  ...active, preempts 1, one sbatch" || bad "receipt adopt ($(st a 2) $(st a 4) $(nsub))"
+sub1; touch "$WORLD/sbatch.reject"; O=$(rw t.tsv --once --act); rm -f "$WORLD/sbatch.reject"
+has "$O" 'reason=submit-unknown' "sbatch rejected it after '+ sbatch': unknown in-band"
+O=$(rw t.tsv --once --act); has "$O" 'reason=submit-refused attempt=rw-.*verdict=refused' "the journal's verdict=refused: held submit-refused"
+[ "$(st a 2)" = held ] && [ "$(st a 4)" = 0 ] && ok "  ...budget given back (keyed by the nonce)" || bad "refused: $(st a 2) preempts $(st a 4)"
+rw t.tsv --once --act >/dev/null; [ "$(st a 4)" = 0 ] && ok "  ...and only once" || bad "refund twice ($(st a 4))"
+sub1; touch "$WORLD/sbatch.fail"; rw t.tsv --once --act >/dev/null; rm -f "$WORLD/sbatch.fail"; O=$(rw t.tsv --once --act)
+has "$O" 'reason=submit-unknown .*journal=.*verdict=unknown' "the journal's verdict=unknown: stays submit-unknown"
+sub1; touch "$WORLD/crash.after-submit"; ( export TMPDIR=$T; rw t.tsv --once --act ) >/dev/null 2>&1
+[ "$(st a 2)" = submitting ] && [ "$(st a 4)" = 1 ] && ok "killed right after the submit: the intent was on disk (submitting, preempts 1)" || bad "crash state ($(st a 2) $(st a 4))"
+q "2000|a|PENDING|Priority|0|N/A|$P|"; O=$(rw t.tsv --once --act)
+has "$O" 'reason=submit-interrupted' "restart: submit-interrupted"; has "$O" 'ADOPT name=a .*job=2000 note=receipt' "  ...settled from the journal"
+[ "$(st a 4)" = 1 ] && [ "$(nsub)" = 1 ] && ok "  ...the budget is not counted twice, no second sbatch" || bad "crash: preempts $(st a 4) sbatch $(nsub)"
+reset; q; approved "#@ allow launch" "a fx-slurm - $ROW"; cp "$P/.fx-slurm/submit.sh" "$T/submit.keep"
+printf '#!/usr/bin/env bash\n[ "$1" != --rs-attempt ] || { echo "ERROR: unknown arg '"'"'$2'"'"' (flags: -p -g ...)" >&2; exit 2; }\n' > "$P/.fx-slurm/submit.sh"
+O=$(rw t.tsv --once --act --max-active 2); cp "$T/submit.keep" "$P/.fx-slurm/submit.sh"
+has "$O" "reason=submit-refused rc=2 .*predates --rs-attempt: run-sync" "a deploy older than --rs-attempt refuses it: held, says re-sync"
+
+reset; approved "#@ allow preempt=2" "a fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --act --adopt a=1000 >/dev/null
+q; acct "1000|a|PREEMPTED|0:0|$P"; touch "$WORLD/sbatch.fail"; rw t.tsv --once --act >/dev/null; rm -f "$WORLD/sbatch.fail"
+approved "b fx-slurm - -"; rw t.tsv --once >/dev/null; approved "#@ allow preempt=2" "a fx-slurm - $ROW" "b fx-slurm - -"; rw t.tsv --once --act >/dev/null
+[ "$(st a 2)" = submit-unknown ] && [ "$(nsub)" = 0 ] && ok "submit-unknown, removed and re-added: still submit-unknown" || bad "removed path ($(st a 2))"
+approved "b fx-slurm - -"; acct; { echo '#@ run-watch v1'; echo '#@ allow launch'; echo "a fx-slurm - $ROW"; } > "$P/t2.tsv"; rw t2.tsv --approve go >/dev/null
+O=$(rw t2.tsv --once --act --max-active 3); has "$O" 'name=a .*reason=submit-unknown -- another table' "the row moved to another table: still submit-unknown there"
+[ "$(awk -F'\t' '$1 == "a" { print $2 }' "$P/logs/run-watch/t2.state")" = submit-unknown ] && [ "$(nsub)" = 0 ] && ok "  ...and never launched again" || bad "moved row launched ($(nsub))"
+rm -f "$P/t2.tsv" "$P/logs/run-watch/t2.state"*
+
+reset; approved "a fx-slurm - $ROW"; q "1000|b|RUNNING|None|0|$NOW|$P|" "1001|a|RUNNING|None|0|$NOW|/other/proj|"
+O=$(rw t.tsv --once --adopt a=1000); has "$O" 'name=a .*job=1000 reason=adopt-refused why=name=b' "--adopt of another name's job: refused"; hasnt "$O" 'ADOPT name=a .*job=1000' "  ...not adopted"
+O=$(rw t.tsv --once --adopt a=1001); has "$O" 'reason=adopt-refused why=workdir=/other/proj' "--adopt of another project's job: refused"
+reset; approved "a fx-slurm - $ROW"; q; acct "1002|a|COMPLETED|0:0|$P|||someone-else"
+O=$(rw t.tsv --once --adopt a=1002); has "$O" 'reason=adopt-refused why=user=someone-else' "--adopt of another user's job (sacct): refused"
+O=$(rw t.tsv --once --adopt a=1009); has "$O" 'reason=adopt-refused why=no-such-job' "--adopt of a job nobody lists: refused"
+ln -s "$P" "$T/plink"; q "1003|a|RUNNING|None|0|$NOW|$T/plink|"; O=$(rw t.tsv --once --adopt a=1003)
+has "$O" 'ADOPT name=a .*job=1003 note=manual' "--adopt: a WorkDir that resolves to the project (physical path) is the project"
+reset; approved "a fx-slurm - $ROW"; q; acct "1004|a|COMPLETED|0:0|$P"; O=$(rw t.tsv --once --adopt a=1004)
+has "$O" 'ADOPT name=a .*job=1004 note=manual' "--adopt of this row's ended job (sacct: name, user, WorkDir)"; has "$O" 'DONE name=a .*job=1004' "  ...settled in the same round"
+
+reset; q; approved "#@ allow launch" "a fx-slurm - $ROW"; cp "$P/.hpc.conf" "$T/conf.keep"; echo '# edited' >> "$P/.hpc.conf"
+O=$(rw t.tsv --once --act --max-active 3); has "$O" 'reason=approval-stale changed=conf' "an edited .hpc.conf makes a conf= approval stale"
+has "$O" 'why=not-approved' "  ...its rows wait for a new OK"; [ "$(nsub)" = 0 ] && ok "  ...0 submits" || bad "conf stale: 0 submits"
+cp "$T/conf.keep" "$P/.hpc.conf"; O=$(rw t.tsv --once --act --max-active 3); has "$O" 'LAUNCH name=a' "the approved conf back: the approval holds again"
+reset; q; table "#@ allow launch" "a fx-slurm - $ROW" "b fx-slurm - $ROW"; rw t.tsv --approve "old words" >/dev/null
+sed 's/ conf=[0-9a-f]*//' "$P/t.tsv" > "$T/t.old"; cp "$T/t.old" "$P/t.tsv"; echo '# edited' >> "$P/.hpc.conf"
+O=$(rw t.tsv --once --act --max-active 3); has "$O" 'LAUNCH name=a' "an '#@ ok' line without conf= (older) stays valid"; hasnt "$O" 'approval-stale' "  ...a conf edit does not make it stale"
+[ "$(echo "$O" | grep -c 'NOTE approval-unbound lines=t.tsv:3')" = 1 ] && ok "  ...one NOTE per run" || bad "unbound NOTE once"
+O=$(rw t.tsv --approve "again"); has "$O" 'nothing to approve' "  ...and --approve leaves it alone (no repeated OK)"; cp "$T/conf.keep" "$P/.hpc.conf"
+R2=$(mk_proj fx-slurm ""); L2=$T/local2; mkdir -p "$R2/logs" "$L2/logs"; printf 'REMOTE_DIR=%s\n' "$R2" > "$L2/.hpc.conf"; printf 'REMOTE_DIR=%s\n# drift\n' "$R2" > "$R2/.hpc.conf"
+{ echo '#@ run-watch v1'; echo '#@ allow launch'; echo "a fx-slurm - $ROW"; } > "$L2/t.tsv"; rwin() { ( cd "$L2" && PATH="$T/bin:$PATH" RS_WATCH_OBS_TIMEOUT=15 RS_WATCH_SUBMIT_TIMEOUT=15 bash "$RS_HOME/bin/run-watch" "$@" 2>&1 ); }
+reset; q; rwin t.tsv --approve go >/dev/null; O=$(rwin t.tsv --once --act --max-active 3)
+has "$O" 'reason=submit-skipped n=1 -- conf-differs' "the deployed .hpc.conf is not the approved one: no submit"; [ "$(nsub)" = 0 ] && ok "  ...0 submits" || bad "conf-differs: 0 submits"
+cp "$L2/.hpc.conf" "$R2/.hpc.conf"; O=$(rwin t.tsv --once --act --max-active 3); has "$O" 'LAUNCH name=a' "  ...synced: submitted"
+
+reset; approved "a fx-slurm - $ROW"; q; mkdir -p "$P/logs/run-watch/.lock"; echo $$ > "$P/logs/run-watch/.lock/pid"
+echo "$(uname -n) 2026-11-04T10:00:00+0000 1" > "$P/logs/run-watch/.lock/info"; O=$(rw t.tsv --once --act); RC=$?
+[ "$RC" = 2 ] && has "$O" "pid=$$ host=$(uname -n) started=2026-11-04T10:00:00+0000 act=1" "a live watcher's lock: its pid, host and start" || bad "lock report (rc=$RC)"
+[ "$(nsub)" = 0 ] && ok "  ...--act does not run beside it" || bad "--act beside a live watcher"
+echo 999999 > "$P/logs/run-watch/.lock/pid"; echo "other-host-x 2026-11-04T10:00:00+0000 0" > "$P/logs/run-watch/.lock/info"
+O=$(rw t.tsv --once); [ "$?" = 2 ] && has "$O" 'host=other-host-x .*another host' "another host's lock is never broken" || bad "other host lock"
+rm -rf "$P/logs/run-watch/.lock"; echo "$P/logs/run-watch/.lock" > "$WORLD/grab-lock"; rw t.tsv --once >/dev/null; rm -f "$WORLD/grab-lock"
+has "$(cat "$WORLD/lock.info" 2>/dev/null)" "^$(uname -n) [0-9T:+-]* 0$" "a running watcher records host, start time and act in its lock"
+
+fs() {   # fs ALLOW-EXTRA: a, b, d, e follow live jobs; c waits for a slot (never submitted)
+  reset; approved "#@ allow launch errors=0 $1" "a fx-slurm - $ROW" "b fx-slurm - $ROW" "c fx-slurm - $ROW" "d fx-slurm - $ROW" "e fx-slurm - $ROW"
+  q "1000|a|RUNNING|None|0|$NOW|$P|" "1001|b|RUNNING|None|0|$NOW|$P|" "1003|d|RUNNING|None|0|$NOW|$P|" "1004|e|RUNNING|None|0|$NOW|$P|"
+  rw t.tsv --once --act --max-active 4 --adopt a=1000 --adopt b=1001 --adopt d=1003 --adopt e=1004 >/dev/null
+  q "1001|b|RUNNING|None|0|$NOW|$P|" "1003|d|RUNNING|None|0|$NOW|/other/proj|" "1004|e|RUNNING|None|0|$NOW|$P|someone-else|"; }
+fs fail-stop; [ "$(nsub)" = 0 ] && ok "fail-stop setup: c not submitted yet" || bad "fail-stop setup"
+acct "1000|a|FAILED|1:0|$P"; O=$(rw t.tsv --once --act --max-active 4); RC=$?
+has "$O" 'ATTENTION name=a .*reason=fail-stop trigger=a:1000 state=FAILED exit=1:0 errors=0/0' "FAILED, errors budget 0: fail-stop with its evidence"
+has "$O" 'CANCEL name=b .*job=1001 by=fail-stop trigger=a:1000' "a live row of the table (identity checked): cancelled"
+[ "$(cat "$WORLD/scancel.log")" = 1001 ] && ok "  ...one scancel, of exactly the verified id" || bad "scancel: $(cat "$WORLD/scancel.log" 2>/dev/null)"
+has "$O" 'ATTENTION name=c .*reason=fail-stop-held trigger=a:1000' "an unsubmitted row: held"; [ "$(st c 2)" = held ] && [ "$(nsub)" = 0 ] && ok "  ...held, never submitted" || bad "c held ($(st c 2), $(nsub))"
+has "$O" 'name=d .*reason=fail-stop-not-cancelled why=workdir=/other/proj' "a WorkDir mismatch: not cancelled, says why"
+has "$O" 'name=e .*reason=fail-stop-not-cancelled why=user=someone-else' "a user mismatch: not cancelled, says why"
+q; O=$(rw t.tsv --once --act --max-active 4); [ "$(grep -c . "$WORLD/scancel.log")" = 1 ] && [ "$(nsub)" = 0 ] && ok "next round: no second cancel, still no submit" || bad "fail-stop next round"
+O=$(rw t.tsv --once --act --max-active 4 --release a); has "$O" 'NOTE name=a .*fail-stop cleared' "--release of the failed row resumes the group"
+[ "$(st c 2)" = pending ] && ok "  ...its held rows are pending again" || bad "c after release ($(st c 2))"
+for s in PREEMPTED TIMEOUT "CANCELLED by 4242"; do fs fail-stop; acct "1000|a|$s|0:0|$P"; O=$(rw t.tsv --once --act --max-active 4)
+  [ ! -s "$WORLD/scancel.log" ] && hasnt "$O" 'fail-stop' "$s never triggers fail-stop" || bad "$s triggered fail-stop"; done
+fs ""; acct "1000|a|FAILED|1:0|$P"; O=$(rw t.tsv --once --act --max-active 4)
+[ ! -s "$WORLD/scancel.log" ] && hasnt "$O" 'fail-stop' "no fail-stop in #@ allow: nothing cancelled or held" || bad "fail-stop absent"
+fs fail-stop; acct "1000|a|FAILED|1:0|$P"; O=$(rw t.tsv --once --max-active 4); [ ! -s "$WORLD/scancel.log" ] && ok "fail-stop without --act: nothing cancelled" || bad "fail-stop without --act"
+reset; approved "a fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --adopt a=1000 >/dev/null
+cut -f1-15 "$P/logs/run-watch/t.state" > "$T/st15"; cp "$T/st15" "$P/logs/run-watch/t.state"; O=$(rw t.tsv --once)
+[ "$(st a 2)" = active ] && [ "$(st a 3)" = 1000 ] && hasnt "$O" 'state-lost' "a state file from before the nonce columns (15 fields) still loads" || bad "15-field state ($(st a 2))"

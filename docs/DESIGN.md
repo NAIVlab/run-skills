@@ -142,6 +142,26 @@ for its predecessor by design. `SBATCH_EXTRA` is linted (warnings only for now) 
 the harness sets itself (`--time`, `--mem`, …) are silently overridden by whichever comes last on the command line.
 `run-sync` writes a `MANIFEST` (sha256 of every deployed file) last, so a half-finished deploy is detectable.
 
+### Plan mode and `--rs-expect`
+
+An approval is given to what the user was shown, but a submit is resolved on the target: conf defaults, the policy's
+added flags, `SBATCH_EXTRA`. Between "here is the plan" and "go" any of that can change (a re-sync, an edited conf, a
+policy update), and an agent re-typing the command can drift too. So the remote scripts resolve the request twice with
+the same code: `--rs-mode plan` runs the whole submit or launch path — policy, limits, availability, duplicate guard,
+lint, the GPU pick, the env gate — and, instead of `sbatch` / `setsid`, prints one `@@plan v1` block of *bound* fields
+(what an approval is for: partition, gres, cpus, mem, time, account, name, the extra sbatch words, the payload argv, the
+env; for a workstation the GPU request rather than the ids picked) with `bound_hash`, the sha256 of those lines. The
+envelope (free GPUs now, which ids a pick chose, file hashes, the source commit) is printed as `info_*` and not bound:
+it legitimately changes between plan and run. `--rs-expect <hash>` then recomputes the hash with the same function
+right before the snapshots and `sbatch` (before the env gate on a workstation) and refuses (exit 6) on any difference.
+Plan mode treats every `-y` gate as acknowledged — it prints the WARNING and goes on — so one card shows every
+warning, and `warnings=` counts them; a plan with warnings needs the `-y` again at submit time, which is not bound. The
+flags are separate words, so an older `submit.sh` / `launch.sh` exits 2 on the bare value word instead of submitting
+without the check (`remote/API` tells rsk what a deploy speaks). The hash proves the submission is the planned one, not
+that the user agreed to it: that stays the user's words, recorded by rsk. A busy GPU is part of the same decision: the
+workstation launch reads `nvidia-smi --query-compute-apps` once and never picks, or launches `-d` onto, a GPU with a
+compute process unless `--gpu-busy-ok` — the user's OK, not a default.
+
 ## Monitoring (`remote/status.sh`)
 
 Agents are expensive readers. `status.sh` is the single monitoring read: scheduler state (or PID liveness on a

@@ -5,7 +5,8 @@
 # to stderr, a caller whose channel died loses nothing), sbatch-failure verdicts (refused, or unknown when the job may
 # exist), an OLD parser given --rs-attempt, conf isolation (a conf's sbatch() / printf() / PATH never reach the submit; it
 # sees the profile's T_*), nested submissions, the duplicate guard (exit 6, symlinked WorkDirs), the SBATCH_EXTRA lint, the
-# --comment merge, and policy code (its own EXIT trap, fd 3) kept in the submit's subshell.  bash tests/52-attempt.sh
+# --comment merge, policy code (its own EXIT trap, fd 3) kept in the submit's subshell, and api=3: the --rs-mode plan block
+# (keys, bound fields, bound_hash, -y gates acknowledged), --rs-expect, --rs-chain, old parsers given them.  bash tests/52-attempt.sh
 set -u
 . "$RS_HOME/tests/lib.sh"
 subo() { local p=$1; shift; : > "$T/sbatch.log"; PATH="$T/bin:$PATH" bash "$p/.fx-slurm/submit.sh" "$@" 2>&1; }
@@ -268,3 +269,133 @@ printf '[ "$0" != rs-conf ] || { echo CHILD-READ-BASH-ENV >&2; echo DEFAULT_GPUS
 O=$(PATH="$T/bin:$PATH" BASH_ENV="$T/bashenv.sh" bash "$P/.fx-slurm/submit.sh" -- echo hi 2>&1)
 hasnt "$O" 'CHILD-READ-BASH-ENV' "the conf's child shell skips BASH_ENV (a module system's init runs once, in submit.sh)"
 has "$O" '^ARG:--gres=gpu:1$' "...so nothing but the conf feeds it a key"
+
+echo "-- api=3: --rs-mode plan runs every check, prints ONE block, snapshots nothing but the conf, submits nothing --"
+blk() { printf '%s\n' "$1" | sed -n '/^@@plan v1$/,/^@@end$/p'; }   # the plan block
+bnd() { printf '%s\n' "$1" | sed -n '/^kind=/,/^chain=/p'; }        # its bound lines, which bound_hash covers
+bh() { printf '%s\n' "$1" | sed -n 's/^bound_hash=//p'; }
+sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | cut -d' ' -f1; }
+PC='REMOTE_DIR=/x
+ENV_KIND=conda
+ENV_NAME=e
+FXSLURM_ENV_NAME=tagged
+WANDB_MODE=disabled
+ACCOUNT=acct
+SBATCH_EXTRA="--mail-type=END,FAIL --exclude=n1"'
+PP=$(mk_proj fx-slurm "$PC"); printf 'path=/l\ncommit=0123abc\ndirty=2\n' > "$PP/.run-source"
+PA=(-g 2 -t 2:00:00 -m 64G -c 4 -n pj -- python t.py --msg "a b")
+O=$(subo "$PP" --rs-attempt pl1 --rs-mode plan "${PA[@]}"); RC=$?; A=$PP/.rs/attempts/pl1; B=$(blk "$O")
+rc_is 0 "$RC" "plan mode" "$O"; nosub "...sbatch never runs"
+[ "$(printf '%s\n' "$B" | sed 's/=.*//' | tr '\n' ' ')" = "@@plan v1 api kind target partition gres cpus mem time account name extra payload env_kind env_name wandb_mode chain info_avail info_conf_sha256 info_profile_sha256 info_policy_sha256 info_policy_local_sha256 info_source_commit info_source_dirty warnings bound_hash @@end " ] \
+  && ok "ONE block, exactly these keys in this order" || { bad "plan block keys"; printf '%s\n' "$B" | sed 's/^/    | /'; }
+[ "$(printf '%s\n' "$O" | grep -c '^@@plan v1$')" = 1 ] && ok "...printed once, on stdout" || bad "...printed once"
+has "$(PATH="$T/bin:$PATH" bash "$PP/.fx-slurm/submit.sh" --rs-mode plan "${PA[@]}" 2>/dev/null)" '^@@end$' "...(stdout alone carries it)"
+has "$B" "^api=$(sed -n 's/^api=//p' "$PP/.fx-slurm/API")\$" "api= is the deployed .<t>/API's"; has "$B" '^kind=slurm$' "kind=slurm"; has "$B" '^target=fx-slurm$' "target="
+for kv in partition=gpu gres=gpu:2 cpus=4 mem=64G time=2:00:00 account=acct name=pj 'payload=python t\.py --msg a\\ b' env_kind=conda env_name=tagged wandb_mode=disabled chain=0; do
+  has "$B" "^$kv\$" "bound: $kv"; done
+has "$B" '^extra=--mail-type=END[\\]*,FAIL --exclude=n1$' "bound: extra = the SB_ARGS words after the harness's own (SBATCH_EXTRA here), %q each"
+hasnt "$B" '^extra=.*--job-name\|^extra=.*--chdir\|^extra=.*--export\|^extra=.*--account\|^extra=.*--requeue' "...never the harness's --job-name/--chdir/--time/--requeue/--export/--account"
+has "$B" '^info_avail=free:4/max_node:4/gpu_type:any$' "info_avail (envelope)"
+has "$B" "^info_conf_sha256=$(sha < "$PP/.hpc.conf")\$" "info_conf_sha256 = the conf's"; has "$B" "^info_profile_sha256=$(sha < "$PP/.fx-slurm/profile.sh")\$" "info_profile_sha256"
+has "$B" "^info_policy_sha256=$(sha < "$PP/.fx-slurm/policy.sh")\$" "info_policy_sha256"; has "$B" '^info_policy_local_sha256=none$' "info_policy_local_sha256=none (no overlay)"
+has "$B" '^info_source_commit=0123abc$' "info_source_commit (.run-source)"; has "$B" '^info_source_dirty=2$' "info_source_dirty"; has "$B" '^warnings=0$' "warnings=0"
+H1=$(bh "$O"); [ "${#H1}" = 64 ] && [ "$(bnd "$O" | sha)" = "$H1" ] && ok "bound_hash = sha256 of the lines kind= … chain= (each + newline)" || bad "bound_hash = sha256 of the bound lines"
+has "$(cat "$A/result")" '^stage=plan rc=0 verdict=planned at=' "journal: stage=plan rc=0 verdict=planned"
+cmp -s "$A/conf" "$PP/.hpc.conf" && ok "...the conf is snapshotted (as for every call)" || bad "...conf snapshot"
+[ ! -e "$A/profile.sh" ] && [ ! -e "$A/env.sh" ] && [ ! -e "$A/hook" ] && [ ! -e "$A/receipt" ] && [ ! -d "$PP/logs" ] && ok "...nothing else: no profile/env/hook snapshot, receipt or logs/" || bad "a plan snapshots only the conf"
+O=$(subo "$PP" --rs-attempt pl2 --rs-mode plan -y --same-name-ok "${PA[@]}"); [ "$(bh "$O")" = "$H1" ] && ok "NONCE, -y, --same-name-ok are not bound (same hash)" || bad "unbound flags keep the hash"
+for v in "-g 3" "-G h100" "-c 5" "-m 65G" "-t 3:00:00" "-n pk" "--gpu-user-asked" "--rs-chain"; do   # each against the same PA
+  O=$(subo "$PP" --rs-mode plan "${PA[@]:0:10}" $v -- python t.py --msg "a b"); [ -n "$(bh "$O")" ] && [ "$(bh "$O")" != "$H1" ] && ok "bound: '$v' changes the hash" || bad "bound: '$v' changes the hash"; done
+O=$(subo "$PP" --rs-mode plan "${PA[@]:0:10}" -- python t.py --msg "a  b"); [ "$(bh "$O")" != "$H1" ] && ok "bound: the payload argv (word boundaries count)" || bad "bound: the payload"
+for c in 'ACCOUNT=other' 'ENV_KIND=uv' 'FXSLURM_ENV_NAME=t2' 'WANDB_MODE=online' 'SBATCH_EXTRA="--exclude=n1"' 'DEFAULT_TIME=5:00'; do
+  printf '%s\n%s\n' "$PC" "$c" > "$PP/.hpc.conf"; O=$(subo "$PP" --rs-mode plan -g 2 -m 64G -c 4 -n pj -- python t.py --msg "a b")
+  printf '%s\n' "$PC" > "$PP/.hpc.conf"; O2=$(subo "$PP" --rs-mode plan -g 2 -m 64G -c 4 -n pj -- python t.py --msg "a b")
+  [ -n "$(bh "$O")" ] && [ "$(bh "$O")" != "$(bh "$O2")" ] && ok "bound: the conf's $c" || bad "bound: the conf's $c"; done
+O=$(subo "$PP" --rs-mode plan --gpu-user-asked "${PA[@]}"); has "$(blk "$O")" '^extra=--comment=acked --mail-type=END[\\]*,FAIL --exclude=n1$' "the policy's SB_ARGS words are in extra too (t_policy runs before SBATCH_EXTRA is added)"
+
+echo "-- plan mode: -y gates count as acknowledged (WARNING, go on); refusals and usage errors still end it --"
+stub_sinfo gpu 'nodeA   gpu:h100:4   gpu:h100:3(IDX:0-2)   mixed'
+O=$(subo "$P" --rs-mode plan -G h100 -g 2 -n av -- echo hi); RC=$?
+rc_is 0 "$RC" "too few free GPUs, no -y: the plan goes on" "$O"; has "$O" "^WARNING: only 1 free of 'h100' (1 on one node) — the submit needs -y" "...printing the WARNING"
+has "$(blk "$O")" '^warnings=1$' "...counted: warnings=1"; has "$(blk "$O")" '^info_avail=free:1/max_node:1/gpu_type:h100$' "...info_avail says it"; nosub "...nothing submitted"
+H2=$(bh "$O")
+O=$(subo "$P" --rs-expect "$H2" -G h100 -g 2 -n av -- echo hi); rc_is 1 "$(sub "$P" fx-slurm --rs-expect "$H2" -G h100 -g 2 -n av -- echo hi >/dev/null; echo $?)" "the approved submit without -y still stops at that WARNING"
+O=$(subo "$P" --rs-expect "$H2" -y -G h100 -g 2 -n av -- echo hi); RC=$?
+rc_is 0 "$RC" "...with -y (the card showed warnings): submits — -y is not bound" "$O"; has "$O" '^ARG:--gres=gpu:h100:2$' "...as planned"
+O=$(subo "$P" -G h100 -g 2 -n av -- echo hi); rc_is 1 $? "outside plan mode the gate is unchanged (exit 1)"; hasnt "$O" 'needs -y to queue anyway' "...with its old WARNING"
+O=$(subo "$P" -G h100 -g 2 -y -n av -- echo hi); hasnt "$O" '^WARNING: only' "...and -y outside plan mode stays silent, as before"
+rm -f "$T/sinfo.d/gpu"
+touch "$T/squeue.fail"; O=$(sq "$D" --rs-mode plan -n dup -- echo hi); RC=$?; rm -f "$T/squeue.fail"
+rc_is 0 "$RC" "squeue failing (the duplicate check's -y gate): the plan goes on" "$O"; has "$(blk "$O")" '^warnings=1$' "...counted"
+LP=$(mk_proj fx-slurm 'REMOTE_DIR=/x
+SBATCH_EXTRA="--wait-all-nodes=0"'); O=$(subo "$LP" --rs-mode plan -- echo hi)
+has "$O" '^WARNING (lint):' "a lint line is printed"; has "$(blk "$O")" '^warnings=0$' "...but WARNING (lint) is not counted"
+rc_is 3 "$(sub "$P" fx-slurm --rs-mode plan -p vip -- echo hi >/dev/null; echo $?)" "a policy refusal ends a plan"; hasnt "$(subo "$P" --rs-mode plan -p vip -- echo hi)" '^@@plan' "...no block"
+rc_is 2 "$(sub "$P" fx-slurm --rs-mode plan -Z -- echo hi >/dev/null; echo $?)" "a usage error ends a plan"; rc_is 2 "$(sub "$P" fx-slurm --rs-mode plan -- sbatch x >/dev/null; echo $?)" "...so does the payload guard"
+rc_is 2 "$(sub "$P" fx-slurm --rs-mode plan -t 2-00:00:00 -- echo hi >/dev/null; echo $?)" "...and MaxTime"
+rows "5|dup|RUNNING|None|0|N/A|$D|"; O=$(sq "$D" --rs-mode plan -n dup -- echo hi); rc_is 6 $? "a live same-name job ends a plan (exit 6)"; hasnt "$O" '^@@plan' "...no block"; rm -f "$T/squeue.rows"
+cp -R "$RS_USER_DIR" "$T/user-gate"; cat > "$T/user-gate/targets/fx-slurm/policy.local.sh" <<'EOP'
+eval "$(declare -f t_policy | sed '1s/^t_policy/t_policy_shipped/')"
+t_policy() { echo "policy sees PLAN=$PLAN FORCE=$FORCE" >&2
+  [ "$GTYPE" != slow ] || { echo "WARNING: slow GPUs. Re-run -y to take them." >&2; [ "$FORCE" = 1 ] || exit 1; }; t_policy_shipped; }
+EOP
+PG=$(RS_USER_DIR=$T/user-gate mk_proj fx-slurm 'REMOTE_DIR=/x'); stub_sinfo gpu 'nodeA   gpu:slow:4   gpu:slow:0   idle'
+O=$(subo "$PG" --rs-mode plan -G slow -- echo hi); RC=$?
+rc_is 0 "$RC" "a policy -y gate (WARNING, then FORCE) in plan mode: goes on" "$O"; has "$O" '^policy sees PLAN=1 FORCE=1$' "...the policy sees PLAN=1 FORCE=1"
+has "$(blk "$O")" '^warnings=1$' "...its WARNING counted"; has "$(blk "$O")" "^info_policy_local_sha256=$(sha < "$PG/.fx-slurm/policy.local.sh")\$" "...info_policy_local_sha256"
+rc_is 1 "$(sub "$PG" fx-slurm -G slow -- echo hi >/dev/null; echo $?)" "...outside plan mode, no -y: exit 1 (unchanged)"; has "$(subo "$PG" -- echo hi)" '^policy sees PLAN=0 FORCE=0$' "...PLAN=0 there"; rm -f "$T/sinfo.d/gpu"
+
+echo "-- --rs-expect HASH: right before the snapshots and sbatch, the same rs_bound hash --"
+printf '%s\n' "$PC" > "$PP/.hpc.conf"; O=$(subo "$PP" --rs-mode plan "${PA[@]}"); H1=$(bh "$O")
+O=$(subo "$PP" --rs-attempt ex1 --rs-expect "$H1" "${PA[@]}"); RC=$?; A=$PP/.rs/attempts/ex1
+rc_is 0 "$RC" "the plan's hash: submits" "$O"; has "$O" "^plan: bound_hash=$H1 = --rs-expect (the approved plan)\$" "...saying so"; hasnt "$O" '^@@plan' "...no block on a match"
+has "$(cat "$A/result")" 'verdict=submitted' "...verdict=submitted"; [ -f "$A/profile.sh" ] && [ -f "$A/env.sh" ] && ok "...with its snapshots" || bad "...with its snapshots"
+has "$O" '^ARG:--mail-type=END,FAIL$' "...the planned sbatch words (unescaped) reach sbatch"
+O=$(subo "$PP" --rs-attempt ex2 --rs-expect "$H1" -g 1 -t 2:00:00 -m 64G -c 4 -n pj -- python t.py --msg "a b"); RC=$?; A=$PP/.rs/attempts/ex2
+rc_is 6 "$RC" "another -g than the plan's: exit 6" "$O"; has "$O" '^ERROR: the resolved submission differs from the approved plan' "...the ERROR line"
+has "$(blk "$O")" '^gres=gpu:1$' "...after the CURRENT block"; [ "$(bh "$O")" != "$H1" ] && [ "$(bnd "$O" | sha)" = "$(bh "$O")" ] && ok "...with its own hash" || bad "...its own hash"
+nosub "...nothing submitted"; has "$(cat "$A/result")" '^stage=expect rc=6 verdict=refused ' "...journal: stage=expect rc=6 verdict=refused"
+[ ! -e "$A/profile.sh" ] && [ ! -e "$A/env.sh" ] && [ ! -e "$A/receipt" ] && ok "...before the snapshots" || bad "...before the snapshots"
+O=$(subo "$PP" --rs-mode plan -g 2 -c 4 -n pj -- python t.py); H3=$(bh "$O"); has "$(blk "$O")" '^mem=80G$' "(no -m: mem from the partition heuristic)"
+printf '%s\nDEFAULT_MEM=99G\n' "$PC" > "$PP/.hpc.conf"; O=$(subo "$PP" --rs-expect "$H3" -g 2 -c 4 -n pj -- python t.py); RC=$?
+rc_is 6 "$RC" "a conf default added after the approval (DEFAULT_MEM, the same CLI): exit 6" "$O"; has "$(blk "$O")" '^mem=99G$' "...the block shows mem=99G"
+printf '%s\nACCOUNT=moved\n' "$PC" > "$PP/.hpc.conf"; O=$(subo "$PP" --rs-expect "$H1" "${PA[@]}"); RC=$?
+rc_is 6 "$RC" "the conf edited after the approval (ACCOUNT): exit 6" "$O"; has "$(blk "$O")" '^account=moved$' "...the block shows the drift"; nosub "...nothing submitted"
+printf '%s\n' "$PC" > "$PP/.hpc.conf"
+O=$(subo "$PP" --rs-expect "$H1" --rs-mode plan "${PA[@]}"); RC=$?; rc_is 0 "$RC" "--rs-mode plan --rs-expect <same>: a plan that matches (exit 0, block)"; has "$O" '^@@end$' "...block printed"
+O=$(subo "$PP" --rs-expect "$H1" --rs-mode plan -n other "${PA[@]:2}"); rc_is 6 $? "--rs-mode plan --rs-expect <other>: exit 6"
+
+echo "-- --rs-chain: a singleton segment (adds --dependency=singleton, the duplicate guard lets it through) --"
+rows "5|chn|RUNNING|None|0|N/A|$D|"
+O=$(sq "$D" --rs-chain -n chn -- echo hi); RC=$?
+rc_is 0 "$RC" "--rs-chain next to a live same-name job: submits (it waits for it)" "$O"; has "$O" '^ARG:--dependency=singleton$' "...with --dependency=singleton"
+[ "$(printf '%s\n' "$O" | grep -c '^ARG:--dependency')" = 1 ] && ok "...once" || bad "...once"; hasnt "$O" 'ARG:--rs-chain\|passing .--rs-chain' "...the flag never reaches sbatch or the policy"
+O=$(sq "$D" --rs-mode plan --rs-chain -n chn -- echo hi); has "$(blk "$O")" '^chain=1$' "plan: chain=1"; has "$(blk "$O")" '^extra=--dependency=singleton$' "...and the word in extra"
+O=$(sq "$D" -n chn -- echo hi); rc_is 6 $? "without --rs-chain the same submit is a duplicate (exit 6)"; rm -f "$T/squeue.rows"
+for x in '--dependency=afterok:5' '-d afterany:5'; do printf 'REMOTE_DIR=/x\nSBATCH_EXTRA="%s"\n' "$x" > "$D/.hpc.conf"
+  rc_is 2 "$(PATH="$T/sq:$T/bin:$PATH" bash "$D/.fx-slurm/submit.sh" --rs-chain -n c2 -- echo hi >/dev/null 2>&1; echo $?)" "--rs-chain + SBATCH_EXTRA '$x': a conflict, exit 2"; done
+nosub "...nothing submitted"
+printf 'REMOTE_DIR=/x\nSBATCH_EXTRA="--dependency=singleton"\n' > "$D/.hpc.conf"; O=$(sq "$D" --rs-chain -n c3 -- echo hi)
+[ "$(printf '%s\n' "$O" | grep -c '^ARG:--dependency=singleton$')" = 1 ] && ok "--rs-chain + SBATCH_EXTRA's own singleton: one --dependency=singleton" || bad "--rs-chain + SBATCH_EXTRA singleton"
+printf 'REMOTE_DIR=/x\n' > "$D/.hpc.conf"; O=$(subo "$P" -n x -- echo --rs-chain); has "$O" '^ARG:--rs-chain$' "after --, --rs-chain is the payload's"; hasnt "$O" 'ARG:--dependency' "...and adds nothing"
+
+echo "-- the api=3 pre-scan: separate words, validated before the claim --"
+B0=$(natt "$P")
+for a in '--rs-mode apply' '--rs-mode' '--rs-mode plan --rs-mode plan' '--rs-mode=plan' '--rs-expect abc' "--rs-expect $(printf %s "$H1" | tr a-f A-F)" \
+         "--rs-expect ${H1}0" "--rs-expect $H1 --rs-expect $H1" "--rs-expect=$H1" '--rs-expect' '--rs-chain=1' '--rs-foo' '--rs-'; do
+  O=$(subo "$P" $a -- echo hi); RC=$?; [ "$RC" = 2 ] && ok "'${a:0:40}' refused (exit 2)" || bad "'${a:0:40}' refused (exit 2, got $RC)"; done
+[ "$(natt "$P")" = "$B0" ] && ok "...none of them claimed an attempt dir" || bad "...an invalid api=3 flag claimed a dir"; nosub "...nor submitted"
+has "$(subo "$P" -- echo hi; cat "$T/sbatch.log")" 'job\.sbatch echo hi$' "(a plain submit still goes out)"
+
+echo "-- OLD submit.sh (P2 8560838, pre-P2 650d7d6) given --rs-mode plan / --rs-expect H: exit 2, nothing submitted --"
+for c in 8560838 650d7d6; do
+  if OS=$(git -C "$RS_HOME" show "$c:remote/submit.sh" 2>/dev/null) && [ -n "$OS" ]; then
+    OP=$(mk_proj fx-slurm 'REMOTE_DIR=/x'); printf '%s\n' "$OS" > "$OP/.fx-slurm/submit.sh"
+    for a in '--rs-mode plan -- echo hi' "--rs-expect $H1 -- echo hi" '-p gpu -y --rs-mode plan -g 1 -- echo hi' "--rs-chain --rs-mode plan --rs-expect $H1 -- echo hi"; do
+      O=$(subo "$OP" $a); RC=$?
+      [ "$RC" = 2 ] && has "$O" "unknown arg '\(plan\|$H1\)'" "$c + '${a:0:40}': exit 2 (the bare value word: unknown arg)" || bad "$c + '$a': exit 2 (got $RC)"
+      nosub "$c + '${a:0:40}': sbatch never reached"; done
+    O=$(subo "$OP" --rs-chain -n lone -- echo hi)
+    [ "$?" = 0 ] && hasnt "$O" 'ARG:--dependency' "$c + a LONE --rs-chain: taken as a policy flag, submitted WITHOUT the singleton (so rsk sends it only after api=3)" || bad "$c + lone --rs-chain"
+  else echo "  SKIP: no git history ($c): an installed copy — the old-parser check runs in the clone"; fi
+done

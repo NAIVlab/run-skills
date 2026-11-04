@@ -198,16 +198,17 @@ for f in templates/hpc.conf.example templates/ws.conf.example templates/ssh_conf
   [ -f "$RS_HOME/$f" ] && ok "$f" || bad "$f"
 done
 for f in "$RS_HOME"/bin/* "$RS_HOME"/lib/*.sh "$RS_HOME"/remote/* "$RS_HOME"/targets/*/*.sh "$RS_HOME"/tests/*.sh "$RS_HOME"/selftest.sh "$RS_HOME"/install.sh; do
-  [ -f "$f" ] || continue
+  [ -f "$f" ] || continue; [ "$f" != "$RS_HOME/remote/API" ] || continue   # API is data: the one line api=N (no comment to parse around)
   head -3 "$f" | grep -q '^#[^!]' && ok "header comment: ${f#"$RS_HOME"/}" || bad "header comment: ${f#"$RS_HOME"/}"
 done
 budget() { [ -f "$RS_HOME/$1" ] || { bad "$1 exists"; return; }; local n; n=$(wc -l < "$RS_HOME/$1")
   [ "$n" -le "$2" ] && ok "$1 within $2 lines ($n)" || bad "$1 within $2 lines ($n)"; }
-budget lib/common.sh 141; budget remote/env.sh 170; budget remote/bootstrap.sh 100; budget remote/submit.sh 265; budget remote/job.sbatch 70   # common +3: rs_ref, rs_deploy_profile; +8: rs_legacy_routing (a legacy rule keeps its kind)
+budget lib/common.sh 141; budget remote/env.sh 170; budget remote/bootstrap.sh 100; budget remote/submit.sh 305; budget remote/job.sbatch 70   # common +3: rs_ref, rs_deploy_profile; +8: rs_legacy_routing (a legacy rule keeps its kind)
 # P2 (the attempt journal): submit.sh +75 (claim/replay, the body in a subshell, child-shell conf, duplicate guard, lint, receipt); bootstrap.sh +10, job.sbatch +5 (snapshots)
+# P3 (api=3): submit.sh +40 (the --rs-mode/--rs-expect/--rs-chain pre-scan, rs_bound + rs_plan = the block and the expect check, the chain conflict)
 budget remote/status.sh 175   # generous on purpose: every lookup has an explicit failure branch; compressing them hides bugs
-budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 240; budget AGENTS.md 192; budget INSTALL.md 232 # AGENTS +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal; INSTALL +2: which rsk, setup without rsk
-budget skills/remote-run/SKILL.md 95; budget bin/run-watch 700   # one entry for both kinds (the two it replaced: 62 + 61) + the rsk reads
+budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 240; budget AGENTS.md 205; budget INSTALL.md 232 # AGENTS +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
+budget skills/remote-run/SKILL.md 95; budget bin/run-watch 830   # SKILL: one entry for both kinds (the two it replaced: 62 + 61) + the rsk reads; run-watch +130 (P3): attempt nonces + the journal read, --adopt and fail-stop identity checks, conf= binding, lock holder, sticky unknowns across tables
 budget skills/remote-run/references/experiment-conventions.md 135;   # +4: the run-watch exception (§3, §6, §7); +1: a USR1 death is FAILED
 budget skills/remote-run/references/project-setup.md 100
 for d in hpc-run ws-run; do [ -e "$RS_HOME/$d" ] || [ -e "$RS_HOME/skills/$d" ] && bad "legacy $d/ trees removed" || ok "legacy $d/ trees removed"; done

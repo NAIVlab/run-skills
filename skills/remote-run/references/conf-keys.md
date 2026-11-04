@@ -4,7 +4,9 @@ The conf lives in the project root — `.hpc.conf` for Slurm targets, `.ws.conf`
 uses both kinds — and is **sourced as shell** (double-quote values with spaces; plain `export VAR=…` lines also reach
 the job or run: env.sh sources the conf at its start). `submit.sh` reads `.hpc.conf` in a child shell and takes back only
 the keys below: a function, alias or `PATH` change in the conf never affects the submit itself, and `T_*` lines never
-override the target's profile. A Slurm job uses the conf as it was at submit time (a snapshot), also after a requeue. Precedence, highest first: CLI flag → `<TAG>_KEY` → `KEY` → default. `<TAG>` = target name uppercased
+override the target's profile. A Slurm job uses the conf as it was at submit time (a snapshot), also after a requeue. The keys
+that shape a submission or launch are bound into rsk's plan (`bound_hash`): a conf edited after the approval makes that
+approved submit/launch exit 6 (`--rs-expect`), so re-plan after any conf change. Precedence, highest first: CLI flag → `<TAG>_KEY` → `KEY` → default. `<TAG>` = target name uppercased
 with non-alphanumerics dropped (`mycluster` → `MYCLUSTER_`, `my-hpc` → `MYHPC_`, `ws-box` → `WSBOX_`).
 Only the keys marked **prefixable** honour `<TAG>_`; `run-sync` warns about any other `<TAG>_KEY` line
 (`WARN: … is not honoured` — e.g. a `<TAG>_ENV_KIND` is never read). A target's profile may add its own prefixable keys
@@ -47,8 +49,8 @@ via `T_CONF_KEYS`.
 | key | prefixable | meaning / default |
 |---|---|---|
 | `WS_REMOTE_DIR` | via `<TAG>_REMOTE_DIR` | project dir **relative to the box's `$HOME`** (`projects/<name>`). **Required; never guessed.** `<TAG>_REMOTE_DIR` overrides it per box; a generic `REMOTE_DIR=` line is not read here |
-| `DEFAULT_NGPU` | yes | GPUs auto-picked when `-d`/`-n` are absent (1); must be a positive integer |
-| `GPU_EXCLUDE` | yes | comma-separated ids never auto-picked (someone else's cards: `"0,1"`; spaces tolerated, ids validated); explicit `-d` bypasses it |
+| `DEFAULT_NGPU` | yes | GPUs auto-picked when `-d`/`-n` are absent (1): the idlest with no compute process; must be a positive integer |
+| `GPU_EXCLUDE` | yes | comma-separated ids never auto-picked (someone else's cards: `"0,1"`; spaces tolerated, ids validated); explicit `-d` bypasses it (not the busy check: `-d` onto a GPU with a compute process is exit 6 without `--gpu-busy-ok`) |
 | `NICE` | yes | `nice -n` level for the run, 0-19 (shared-box etiquette; negative values are rejected) |
 | `DEFAULT_STATION` | no | target to use when the user names none (skill routing only) |
 

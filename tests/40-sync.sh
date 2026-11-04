@@ -3,12 +3,12 @@
 # protected excludes, derived + literal deploy-dir excludes, EXTRA_EXCLUDES, first-line summary, REMOTE_HOST,
 # T_REMOTE_DIR_REQUIRED, WSBOX_REMOTE_DIR precedence, transfer host (all rsyncs, never ssh), deployed profile carries T_NAME, the
 # MANIFEST (written last, sha256 per deployed file), /.rs/ never pushed nor pruned, no ln -s, SYNC_ALSO -R
-# semantics with the real rsync. Run by selftest.sh with RS_HOME set:  bash tests/40-sync.sh
+# semantics with the real rsync, remote/API deployed, --timeout=300 on every rsync. Run by selftest.sh:  bash tests/40-sync.sh
 set -u
 . "$RS_HOME/tests/lib.sh"
 stub_rsync
 # the stub only logs args; also keep whatever profile.sh gets pushed (run-sync deploys a temp copy, then removes it)
-printf 'for a in "$@"; do [ -f "$a" ] && case "$a" in *profile.sh) cat "$a" > "%s/profile.deployed" ;; */run-source) cat "$a" > "%s/stamp.deployed" ;; */MANIFEST) cat "$a" > "%s/manifest.deployed" ;; esac; done; exit 0\n' "$T" "$T" "$T" >> "$T/bin/rsync"
+printf 'for a in "$@"; do [ -f "$a" ] && case "$a" in *profile.sh) cat "$a" > "%s/profile.deployed" ;; */run-source) cat "$a" > "%s/stamp.deployed" ;; */MANIFEST) cat "$a" > "%s/manifest.deployed" ;; esac; done; printf "%%s\\n" "$*" >> "%s/rsync.calls"; exit 0\n' "$T" "$T" "$T" "$T" >> "$T/bin/rsync"   # + one line per call
 # sync_in DIR [env...] [-- flags...] : run-sync from DIR with the stub PATH and a private HOME (no real wandb_env)
 sync_in() { local d=$1; shift; local e=(); while [ "$#" -gt 0 ] && [ "$1" != -- ]; do e+=("$1"); shift; done; [ "$#" = 0 ] || shift
   ( cd "$d" && : > "$T/launch.log" && : > "$T/rsync.log" && : > "$T/ssh-host.log" && env ${e[@]+"${e[@]}"} HOME="$T/home" PATH="$T/bin:$PATH" bash "$RS_HOME/bin/run-sync" "$@" 2>&1 ); }
@@ -38,7 +38,8 @@ has "$RL" '\.hpc\.conf$' "conf pushed"; hasnt "$RL" 'chmod=F600' "no wandb_env a
 has "$(cat "$T/profile.deployed" 2>/dev/null)" "^T_NAME='fx-slurm'$" "deployed profile carries T_NAME"
 has "$(cat "$T/profile.deployed" 2>/dev/null)" 'T_KIND=slurm' "deployed profile is the target's"
 M=$(cat "$T/manifest.deployed" 2>/dev/null); MS=$(printf '%s\n' "$M" | awk '{print $2}' | sort | tr '\n' ' ')
-[ "$MS" = "bootstrap.sh env.sh job.sbatch policy.sh profile.sh status.sh submit.sh " ] && ok "MANIFEST lists every deployed file (profile.sh too)" || bad "MANIFEST lists every deployed file (got: $MS)"
+[ "$MS" = "API bootstrap.sh env.sh job.sbatch policy.sh profile.sh status.sh submit.sh " ] && ok "MANIFEST lists every deployed file (profile.sh, API too)" || bad "MANIFEST lists every deployed file (got: $MS)"
+has "$RL" '/remote/API$' "deploys remote/API (api=N: what rsk may send)"
 [ "$(printf '%s\n' "$M" | grep -cvE '^[0-9a-f]{64}  [A-Za-z0-9._-]+$')" = 0 ] && ok "MANIFEST lines are '<sha256>  <file>'" || bad "MANIFEST line format"
 PH=$( ( . "$RS_HOME/lib/common.sh"; rs_sha256 "$T/profile.deployed" ) ); EH=$( ( . "$RS_HOME/lib/common.sh"; rs_sha256 "$RS_HOME/remote/env.sh" ) )
 has "$M" "^$PH  profile.sh\$" "MANIFEST hashes profile.sh as deployed (T_NAME/T_REF appended)"; has "$M" "^$EH  env.sh\$" "MANIFEST hashes env.sh"
@@ -74,6 +75,17 @@ O=$(sync_in "$P2" TARGET=fx-slurm); RL=$(cat "$T/rsync.log")
 has "$(echo "$O" | head -1)" 'remote: alt:/tagged ' "REMOTE_HOST overrides T_HOST; FXSLURM_REMOTE_DIR beats REMOTE_DIR"
 has "$RL" '^-azR$' "SYNC_ALSO uses rsync -R"; has "$RL" '^data/prompts$' "SYNC_ALSO pushes the listed path"
 hasnt "$RL" 'data/missing' "SYNC_ALSO skips a missing path"
+
+echo "-- every rsync gets --timeout=300 (I/O inactivity) --"
+: > "$T/rsync.calls"; : > "$P/.wandb_env"; O=$(sync_in "$P" TARGET=fx-slurm -- --also .hpc.conf); RC=$?
+n=$(grep -c . "$T/rsync.calls"); m=$(grep -c -- '--timeout=300' "$T/rsync.calls")
+[ "$RC" = 0 ] && [ "$n" -ge 7 ] && [ "$m" = "$n" ] && ok "all $n rsync calls of a sync (code, --also, stamp, harness, conf, MANIFEST, wandb) carry --timeout=300" \
+  || { bad "every rsync carries --timeout=300 ($m of $n, rc=$RC)"; grep -v -- '--timeout=300' "$T/rsync.calls" | sed 's/^/    | /'; }
+: > "$T/rsync.calls"; O=$(sync_in "$P" TARGET=fx-slurm -- -n); [ "$(grep -c . "$T/rsync.calls")" = "$(grep -c -- '--timeout=300' "$T/rsync.calls")" ] && ok "...a dry run's too" || bad "...a dry run's too"
+rm -f "$P/.wandb_env"
+if command -v rsync >/dev/null 2>&1 && ! rsync --version 2>/dev/null | grep -q 'rsync stub'; then   # the reproduction: rsync's own option
+  has "$(PATH="$(printf %s "$PATH" | sed "s|$T/bin:||g")" rsync --help 2>&1)" '--timeout=SECONDS' "the real rsync lists --timeout=SECONDS (I/O timeout)"
+else echo "  SKIP: no rsync here to show --timeout"; fi
 
 echo "-- --also: one-off SYNC_ALSO --"
 mkdir -p "$P2/img"; : > "$P2/img/big.sif"
@@ -174,7 +186,8 @@ has "$RL" '/remote/env.sh$' "nohup deploys env.sh"; has "$RL" '/remote/bootstrap
 has "$RL" '/remote/status.sh$' "nohup deploys status.sh"
 hasnt "$RL" 'submit.sh\|job.sbatch\|policy.sh' "nohup deploys nothing slurm-ish"; has "$RL" '\.ws\.conf$' ".ws.conf pushed"
 has "$RL" '/remote/launch\.sh$' "nohup deploys launch.sh"
-has "$(cat "$T/manifest.deployed" 2>/dev/null)" '  profile\.sh$' "nohup deploy has a MANIFEST too"
+has "$(cat "$T/manifest.deployed" 2>/dev/null)" '  profile\.sh$' "nohup deploy has a MANIFEST too"; has "$(cat "$T/manifest.deployed")" '  API$' "...listing API"
+has "$RL" '/remote/API$' "nohup deploys remote/API"
 excl "$RL" .fx-slurm/; excl "$RL" .ws/; excl "$RL" /.config/; excl "$RL" '/.venv-*'
 has "$(cat "$T/profile.deployed" 2>/dev/null)" "^T_NAME='ws-box'$" "nohup profile carries T_NAME"
 hasnt "$(cat "$T/launch.log")" 'ln -s' "nohup: no ln -s either"

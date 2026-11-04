@@ -11,6 +11,7 @@
 # The deploy dir gets a MANIFEST (sha256 of each deployed file), written last; <REMOTE_DIR>/.rs/ (submit.sh's attempt
 # journal) is excluded like the outputs, so -D never prunes it.
 # Ownership is the local path alone (host is recorded for the message): clones at the same path on two machines pass.
+# Every rsync runs with --timeout=300: a link that stalls for 5 min fails (rsync's exit) instead of hanging the session.
 # CLUSTER= / STATION= are accepted as aliases of TARGET= (v1 forwarders rely on that).
 set -euo pipefail
 RS_HOME=$(cd "$(dirname "$0")/.." && pwd)
@@ -19,6 +20,7 @@ rs_init
 rs_load_conf REMOTE_DIR WS_REMOTE_DIR REMOTE_HOST EXTRA_EXCLUDES SYNC_ALSO   # trust only the conf, never stale exports
 CONF=$(rs_conf_file); RDIR=$(rs_remote_dir); DEPLOY=$(rs_deploy_dir); HOST=$(rs_host)
 XHOST=$(rs_xfer_host)   # every rsync below goes to the transfer host (if any); ssh mkdir/chmod stay on $HOST
+rsy() { rsync --timeout=300 "$@"; }   # EVERY transfer: 300 s without I/O aborts it (rsync's own --timeout) instead of hanging
 
 DRY=""; DEL=""; ALSO=""; TAKE=0
 usage() { echo "usage: TARGET=<name> run-sync [-n|--dry-run] [-D|--delete] [--also PATH]... [--take-over]" >&2; exit 2; }
@@ -66,11 +68,11 @@ if [ -z "$DRY" ]; then
 fi
 
 # 1) project code (additive unless -D; generated dirs excluded either way)
-rsync -az $DRY $DEL "${EXC[@]}" ./ "$XHOST:$RDIR/"
+rsy -az $DRY $DEL "${EXC[@]}" ./ "$XHOST:$RDIR/"
 # 1b) SYNC_ALSO: force-push these repo-relative paths although the default excludes drop them (e.g. "data/prompts").
 #     Additive, structure preserved (-R). Space-separated in the conf.
 for p in ${SYNC_ALSO:-} $ALSO; do
-  if [ -e "$p" ]; then rsync -azR $DRY "$p" "$XHOST:$RDIR/"; echo "[$T_NAME] sync-also: $p"
+  if [ -e "$p" ]; then rsy -azR $DRY "$p" "$XHOST:$RDIR/"; echo "[$T_NAME] sync-also: $p"
   else echo "[$T_NAME] sync-also: '$p' not found locally — skipped" >&2; fi
 done
 
@@ -79,28 +81,28 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 if [ -z "$DRY" ]; then
   printf 'path=%s\nhost=%s\nbranch=%s\ncommit=%s\ndirty=%s\nsynced=%s\n' "$HERE" "$(hostname -s 2>/dev/null || hostname)" \
     "$S_BR" "$S_CM" "$S_DIRTY" "$(date +%Y-%m-%dT%H:%M:%S%z)" > "$TMP/run-source"
-  rsync -a "$TMP/run-source" "$XHOST:$RDIR/.run-source"
+  rsy -a "$TMP/run-source" "$XHOST:$RDIR/.run-source"
 fi
 echo "[$T_NAME] source: $S_BR@$(printf %s "$S_CM" | cut -c1-9) dirty=$S_DIRTY${DRY:+ (dry: stamp not written)}"
 
 # 2) harness + this target's profile (with T_NAME pinned, so the remote never guesses) -> <RDIR>/<DEPLOY>/
 rs_deploy_profile "$TMP/profile.sh"
 FILES=(); while IFS= read -r f; do FILES+=("$f"); done < <(rs_deploy_files)
-rsync -az $DRY "${FILES[@]}" "$TMP/profile.sh" "$XHOST:$RDIR/$DEPLOY/"
+rsy -az $DRY "${FILES[@]}" "$TMP/profile.sh" "$XHOST:$RDIR/$DEPLOY/"
 # single known files: a dry run only names them (rsync -n to a file inside a not-yet-existing project dir fails)
-if [ -n "$DRY" ]; then echo "[$T_NAME] (dry) would push ./$CONF -> $RDIR/$CONF"; else rsync -az "./$CONF" "$XHOST:$RDIR/$CONF"; fi
+if [ -n "$DRY" ]; then echo "[$T_NAME] (dry) would push ./$CONF -> $RDIR/$CONF"; else rsy -az "./$CONF" "$XHOST:$RDIR/$CONF"; fi
 if [ -z "$DRY" ]; then   # chmod the deploy; drop v1 leftovers (cluster.sh/station.sh/run.sh) so only v2 files sit next to env.sh
   ssh "$HOST" "chmod +x '$RDIR/$DEPLOY/'*.sh '$RDIR/$DEPLOY/'job.sbatch 2>/dev/null; rm -f '$RDIR/$DEPLOY/'cluster.sh '$RDIR/$DEPLOY/'station.sh '$RDIR/$DEPLOY/'run.sh; true"
 fi
 # MANIFEST (`<sha256>  <file>` of every deployed file, profile.sh as deployed), written LAST: a deploy dir whose files
 # do not match it was not completed by a sync
 rs_manifest "${FILES[@]}" "$TMP/profile.sh" > "$TMP/MANIFEST" || die "could not hash the deploy files (MANIFEST)"
-if [ -n "$DRY" ]; then echo "[$T_NAME] (dry) would write $RDIR/$DEPLOY/MANIFEST"; else rsync -a "$TMP/MANIFEST" "$XHOST:$RDIR/$DEPLOY/MANIFEST"; fi
+if [ -n "$DRY" ]; then echo "[$T_NAME] (dry) would write $RDIR/$DEPLOY/MANIFEST"; else rsy -a "$TMP/MANIFEST" "$XHOST:$RDIR/$DEPLOY/MANIFEST"; fi
 
 # 3) wandb secret (mode 600): the project's own .wandb_env wins, else the central one (see rs_wandb_env_file)
 WBENV=$(rs_wandb_env_file)
 if [ -n "$WBENV" ]; then
-  [ -n "$DRY" ] || rsync -a --chmod=F600 "$WBENV" "$XHOST:$RDIR/.wandb_env"
+  [ -n "$DRY" ] || rsy -a --chmod=F600 "$WBENV" "$XHOST:$RDIR/.wandb_env"
   echo "[$T_NAME] wandb key: ${WBENV/#$HOME/\~} -> $RDIR/.wandb_env (mode 600)${DRY:+ (dry: not pushed)}"
 else
   echo "[$T_NAME] wandb key: NONE (./.wandb_env or $RS_USER_DIR/wandb_env) -> runs go offline"

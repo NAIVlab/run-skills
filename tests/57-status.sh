@@ -4,7 +4,8 @@
 # that merely contain `target=` are not headers), byte-bounded window (a CR progress-bar log where `tail -n 60`
 # would return the whole file), hint counts before display truncation (a cut is marked `…`), wandb URL from the head
 # (any host), symlinked / FIFO / unreadable / ambiguous logs, ckpt_entry, -n deep read, nohup PID alive / reused-or-skew /
-# gone / missing / ps failure, argument errors. Run by selftest.sh:  bash tests/57-status.sh
+# gone (+ its exit from <log>.rc or the EXIT footer) / missing / ps failure, grep -a on scheduler text, argument errors.
+# Run by selftest.sh:  bash tests/57-status.sh
 # Live facts behind the stubs (a production Slurm 25.05.8 cluster, 2026-09-11): `squeue -h -j ID --Format='State:0|,…'` prints one
 # unpadded `|`-separated row; `squeue -h -j <unknown>` = rc 1 + "slurm_load_jobs error: Invalid job id specified";
 # `sacct -j ID -X -n -P -o State,ExitCode,Elapsed,End` = `CANCELLED by <uid>|0:0|00:09:40|2026-07-23T15:59:02` (no
@@ -19,7 +20,7 @@ cat > "$T/bin/squeue" <<'EOF'
 case " $* " in *" 42 "*) echo "RUNNING|None|00:10:00|1-00:00:00|0|n1" ;; *" 45 "*) echo "slurm_load_jobs error: Unable to contact slurm controller (connect failure)" >&2; exit 1 ;;
                 *" 46 "*) echo "squeue: warning: something harmless" >&2; echo "PENDING|Priority|0:00|2:00:00|0|" ;;
                 *" 47 "*) exit 1 ;; *" 48 "*) echo "garbage" ;; *" 49 "*) echo "banner: cluster notice"; echo "RUNNING|None|00:02:00|1:00:00|1|n3" ;; *" 50 "*) : ;;
-                *" 55 "*) echo "maintenance|window|at|noon|not|set" ;;
+                *" 55 "*) echo "maintenance|window|at|noon|not|set" ;; *" 56 "*) printf 'RUNNING|None|00:10:00|1-00:00:00|0|n\0001\n' ;;   # a NUL in the row
                 *) echo "slurm_load_jobs error: Invalid job id specified" >&2; exit 1 ;; esac
 EOF
 cat > "$T/bin/sacct" <<EOF
@@ -32,6 +33,7 @@ case " \$* " in
   *" 52 "*) echo "service unavailable"; exit 1 ;;
   *" 53 "*) echo "garbage|not-an-exit|0|Unknown" ;;
   *" 54 "*) echo "banner: cluster notice"; echo "CANCELLED by 123|0:15|00:01:00|2026-09-11T10:00:00" ;;
+  *" 57 "*) printf 'FAILED|1:0|00:09:40|2026-09-11T10:00:00\0\n' ;;
   *) : ;;
 esac
 EOF
@@ -106,6 +108,13 @@ O=$(st "$J" fx-slurm 55); has "$O" '^job=55 state=unknown (unparsable squeue out
 for id in 51 52; do O=$(st "$J" fx-slurm "$id"); has "$O" "^job=$id state=unknown .*sacct FAILED (exit 1)" "sacct exit 1: stdout cannot certify a state ($id)"; done
 O=$(st "$J" fx-slurm 53); has "$O" '^job=53 state=unknown .*unparsable sacct output' "malformed accounting fields stay unknown"
 O=$(st "$J" fx-slurm 54); has "$O" '^job=54 state=CANCELLED by 123 exit=0:15 elapsed=00:01:00' "valid accounting row after a banner"
+O=$(st "$J" fx-slurm 56); has "$O" '^job=56 state=RUNNING reason=None elapsed=00:10:00 left=1-00:00:00 restarts=0 nodes=n1$' "a NUL byte in the squeue row: still parsed"
+O=$(st "$J" fx-slurm 57); has "$O" '^job=57 state=FAILED exit=1:0 elapsed=00:09:40 end=2026-09-11T10:00:00 (sacct; ' "...and in the sacct row"
+# grep -a on scheduler text: here LC_ALL=C and $(…) drops NULs, so it is defence in depth — GNU grep prints 'binary file
+# matches' instead of the line for a NUL (any locale) or an invalid byte (UTF-8 locales): printf 'a\0b\n' | grep b
+n=$(grep -c '"$[qa]" | grep' "$RS_HOME/remote/status.sh"); m=$(grep -c '"$[qa]" | grep -a ' "$RS_HOME/remote/status.sh")
+[ "$n" -ge 2 ] && [ "$m" = "$n" ] && ok "every grep over squeue/sacct output ($n) is grep -a" || bad "every grep over squeue/sacct output is grep -a ($m of $n)"
+has "$(printf 'a\0b\n' | grep b 2>&1; printf 'a\0b\n' | grep -a b | tr -d '\000')" '[Bb]inary file.*matches' "...why: GNU grep without -a on a NUL (reproduction)"
 O=$(st "$J" fx-slurm 44)
 has "$O" '^job=44 state=unknown (gone from the queue; sacct has no record)$' "unknown when neither squeue nor sacct answers"
 has "$O" '^log=none (logs/<name>_44.out appears when the job starts)$' "no log yet is said, not guessed"
@@ -231,7 +240,14 @@ for bad_pid in '' 'broken: 12345' '0' '12345678901' '10 32281' "12345$(printf '%
     *) has "$O" '^proc=unknown (unreadable ' "pid file '$(printf %s "$bad_pid" | head -c 12)' -> unknown, never a manufactured identity" ;; esac
 done; echo "$SP" > "$NL.pid"
 kill "$SP" 2>/dev/null; wait "$SP" 2>/dev/null
-O=$(st "$W" ws "$NL"); has "$O" "^proc=gone pid=$SP exit=unknown (nothing records a nohup exit" "dead pid -> gone, exit unknown (never invented)"
+O=$(st "$W" ws "$NL"); has "$O" "^proc=gone pid=$SP exit=unknown (no <log>.rc or EXIT footer of this pid" "dead pid -> gone, exit unknown (never invented)"
+printf 'rc=3 term=0 at=1757584180\n' > "$NL.rc"; O=$(st "$W" ws "$NL"); has "$O" "^proc=gone pid=$SP exit=3 term=0 (<log>.rc)\$" "<log>.rc (rc= term= at=): exit=3 term=0"
+for r in 'rc=3 term=0' 'rc=3 term=2 at=1' 'rc=x term=0 at=1' 'rc=1234 term=0 at=1'; do printf '%s\n' "$r" > "$NL.rc"; O=$(st "$W" ws "$NL")
+  has "$O" "^proc=gone pid=$SP exit=unknown " "a malformed <log>.rc ('$r') is not an exit record"; done; rm -f "$NL.rc"
+{ cat "$NL"; echo "[Fri Sep 11 10:09:40 2026] EXIT rc=0 term=0 pid=$SP attempt=a1"; } > "$NL.new"; cp "$NL" "$NL.keep"; mv "$NL.new" "$NL"
+O=$(st "$W" ws "$NL"); has "$O" "^proc=gone pid=$SP exit=0 term=0 (the log's EXIT footer)\$" "no <log>.rc: the wrapper's EXIT footer naming this pid"
+{ cat "$NL.keep"; echo "[Fri Sep 11 10:09:40 2026] EXIT rc=0 term=0 pid=9$SP attempt=a1"; } > "$NL"
+O=$(st "$W" ws "$NL"); has "$O" "^proc=gone pid=$SP exit=unknown " "...a footer of another pid is not this run's end"; mv "$NL.keep" "$NL"
 rm -f "$NL.pid"; O=$(st "$W" ws "$NL"); has "$O" "^proc=unknown (no $NL.pid)$" "no pid file -> proc=unknown"
 O=$(st "$W" ws logs/nope.log); has "$O" "^log=none ($W/logs/nope.log)$" "missing log named, not invented"
 

@@ -89,6 +89,16 @@ job (and every requeued restart) uses. An ssh that died or printed nothing is **
 `job=` = queued; `unknown` = sbatch ran but recorded no id: find `rs=<NONCE>` in `squeue -h -u $USER -O 'JobID:0|,Name:0|,Comment:0'` before
 anything else; a dir from the call without `result` is still running (read it again shortly); no dir from the call = it
 never started. Exit 75 = that NONCE was already used (`--rs-attempt NONCE` callers only).
+**rsk's protocol (api=3, the deployed `.<t>/API`).** `--rs-mode plan` (separate words, like `--rs-attempt`) runs every step
+above — policy, limits, MaxTime, availability, duplicate guard, lint — with each `-y` gate acknowledged (it prints its
+`WARNING:` and goes on), then prints ONE `@@plan v1` … `@@end` block instead of submitting: the bound fields (`partition gres
+cpus mem time account name extra payload env_kind env_name wandb_mode chain`), `info_*` lines (availability, sha256 of the
+conf/profile/policy, the `.run-source` commit), `warnings=N`, `bound_hash=` (result `verdict=planned`; only the conf is
+snapshotted, nothing submitted). `--rs-expect <bound_hash>` submits only while the resolved submission still hashes the same —
+else the current block + `ERROR: the resolved submission differs from the approved plan`, exit 6, nothing submitted; a
+`-y` is still needed when the plan showed warnings. `--rs-chain` makes it one singleton chain segment (`--dependency=singleton`;
+the duplicate guard lets it through; another dependency in `SBATCH_EXTRA` is exit 2). An older `submit.sh` exits 2 on these
+flags. A plan is a card to show the user, not an approval: the go is still the user's words.
 
 ## 5. Monitor / manage — start reviews with a bounded digest; cadence, milestones, detect-only: `experiment-conventions.md` §7
 ```
@@ -128,12 +138,20 @@ the earlier attempts) — confirm the trainer's own resume line after every rest
 **Many jobs or long waits: `run-watch`** (cwd = project root; `bin/run-watch` header = the full contract). A table
 `#@ run-watch v1` lists rows `name target done-path submit.sh-args -- cmd` (or `-`: watch only; `-p` required, no
 `-n`, no `*-user-asked`, no shell quoting). Each round: one read-only ssh per target, one dated event per change
-(LAUNCH REQUEUE RESUBMIT RETRY DONE STALL WARN ATTENTION …). Without `--act` it never submits. To let it act, show
-the user the rows plus `#@ allow launch preempt=N errors=N timeout=N` (no default: absent = 0; paid partitions:
+(LAUNCH REQUEUE RESUBMIT RETRY DONE STALL WARN ATTENTION CANCEL …). Without `--act` it never submits. To let it act, show
+the user the rows plus `#@ allow launch preempt=N errors=N timeout=N [fail-stop]` (no default: absent = 0; paid partitions:
 the cost of first submits plus N resubmits); only after their explicit OK run `run-watch <table> --approve "<their
-words>"`. Any later edit to those rows or the budget makes them detect-only again. It resubmits only a job the
-controller has purged with a terminal sacct state, never a CANCELLED one, never past an unknown submit outcome; a
-requeued job keeps its id and is only counted. A job ending within min(15 min, a tenth of its limit) of the time limit
+words>"`. Any later edit to those rows, the budget or `.hpc.conf` makes them detect-only again (the `#@ ok` line
+carries `conf=`, and the submit ssh checks the deployed copy; an older line without it stays valid). `fail-stop` makes
+the table one group: once an approved row fails (FAILED/OUT_OF_MEMORY before its time limit) with its `errors` budget
+spent, it cancels the table's other live jobs — only those whose name, user and WorkDir it verified in that same ssh —
+and holds the rows not yet submitted; preemption, timeouts and CANCELLED never trigger it, workstation rows are never
+touched, and `--release <that row>` resumes the group. It resubmits only a job the
+controller has purged with a terminal sacct state, never a CANCELLED one, never past an unknown submit outcome (each
+submit carries its own attempt nonce; the next read settles it from the remote attempt journal, else it stays unknown
+until `--adopt NAME=JOBID`, which checks the job's name, user and WorkDir, or a user-approved `--release`); a
+requeued job keeps its id and is only counted. One watcher per project: a second one refuses and names the holder's
+pid, host and start. A job ending within min(15 min, a tenth of its limit) of the time limit
 counts as `timeout` even when sacct says FAILED (killed by the USR1 warning) or COMPLETED without its done-path; one
 COMPLETED there with done `-` waits for a human (a save-and-exit is not proof the run finished). Run it as this session's background task with a lease (`--for`,
 default 2 h) and follow its output; every exit is a review point (`status.sh` spot-check, then restart). Without
