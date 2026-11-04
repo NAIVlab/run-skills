@@ -3,9 +3,14 @@
     rsk setup                       install the harness copy + the remote-run skill (re-run after any pack change)
     rsk update [--check] [--dry-run] [--packs-only|--tool-only] [--to REF]     (alias: upgrade)
     rsk pack list | rsk pack add <git-url|dir> [--name N]
-    rsk status [-T T]... [--days N] [--json]   read-only: this project's jobs on every target its conf names
+    rsk status [-T T]... [--days N] [--json]   this project's jobs on every target its conf names (read-only there),
+                                    its ledger runs (SUBMIT_UNKNOWN reconciled), UNLEDGERED jobs, grants, lease
     rsk logs -T T <jobid|log> [ckpt-dir] [-n N]  read-only: the bounded digest of one run (remote status.sh)
     rsk exec -T T -- <cmd> [args]   read-only allowlist (squeue sacct sinfo nvidia-smi ps df ls stat head/tail -c …)
+    rsk grant add|deny|list|revoke|import|recount   what the user allowed / forbade for this project (the ledger)
+    rsk adopt -T T (--job J | --log L) --as RUN     record an existing job of this project (identity checked)
+    rsk adopt -T T --not-submitted NONCE --approve "the user's words"     close an unknown submit
+    rsk sync|bootstrap|pull -T T [args] / rsk avail [args]   the harness's bin/run-* (cwd = project, TARGET set)
     rsk doctor                      offline checks: install, the remote-run skill, packs, targets, ssh aliases, config
     rsk config [--template]         rsk's own settings (~/.config/run-skills/config.toml)
 
@@ -22,7 +27,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from remote_run import __version__, config, harness, install, packs, paths, state
+from remote_run import __version__, adopt, config, grants, harness, install, packs, paths, state, wrappers
 from remote_run import remote_exec
 from remote_run import status as status_cmd
 from remote_run.errors import OK, UNKNOWN, USAGE, RskError
@@ -360,6 +365,9 @@ def build_parser() -> argparse.ArgumentParser:
     k.set_defaults(func=cmd_pack)
     status_cmd.add_parsers(sub)
     remote_exec.add_parser(sub)
+    grants.add_parsers(sub)
+    adopt.add_parser(sub)
+    wrappers.add_parsers(sub)
     d = sub.add_parser("doctor", help="offline checks of this install")
     d.set_defaults(func=cmd_doctor)
     c = sub.add_parser("config", help="show rsk's settings")
@@ -379,7 +387,11 @@ def _isolate() -> None:
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         _isolate()
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args, extra = parser.parse_known_args(argv)   # a passthrough command (set_defaults(passthrough=True)) takes them
+    if extra and not getattr(args, "passthrough", False):
+        parser.error(f"unrecognized arguments: {' '.join(extra)}")
+    args.extra = extra
     try:
         rc = args.func(args)
         sys.stdout.flush()        # a reader that went away surfaces here, not as a traceback at interpreter exit

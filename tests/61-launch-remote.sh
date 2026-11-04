@@ -4,7 +4,8 @@
 # journal (claim, out/err replay, stage, result, receipt fields), a dead caller loses nothing, NONCE reuse (75), the env
 # gate fail-closed paths, the duplicate guard by live triple, GPU ids (+ UUIDs in the receipt), NICE, group/wrapper TERM -> rc=143 term=1,
 # no payload without a confirmed gate, the conf cannot steer launch.sh, RUN's plain conf/hook variables (named ones only,
-# mode 600, deleted once read; the harness's CUDA env wins), nested launches, status.sh / rsk reading the run.
+# mode 600, deleted once read; the harness's CUDA env wins), nested launches, status.sh / rsk reading the run, api=3 (the
+# plan block, --rs-expect, the P2 launch.sh given its flags) and busy GPUs (--query-compute-apps, --gpu-busy-ok).
 # Run by selftest.sh with RS_HOME set:  bash tests/61-launch-remote.sh
 set -u
 . "$RS_HOME/tests/lib.sh"
@@ -17,6 +18,7 @@ cat > "$T/bin/nvidia-smi" <<EOS
 #!/usr/bin/env bash
 [ ! -f "$T/nvsmi.fail" ] || { echo "NVIDIA-SMI has failed" >&2; exit 9; }
 case "\$*" in *index,uuid,memory.used*) printf '0, GPU-aaaa0000-0000, 8000\n1, GPU-aaaa0000-0001, 2\n2, GPU-aaaa0000-0002, 5\n3, GPU-aaaa0000-0003, 9000\n' ;;
+  "--query-compute-apps=gpu_uuid,pid --format=csv,noheader") [ ! -f "$T/apps.fail" ] || exit 9; cat "$T/apps" 2>/dev/null; exit 0 ;;   # the busy list: \$T/apps
   *) echo "nvidia-smi stub: unexpected \$*" >&2; exit 2 ;; esac
 EOS
 chmod +x "$T/bin/nvidia-smi"
@@ -24,7 +26,10 @@ mkp() { local d; d=$(mk_proj ws-box "$2") || return 1; ln -s "$d" "$H/projects/$
 L() { local p=$1; shift; ( cd "$H/projects/$p" && HOME="$H" PATH="$T/bin:$PATH" TARGET=ws-box bash .ws/launch.sh "$@" 2>&1 ); }   # stderr merged
 kv() { sed -n "s/^$1=//p" "$2" 2>/dev/null | head -n 1; }
 pst() { awk '{ sub(/.*\) /, ""); print $20 }' "/proc/$1/stat" 2>/dev/null; }          # field 22, counted after the last ')'
-latt() { ls -dt "$1"/.rs/attempts/*/ 2>/dev/null | head -n 1 | sed 's|/$||'; }
+latt() {   # the attempt the last `O=$(…)` printed (by name), else the newest dir — a live wrapper may touch an older one later
+  local a; a=$(printf '%s\n' "${O:-}" | sed -n 's|^attempt: \.rs/attempts/||p' | tail -n 1)
+  if [ -n "$a" ] && [ -d "$1/.rs/attempts/$a" ]; then printf '%s\n' "$1/.rs/attempts/$a"
+  else ls -dt "$1"/.rs/attempts/*/ 2>/dev/null | head -n 1 | sed 's|/$||'; fi; }
 waitfor() { local i=0; while [ "$i" -lt 100 ]; do for f in $1; do [ -e "$f" ] && return 0; done; sleep 0.1; i=$((i+1)); done; return 1; }   # glob, 10 s
 ngrp() { ps -e -o pgid= | tr -d ' ' | grep -cx "$1"; }                                # processes left in a process group
 reap() { local r p; for r in "$T"/proj_*/.rs/attempts/*/receipt; do [ -f "$r" ] || continue; p=$(kv pgid "$r")
@@ -79,6 +84,13 @@ waitfor "$LG.rc" && has "$(cat "$LG.rc")" '^rc=143 term=1 at=[0-9]*$' "group TER
 has "$(tail -n 1 "$LG")" '^\[.*\] EXIT rc=143 term=1 pid='"$PID"' attempt=r1$' "...and the log's EXIT footer"
 S=$( cd "$H/projects/n" && bash .ws/status.sh "$(kv log "$A/receipt")" )
 has "$S" '^starts=1 restart=0 footer=EXIT rc=143 term=1' "status.sh reads the footer"; has "$S" "^proc=gone pid=$PID" "status.sh: proc=gone"
+has "$S" "^proc=gone pid=$PID exit=143 term=1 (<log>.rc)\$" "status.sh: a gone run's exit comes from <log>.rc (never 'unknown' when it is recorded)"
+mv "$LG.rc" "$LG.rc.off"; S=$( cd "$H/projects/n" && bash .ws/status.sh "$(kv log "$A/receipt")" )
+has "$S" "^proc=gone pid=$PID exit=143 term=1 (the log's EXIT footer)\$" "...without <log>.rc: from the log's EXIT footer naming that pid"
+sed "s/ pid=$PID / pid=1$PID /" "$LG" > "$LG.x" && mv "$LG.x" "$LG"; S=$( cd "$H/projects/n" && bash .ws/status.sh "$(kv log "$A/receipt")" )
+has "$S" "^proc=gone pid=$PID exit=unknown (no <log>.rc or EXIT footer of this pid" "...a footer of another pid is not this run's: unknown"
+printf 'rc=abc term=1 at=1\n' > "$LG.rc"; S=$( cd "$H/projects/n" && bash .ws/status.sh "$(kv log "$A/receipt")" )
+has "$S" "^proc=gone pid=$PID exit=unknown " "...nor is a malformed <log>.rc"; mv "$LG.rc.off" "$LG.rc"
 LG2=$N/$(kv log "$A2/receipt"); kill -TERM "$PID2"   # the wrapper alone (`kill <pid>`): forwarded once to the run
 waitfor "$LG2.rc" && has "$(cat "$LG2.rc")" '^rc=143 term=1 ' "TERM to the wrapper pid alone -> forwarded, rc=143 term=1" || bad "wrapper TERM -> <log>.rc"
 i=0; while [ "$(ngrp "$PID2")" != 0 ] && [ "$i" -lt 20 ]; do sleep 0.1; i=$((i+1)); done   # the wrapper exits just after .rc
@@ -118,7 +130,9 @@ for n in 'a b' '' . .. -y .x a/b 'é' "$(printf 'x%.0s' $(seq 65))"; do   # subm
   O=$(L n --rs-attempt "$n" -N j3 -- c); RC=$?; [ "$RC" = 2 ] && ok "an invalid NONCE '${n:0:12}' -> exit 2" || bad "invalid NONCE '${n:0:12}' (rc=$RC)"; done
 [ "$(ls "$N/.rs/attempts" | wc -l)" = "$B" ] && ok "...nothing claimed by any of them" || bad "...an invalid NONCE claimed a dir"
 O=$(L n -N j4 -d 0 -- c); has "$(basename "$(latt "$N")")" '^[0-9]\{8\}T[0-9]\{6\}Z-[0-9]*-[0-9]*$' "no NONCE given -> a generated one"
-O=$(L n -N j5 --bogus -- c); RC=$?; [ "$RC" = 2 ] && has "$(cat "$(latt "$N")/result")" '^stage=pre-policy rc=2 verdict=refused' "a usage error after the claim is journaled (exit 2)" || bad "usage error (rc=$RC)"
+O=$(L n -N j5 --bogus -- c); RC=$?; A5=$(printf '%s\n' "$O" | sed -n 's|^attempt: \.rs/attempts/||p' | head -n 1)   # by name: an earlier run's
+[ "$RC" = 2 ] && [ -n "$A5" ] && has "$(cat "$N/.rs/attempts/$A5/result")" '^stage=pre-policy rc=2 verdict=refused' \
+  "a usage error after the claim is journaled (exit 2)" || bad "usage error (rc=$RC attempt=$A5)"   # wrapper may touch its dir later (ls -t)
 O=$(RS_ATTEMPT=parent RS_RUN=x RS_ACKS=y RS_CONF_FILE=z L n -N nest -d 0 -- "sh -c 'echo att=\${RS_ATTEMPT:-none}'"); RC=$?
 [ "$RC" = 0 ] && [ ! -e "$N/.rs/attempts/parent" ] && ok "a launch from inside a run gets its own attempt, never the parent's" || bad "nested launch (rc=$RC)"
 waitfor "$N/$(kv log "$(latt "$N")/receipt").rc"; has "$(cat "$N/$(kv log "$(latt "$N")/receipt")")" '^att=none$' "...and the payload sees no RS_ATTEMPT"
@@ -193,6 +207,116 @@ hasnt "$(cat "$T/vars.seen" 2>/dev/null)" 'SECRET\|CUDA\|PYTHONUNBUFFERED' "...n
 printf 'WS_REMOTE_DIR=projects/pv\nENV_KIND=none\nENV_HOOK=hook.sh\n' > "$V/.ws.conf"; printf 'CUDA_VISIBLE_DEVICES=3\n' > "$V/hook.sh"
 O=$(L pv -N pv2 -d 2 -- "$RV"); E5=$V/$(kv log "$(latt "$V")/receipt"); waitfor "$E5.rc"
 has "$(cat "$E5")" '^cvd=2 order=PCI_BUS_ID unbuf=1 outer=2 ' "a plain CUDA_VISIBLE_DEVICES in the hook: the harness's ids still win"
+
+echo "-- api=3: plan mode (every check + the env gate, nothing starts), --rs-expect, busy GPUs --"
+blk() { printf '%s\n' "$1" | sed -n '/^@@plan v1$/,/^@@end$/p'; }   # the plan block
+bnd() { printf '%s\n' "$1" | sed -n '/^kind=/,/^env_name=/p'; }   # its bound lines, which bound_hash covers
+bh() { printf '%s\n' "$1" | sed -n 's/^bound_hash=//p'; }
+nolog() { ! ls "$N"/logs/"$1"-*.log >/dev/null 2>&1; }
+rm -f "$T/apps" "$T/apps.fail"
+O=$(L n --rs-attempt pl1 --rs-mode plan -N pl1 -n 2 -x 1 --nice 3 -- "touch $T/plan-ran"); RC=$?; A=$N/.rs/attempts/pl1; B=$(blk "$O")
+[ "$RC" = 0 ] && ok "plan mode exits 0" || { bad "plan mode exits 0 (rc=$RC)"; printf '%s\n' "$O" | head -8 | sed 's/^/    | /'; }
+[ "$(printf '%s\n' "$B" | sed 's/=.*//' | tr '\n' ' ')" = "@@plan v1 api kind target name gpus_req exclude nice payload env_kind env_name info_gpus info_uuids info_busy warnings bound_hash @@end " ] \
+  && ok "ONE block, exactly these keys in this order" || { bad "plan block keys"; printf '%s\n' "$B" | sed 's/^/    | /'; }
+[ "$(printf '%s\n' "$O" | grep -c '^@@plan v1$')" = 1 ] && ok "...printed once" || bad "...printed once"
+has "$B" "^api=$(sed -n 's/^api=//p' "$N/.ws/API")\$" "api= is the deployed .ws/API's"; has "$B" '^kind=nohup$' "kind=nohup"; has "$B" '^target=ws-box$' "target="
+has "$B" '^name=pl1$' "name="; has "$B" '^gpus_req=n=2$' "gpus_req=n=N"; has "$B" '^exclude=1$' "exclude="; has "$B" '^nice=3$' "nice="
+has "$B" "^payload=touch\\\\ $T/plan-ran\$" "payload = RUN, %q-quoted"; has "$B" '^env_kind=none$' "env_kind (the conf's)"; has "$B" "^env_name=''\$" "env_name (empty: %q '')"
+has "$B" '^info_gpus=2,0$' "info_gpus = the pick (envelope)"; has "$B" '^info_uuids=GPU-aaaa0000-0002,GPU-aaaa0000-0000$' "info_uuids"
+has "$B" '^info_busy=$' "info_busy= (none busy)"; has "$B" '^warnings=0$' "warnings=0"
+H1=$(bh "$O"); [ "$(bnd "$O" | sha256sum | cut -d' ' -f1)" = "$H1" ] && ok "bound_hash = sha256 of the lines kind= … env_name= (each + newline)" || bad "bound_hash = sha256 of the bound lines"
+has "$(cat "$A/result")" '^stage=plan rc=0 verdict=planned ' "journal: stage=plan rc=0 verdict=planned"
+[ ! -e "$A/receipt" ] && [ ! -e "$A/gate" ] && [ ! -e "$A/run" ] && [ ! -e "$A/vars" ] && nolog pl1 && ok "...no receipt, gate, wrapper script or log" || bad "a plan creates nothing"
+sleep 0.5; [ ! -e "$T/plan-ran" ] && ok "...and the payload never ran" || bad "plan: the payload never ran"
+O=$(L n --rs-attempt pl2 --rs-mode plan --same-name-ok --gpu-busy-ok --log "logs/pl1-20260101-000000.log" -N pl1 -n 2 -x 1 --nice 3 -- "touch $T/plan-ran")
+[ "$(bh "$O")" = "$H1" ] && ok "NONCE, --log, --same-name-ok, --gpu-busy-ok are not bound (same hash)" || bad "unbound flags keep the hash"
+for v in "-n 3 -x 1 --nice 3" "-n 2 --nice 3" "-n 2 -x 1" "-d 2,0 -x 1 --nice 3"; do
+  O=$(L n --rs-mode plan -N pl1 $v -- "touch $T/plan-ran"); [ -n "$(bh "$O")" ] && [ "$(bh "$O")" != "$H1" ] && ok "bound: '$v' changes the hash" || bad "bound: '$v' changes the hash"; done
+O=$(L n --rs-mode plan -N pl1x -n 2 -x 1 --nice 3 -- "touch $T/plan-ran"); [ "$(bh "$O")" != "$H1" ] && ok "bound: the name" || bad "bound: the name"
+O=$(L n --rs-mode plan -N pl1 -n 2 -x 1 --nice 3 -- "touch $T/plan-ran2"); [ "$(bh "$O")" != "$H1" ] && ok "bound: the payload" || bad "bound: the payload"
+O=$(ENV_KIND=conda ENV_NAME=stale WSBOX_ENV_NAME=stale L n --rs-mode plan -N pl1 -n 2 -x 1 --nice 3 -- "touch $T/plan-ran")
+[ "$(bh "$O")" = "$H1" ] && ok "exported ENV_KIND / ENV_NAME / WSBOX_ENV_NAME never reach the bound env (the conf alone)" || bad "stale exported env keys"
+PC=$(mkp pc 'WS_REMOTE_DIR=projects/pc
+ENV_KIND=conda
+ENV_NAME=base
+WSBOX_ENV_NAME=tagged
+builtin() { command printf "conda\0forged\0"; }
+sha256sum() { echo 0000; }
+echo conf-says-hi')
+O=$(L pc --rs-mode plan -N c1 -d 0 -- c); RC=$?
+[ "$RC" = 0 ] && has "$(blk "$O")" '^env_kind=conda$' "conda conf: env_kind=conda (the gate passed)" || bad "conda plan (rc=$RC)"
+has "$(blk "$O")" '^env_name=tagged$' "...env_name = WSBOX_ENV_NAME over ENV_NAME, as env.sh; a conf builtin() cannot forge it"
+[ "$(bnd "$O" | sha256sum | cut -d' ' -f1)" = "$(bh "$O")" ] && ok "...and a conf sha256sum() never computes the hash" || bad "conf sha256sum() reached the hash"
+hasnt "$(blk "$O")" 'conf-says-hi' "...the conf's own output stays out of the block"
+PG=$(mkp pg 'WS_REMOTE_DIR=projects/pg
+ENV_KIND=uv')
+O=$(L pg --rs-attempt pg1 --rs-mode plan -N g -d 0 -- c); RC=$?
+[ "$RC" = 1 ] && has "$O" 'uv venv not active' "plan mode runs the env gate: no venv -> exit 1" || bad "plan env gate (rc=$RC)"
+hasnt "$O" '^@@plan' "...and prints no block"; has "$(cat "$PG/.rs/attempts/pg1/result")" '^stage=plan rc=1 verdict=failed ' "...journal: stage=plan rc=1 verdict=failed"
+O=$(L n --rs-mode plan -N rcpt -d 0 -- c); RC=$?   # rcpt's first run was TERMed: the second (A2) is gone too; a live one:
+O=$(L n --rs-attempt lv1 -N live1 -d 3 -- sleep 30); O=$(L n --rs-mode plan -N live1 -d 0 -- c); RC=$?
+[ "$RC" = 6 ] && hasnt "$O" '^@@plan' "plan mode keeps the duplicate guard: a live same-name run -> exit 6, no block" || bad "plan + live duplicate (rc=$RC)"
+
+O=$(L n --rs-attempt ex1 --rs-expect "$H1" -N pl1 -n 2 -x 1 --nice 3 -- "touch $T/plan-ran"); RC=$?; A=$N/.rs/attempts/ex1
+[ "$RC" = 0 ] && has "$O" "^plan: bound_hash=$H1 = --rs-expect" "--rs-expect = the plan's hash: launches, saying so" || bad "--rs-expect match (rc=$RC)"
+has "$(cat "$A/result")" 'verdict=launched' "...verdict=launched"; hasnt "$O" '^@@plan' "...no block on a match"
+waitfor "$T/plan-ran" && ok "...the approved payload ran" || bad "...the approved payload ran"
+printf 'GPU-aaaa0000-0002, %s\n' "$$" > "$T/apps"; sleep 1
+O=$(L n --rs-attempt ex2 --rs-expect "$H1" --same-name-ok -N pl1 -n 2 -x 1 --nice 3 -- "touch $T/plan-ran"); RC=$?
+[ "$RC" = 0 ] && has "$(cat "$N/.rs/attempts/ex2/receipt")" '^gpu_ids=0,3$' "GPU 2 busy since the plan: the pick moves (0,3), the request (bound) still matches" || bad "busy since the plan (rc=$RC)"
+rm -f "$T/apps"; sleep 1   # (one name twice in one second: its log name is taken, exit 2)
+O=$(L n --rs-attempt ex3 --rs-expect "$H1" -N pl1 -n 3 -x 1 --nice 3 -- "touch $T/plan-ran3"); RC=$?; A=$N/.rs/attempts/ex3
+[ "$RC" = 6 ] && has "$O" '^ERROR: the resolved submission differs from the approved plan' "another -n than the plan's -> exit 6" || bad "--rs-expect mismatch (rc=$RC)"
+has "$(blk "$O")" '^gpus_req=n=3$' "...printing the CURRENT block"; [ "$(bh "$O")" != "$H1" ] && ok "...with its own hash" || bad "...its own hash"
+has "$(cat "$A/result")" '^stage=expect rc=6 verdict=refused ' "...journal: stage=expect rc=6 verdict=refused"
+[ ! -e "$A/receipt" ] && [ ! -e "$A/run" ] && [ ! -e "$A/env.ok" ] && ok "...before the env gate and the wrapper (no run, no env.ok)" || bad "...before the wrapper"
+sleep 0.5; [ ! -e "$T/plan-ran3" ] && ok "...nothing ran" || bad "...nothing ran"
+printf 'WS_REMOTE_DIR=projects/n\nENV_KIND=none\nENV_NAME=drift\n' > "$N/.ws.conf"; sleep 1
+O=$(L n --rs-expect "$H1" -N pl1 -n 2 -x 1 --nice 3 -- "touch $T/plan-ran"); RC=$?
+[ "$RC" = 6 ] && has "$(blk "$O")" '^env_name=drift$' "a conf edited after the plan (ENV_NAME) -> exit 6" || bad "conf drift (rc=$RC)"
+printf 'WS_REMOTE_DIR=projects/n\nENV_KIND=none\n' > "$N/.ws.conf"
+for a in '--rs-mode apply' '--rs-mode plan --rs-mode plan' '--rs-expect abc' "--rs-expect $(printf %s "$H1" | tr a-f A-F)" '--rs-chain' '--rs-mode'; do
+  O=$(L n $a -N bad1 -d 0 -- c); RC=$?; [ "$RC" = 2 ] && has "$(cat "$(latt "$N")/result")" '^stage=pre-policy rc=2 verdict=refused' "'$a' -> exit 2 (journaled)" || bad "'$a' -> exit 2 (rc=$RC)"; done
+nolog bad1 && ok "...none of them launched" || bad "...none of them launched"
+
+echo "-- busy GPUs: a compute process on it (nvidia-smi --query-compute-apps + ps) --"
+( exit 0 ) & DP=$!; wait "$DP"; U=$(ps -o user= -p $$ | tr -d ' ')   # DP: a pid that is gone
+printf 'GPU-aaaa0000-0001, %s\nGPU-aaaa0000-0002, %s\n' "$$" "$DP" > "$T/apps"
+O=$(L n -N b1 -n 2 -- c); RC=$?
+[ "$RC" = 0 ] && has "$O" 'GPU(s) \[0,3\]' "auto-pick skips busy GPUs 1, 2 (the idlest by memory are 1, 2): picks 0,3" || bad "auto-pick skips busy (rc=$RC)"
+has "$O" "^\[ws-box\] GPU(s) in use (id:user:pid): 1:$U:$$,2:?:$DP\$" "names them id:user:pid (ps -o user=; a pid ps cannot see: ?)"
+O=$(L n --rs-attempt b2 -N b2 -n 3 -- c); RC=$?
+[ "$RC" = 1 ] && has "$O" 'only 2 GPU id(s) free' "fewer free than -n -> exit 1 (only K free)" || bad "busy shortfall (rc=$RC)"
+has "$(cat "$N/.rs/attempts/b2/result")" 'rc=1 verdict=refused' "...verdict=refused"; nolog b2 && ok "...nothing launched" || bad "...nothing launched"
+O=$(L n --rs-attempt b3 -N b3 -d 3,1 -- c); RC=$?
+[ "$RC" = 6 ] && has "$O" '^ERROR: -d GPU(s) 1 already run a compute process' "-d onto a busy GPU -> exit 6" || bad "-d busy (rc=$RC)"
+has "$(cat "$N/.rs/attempts/b3/result")" 'rc=6 verdict=refused' "...verdict=refused"; nolog b3 && ok "...nothing launched" || bad "...nothing launched"
+O=$(L n --rs-attempt b4 -N b4 -d 3,1 --gpu-busy-ok -- c); RC=$?
+[ "$RC" = 0 ] && has "$O" '^WARNING: -d GPU(s) 1 already run a compute process .*--gpu-busy-ok' "...with --gpu-busy-ok: launches, with a WARNING" || bad "-d busy + ok (rc=$RC)"
+has "$(cat "$N/.rs/attempts/b4/receipt")" '^gpu_ids=3,1$' "...onto exactly -d"
+O=$(L n -N b5 -n 3 --gpu-busy-ok -- c); RC=$?
+[ "$RC" = 0 ] && has "$O" 'GPU(s) \[0,3,1\]' "auto-pick + --gpu-busy-ok: the free ones first, then the idlest busy one" || bad "auto-pick + ok (rc=$RC)"
+has "$O" '^WARNING: the pick includes GPU(s) 1 ' "...saying which"
+O=$(L n --rs-mode plan -N b6 -d 1 --gpu-busy-ok -- c); B=$(blk "$O")
+has "$B" "^info_busy=1:$U:$$,2:?:$DP\$" "plan: info_busy=id:user:pid,…"; has "$B" '^warnings=1$' "plan: the busy WARNING is counted"
+printf 'No running processes found\n' > "$T/apps"; O=$(L n -N b7 -d 1 -- c); [ "$?" = 0 ] && ok "'No running processes found' = none busy" || bad "'No running processes found'"
+printf 'GPU-ffff0000-0009, 12\n' > "$T/apps"; O=$(L n -N b8 -d 0 -- c); RC=$?
+[ "$RC" = 1 ] && has "$O" 'cannot tell which GPUs are busy' "a process on a GPU id the box does not list = unknown -> exit 1" || bad "unmapped uuid (rc=$RC)"
+touch "$T/apps.fail"; O=$(L n --rs-attempt b9 -N b9 -d 0 -- c); RC=$?
+[ "$RC" = 1 ] && has "$O" 'cannot tell which GPUs are busy' "the compute-apps query failing -> exit 1 (unknown, fail closed)" || bad "apps query fails (rc=$RC)"
+nolog b9 && ok "...nothing launched" || bad "...nothing launched"
+O=$(L n --rs-mode plan -N b10 -d 0 --gpu-busy-ok -- c); RC=$?
+[ "$RC" = 0 ] && has "$(blk "$O")" '^info_busy=unknown$' "...--gpu-busy-ok: goes on (plan: info_busy=unknown, the WARNING counted)" || bad "unknown + ok (rc=$RC)"
+has "$(blk "$O")" '^warnings=1$' "...warnings=1"; rm -f "$T/apps" "$T/apps.fail"
+
+echo "-- an OLD launch.sh (P2) given the api=3 flags exits 2 and starts nothing --"
+if OLDL=$(git -C "$RS_HOME" show 8560838:remote/launch.sh 2>/dev/null) && [ -n "$OLDL" ]; then
+  OL=$(mkp oldl 'WS_REMOTE_DIR=projects/oldl
+ENV_KIND=none'); printf '%s\n' "$OLDL" > "$OL/.ws/launch.sh"
+  for a in '--rs-mode plan' "--rs-expect $H1" '--gpu-busy-ok'; do
+    O=$(L oldl $a -N o1 -d 0 -- "touch $T/old-ran"); RC=$?; [ "$RC" = 2 ] && has "$O" 'unknown arg' "P2 launch.sh + '${a:0:24}': exit 2 (unknown arg)" || bad "P2 launch.sh + '$a' (rc=$RC)"; done
+  sleep 0.5; [ ! -e "$T/old-ran" ] && ! ls "$OL"/logs/o1-* >/dev/null 2>&1 && ok "...nothing launched" || bad "...nothing launched"
+else echo "  SKIP: no git history (an installed copy): the old-launch.sh check runs in the clone"; fi
 
 echo "-- CUDA numbers GPUs as nvidia-smi does under PCI_BUS_ID (opt-in, needs a real GPU: RS_GPU_TEST=1 bash selftest.sh) --"
 # libcuda via ctypes (stdlib only): with CUDA_DEVICE_ORDER=PCI_BUS_ID, CUDA_VISIBLE_DEVICES=<nvidia-smi ids> lists exactly

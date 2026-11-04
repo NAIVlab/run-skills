@@ -2,7 +2,8 @@
 # tests/60-launch.sh — phase A: bin/run-launch on the ws-box fixture. Part 1 (any OS): the ssh stub only logs the launch
 # command (the GPU table is canned): flag validation, what reaches .ws/launch.sh (one quoted argv: NICE, pick, exclude,
 # log name, RUN as ONE word, JOB_NAME, REMOTE_DIR, --rs-attempt / --same-name-ok), refusals before any ssh, the ssh 255
-# note, the OLD run-launch rejecting the new flags, slurm refused. Part 2 (Linux: /proc + setsid): the stub EXECUTES the
+# note, the OLD run-launch rejecting the new flags, api=3 pass-through (--rs-mode plan, --rs-expect, --gpu-busy-ok), the
+# rsk redirect without RS_VIA_RSK, slurm refused. Part 2 (Linux: /proc + setsid): the stub EXECUTES the
 # remote side here (HOME=$T/home, remote cwd = $HOME, projects/x -> the fixture) with an nvidia-smi stub (4 GPUs + UUIDs),
 # so the deployed launch.sh really runs: the pick it prints, exit codes 1/6/75, receipts, the uv gate, an old deploy.
 # launch.sh's own guarantees (journal, gate, receipt, TERM, duplicates): tests/61-launch-remote.sh.
@@ -26,12 +27,13 @@ cat > "$T/bin/nvidia-smi" <<'EOS'
 case "$*" in
   *index,name,*) printf '0, F, 0 %%, 8000 MiB, 49140 MiB\n1, F, 0 %%, 2 MiB, 49140 MiB\n2, F, 0 %%, 5 MiB, 49140 MiB\n3, F, 0 %%, 9000 MiB, 49140 MiB\n' ;;
   *index,uuid,memory.used*) printf '0, GPU-aaaa0000-0000, 8000\n1, GPU-aaaa0000-0001, 2\n2, GPU-aaaa0000-0002, 5\n3, GPU-aaaa0000-0003, 9000\n' ;;
+  "--query-compute-apps=gpu_uuid,pid --format=csv,noheader") cat "${RS_TEST_APPS:-/nonexistent}" 2>/dev/null; exit 0 ;;   # busy GPUs: none unless a file says
   *) echo "nvidia-smi stub: unexpected $*" >&2; exit 2 ;;
 esac
 EOS
 chmod +x "$T/bin/ssh" "$T/bin/nvidia-smi"
 # launch PROJ ARGS... : run-launch from PROJ with the stub PATH, stderr merged; launch.log / ssh-host.log truncated first
-launch() { local p=$1; shift; : > "$T/launch.log"; : > "$T/ssh-host.log"; ( cd "$p" && PATH="$T/bin:$PATH" bash "$RS_HOME/bin/run-launch" "$@" 2>&1 ); }
+launch() { local p=$1; shift; : > "$T/launch.log"; : > "$T/ssh-host.log"; ( cd "$p" && RS_VIA_RSK=1 PATH="$T/bin:$PATH" bash "$RS_HOME/bin/run-launch" "$@" 2>&1 ); }   # as rsk runs it
 conf() { printf '%s\n' "$2" > "$1/.ws.conf"; }
 latt() { ls -dt "$1"/.rs/attempts/*/ 2>/dev/null | head -n 1 | sed 's|/$||'; }   # newest attempt dir
 noss() { [ ! -s "$T/ssh-host.log" ]; }                                           # nothing was sent
@@ -72,6 +74,15 @@ O=$(launch "$W" -d '0, 1' -N t -- c); has "$(cat "$T/launch.log")" " -d '0,1' " 
 O=$(launch "$W" -N t -- python t.py --msg "it's" '$HOME'); has "$(cat "$T/launch.log")" " -- 'python t.py --msg it'\\\\''s \$HOME'\$" "RUN with a quote: one single-quoted word, \$ left for the remote"
 O=$(launch "$W" -N t --same-name-ok --rs-attempt my.id-1 -- c); L=$(cat "$T/launch.log")
 has "$L" "--rs-attempt 'my.id-1' " "--rs-attempt passes through"; has "$L" ' --same-name-ok ' "--same-name-ok passes through"
+HX=a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1   # a well-formed bound_hash
+O=$(launch "$W" -N t --gpu-busy-ok --rs-mode plan --rs-expect "$HX" -- c); RC=$?; L=$(cat "$T/launch.log")
+has "$L" ' --gpu-busy-ok ' "--gpu-busy-ok passes through"; has "$L" ' --rs-mode plan ' "--rs-mode plan passes through"
+has "$L" " --rs-expect $HX " "--rs-expect HASH passes through"; [ "$RC" = 0 ] && hasnt "$O" 'verify:' "a plan prints no verify line (nothing to verify)" || bad "plan via run-launch (rc=$RC)"
+hasnt "$(launch "$W" -N t -- c; cat "$T/launch.log")" 'gpu-busy-ok\|rs-mode\|rs-expect' "none of them unless asked"
+for a in '--rs-mode apply' '--rs-mode' '--rs-mode plan --rs-mode plan' '--rs-expect abc' "--rs-expect $(printf %s "$HX" | tr a-f A-F)" '--rs-expect' "--rs-expect $HX --rs-expect $HX"; do
+  O=$(launch "$W" -N t $a -- c); RC=$?; [ "$RC" = 2 ] && noss && ok "'${a:0:30}' refused locally (exit 2, no ssh)" || bad "'${a:0:30}' refused locally (rc=$RC)"; done
+touch "$T/ssh.255"; O=$(launch "$W" -N t --rs-mode plan -- c); RC=$?; rm -f "$T/ssh.255"
+[ "$RC" = 255 ] && has "$O" 'NOTE: ssh failed (exit 255) during a plan: nothing was launched' "ssh 255 during a plan: says nothing was launched" || bad "plan + ssh 255 (rc=$RC)"
 O=$(launch "$W" -d '0;rm' -N t -- c) && bad "-d garbage rejected" || { has "$O" 'comma-separated' "-d garbage rejected"; noss && ok "...before any ssh" || bad "...before any ssh"; }
 for badn in 0 -1 abc; do O=$(launch "$W" -n "$badn" -N t -- c) && bad "-n $badn accepted" || has "$O" 'positive integer' "-n $badn rejected"; done
 O=$(launch "$W" -d 1 -n 2 -N t -- c) && bad "-d 1 -n 2 hard-fails" || has "$O" 'only 1 GPU' "-d with fewer ids than -n hard-fails"
@@ -125,6 +136,23 @@ if [ -n "$OLD" ]; then
     : > "$T/ssh-host.log"; O=$( cd "$W" && PATH="$T/bin:$PATH" bash "$T/old/bin/run-launch" -N t $f -- c 2>&1 ); RC=$?
     [ "$RC" = 2 ] && noss && ok "the OLD run-launch rejects $f (exit 2, no ssh)" || bad "the OLD run-launch rejects $f (rc=$RC)"; done
 else echo "  SKIP: no git history with the pre-attempt run-launch (an installed copy)"; fi
+if OLD=$(git -C "$RS_HOME" show 8560838:bin/run-launch 2>/dev/null) && [ -n "$OLD" ]; then   # the P2 run-launch: no api=3 flags
+  mkdir -p "$T/old2/bin"; ln -s "$RS_HOME/lib" "$T/old2/lib"; printf '%s\n' "$OLD" > "$T/old2/bin/run-launch"
+  for f in '--rs-mode plan' "--rs-expect $HX" --gpu-busy-ok; do
+    : > "$T/ssh-host.log"; O=$( cd "$W" && PATH="$T/bin:$PATH" bash "$T/old2/bin/run-launch" -N t $f -- c 2>&1 ); RC=$?
+    [ "$RC" = 2 ] && noss && ok "the P2 run-launch rejects ${f:0:24} (exit 2, no ssh)" || bad "the P2 run-launch rejects $f (rc=$RC)"; done
+else echo "  SKIP: no git history with the P2 run-launch (an installed copy)"; fi
+echo "-- P7: run-launch called directly (no RS_VIA_RSK) --"
+mkdir -p "$T/rskbin"; printf '#!/bin/sh\necho "rsk stub $*" >> "%s/rsk.log"\n' "$T" > "$T/rskbin/rsk"; chmod +x "$T/rskbin/rsk"
+: > "$T/ssh-host.log"; O=$( cd "$W" && env -u RS_VIA_RSK PATH="$T/rskbin:$T/bin:$PATH" bash "$RS_HOME/bin/run-launch" -N t -- c 2>&1 ); RC=$?
+[ "$RC" = 2 ] && has "$O" '^use: rsk launch -T ws-box … (plan → the user.s words → submit)' "rsk on PATH: points at rsk launch -T <t>, exit 2" || bad "P7 redirect (rc=$RC)"
+noss && ok "...before any ssh" || bad "...before any ssh"; [ ! -s "$T/rsk.log" ] && ok "...and never runs rsk itself" || bad "...never runs rsk itself"
+O=$( cd "$W" && RS_VIA_RSK= PATH="$T/rskbin:$T/bin:$PATH" bash "$RS_HOME/bin/run-launch" -N t -- c 2>&1 ); [ "$?" = 2 ] && ok "an empty RS_VIA_RSK counts as unset" || bad "empty RS_VIA_RSK"
+NORSK=$(printf %s "$PATH" | tr ':' '\n' | while IFS= read -r d; do [ -n "$d" ] && [ ! -x "$d/rsk" ] && printf '%s:' "$d"; done)
+: > "$T/launch.log"; O=$( cd "$W" && env -u RS_VIA_RSK PATH="$T/bin:${NORSK%:}" bash "$RS_HOME/bin/run-launch" -N t -- c 2>&1 ); RC=$?
+[ "$RC" = 0 ] && has "$O" '^NOTE: no rsk on PATH (installed without uv): run-launch launches directly' "no rsk on PATH: launches, with a one-line NOTE" || bad "no rsk on PATH (rc=$RC)"
+has "$(cat "$T/launch.log")" 'launch\.sh' "...the launch did go out"; [ "$(printf '%s\n' "$O" | grep -c '^NOTE: no rsk')" = 1 ] && ok "...one NOTE line" || bad "...one NOTE line"
+hasnt "$(launch "$W" -N t -- c)" 'NOTE: no rsk\|^use: rsk' "RS_VIA_RSK=1 (rsk's own call): neither"
 P=$(mk_proj fx-slurm 'REMOTE_DIR=/x')
 O=$(TARGET=fx-slurm launch "$P" -N t -- c); RC=$?
 [ "$RC" = 2 ] && has "$O" 'run-launch is for nohup targets' "slurm target refused" || bad "slurm target refused (rc=$RC)"
@@ -179,7 +207,19 @@ RUN=c'
   reap
   mv "$W/.ws/launch.sh" "$W/.ws/launch.sh.off"
   O=$(launch "$W" -N t10 -- c); RC=$?; [ "$RC" = 2 ] && has "$O" 'deploy predates it' "a deploy without .ws/launch.sh -> exit 2, re-sync" || bad "old deploy (rc=$RC)"
-  mv "$W/.ws/launch.sh.off" "$W/.ws/launch.sh"
+  mv "$W/.ws/launch.sh.off" "$W/.ws/launch.sh"; conf "$W" "$W0"
+  O=$(launch "$W" -N pl -n 2 --rs-attempt rp1 --rs-mode plan -- "touch $T/rl-plan-ran"); RC=$?
+  [ "$RC" = 0 ] && has "$O" '^@@plan v1$' "run-launch --rs-mode plan: the deployed launch.sh prints the block" || bad "run-launch plan (rc=$RC)"
+  has "$O" '^info_gpus=2,3$' "...its pick (GPU_EXCLUDE 0,1)"; has "$O" "^exclude=0,1\$" "...the exclude it was given (bound)"; hasnt "$O" 'verify:' "...no verify line"
+  has "$(cat "$W/.rs/attempts/rp1/result")" 'verdict=planned' "...journal: verdict=planned"; ! ls "$W"/logs/pl-*.log >/dev/null 2>&1 && ok "...no log" || bad "...no log"
+  PH=$(printf '%s\n' "$O" | sed -n 's/^bound_hash=//p')
+  O=$(launch "$W" -N pl -n 2 --rs-expect "$PH" -- "touch $T/rl-plan-ran"); RC=$?
+  [ "$RC" = 0 ] && has "$O" '^\[ws-box\] started PID' "...--rs-expect <its bound_hash>: launches" || bad "run-launch --rs-expect (rc=$RC)"
+  O=$(launch "$W" -N pl2 -n 2 --rs-expect "$PH" -- "touch $T/rl-plan-ran"); RC=$?
+  [ "$RC" = 6 ] && has "$O" 'differs from the approved plan' "...another name with that hash: exit 6" || bad "run-launch --rs-expect mismatch (rc=$RC)"
+  printf 'GPU-aaaa0000-0002, %s\n' "$$" > "$T/apps"; export RS_TEST_APPS=$T/apps
+  O=$(launch "$W" -N bz -n 1 -- c); has "$O" 'GPU(s) \[3\]' "GPU 2 busy (the compute-apps stub), 0,1 excluded: -n 1 goes around it to 3"
+  O=$(launch "$W" -N bz2 -n 2 -- c); [ "$?" = 1 ] && has "$O" 'only 1 GPU id(s) free' "...-n 2 there: exit 1, only 1 free" || bad "busy shortfall via run-launch"; unset RS_TEST_APPS
 fi
 stub_fail ssh
 O=$(launch "$W" -N t) && bad "ssh failure propagates" || hasnt "$O" 'started PID' "ssh failure propagates, no bogus PID line"

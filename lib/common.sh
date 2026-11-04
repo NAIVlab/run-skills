@@ -75,8 +75,8 @@ rs_sync_excludes() {   # run-sync's exclude patterns, one per line (static on pu
   set -f; for g in ${EXTRA_EXCLUDES:-}; do echo "$g"; done; set +f   # -f: keep the conf's patterns literal
 }
 rs_deploy_dir() { [ "$T_KIND" = slurm ] && echo ".$T_NAME" || echo .ws; }
-rs_deploy_files() {   # absolute paths, one per line (profile.sh is deployed separately with T_NAME appended)
-  echo "$RS_HOME/remote/env.sh"; echo "$RS_HOME/remote/bootstrap.sh"; echo "$RS_HOME/remote/status.sh"
+rs_deploy_files() {   # absolute paths, one per line (profile.sh is deployed separately with T_NAME appended); API = `api=N`
+  echo "$RS_HOME/remote/API"; echo "$RS_HOME/remote/env.sh"; echo "$RS_HOME/remote/bootstrap.sh"; echo "$RS_HOME/remote/status.sh"
   [ "$T_KIND" = slurm ] || { echo "$RS_HOME/remote/launch.sh"; return 0; }
   echo "$RS_HOME/remote/submit.sh"; echo "$RS_HOME/remote/job.sbatch"
   [ -f "$T_DIR/policy.sh" ] && echo "$T_DIR/policy.sh"

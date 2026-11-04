@@ -42,7 +42,7 @@ _t=${TMPDIR:-/tmp}; { [ -d "$_t" ] && [ -w "$_t" ]; } || _t=/tmp   # a login nod
 tmp=$(mktemp -d "$_t/rs-status.XXXXXX" 2>/dev/null) || { _t=/tmp; tmp=$(mktemp -d "$_t/rs-status.XXXXXX" 2>/dev/null); } \
   || { echo "status=unknown (no usable temp dir: tried '${TMPDIR:-/tmp}' and /tmp)"; exit 1; }
 trap 'rm -rf "$tmp"' EXIT; export TMPDIR="$_t"; E="$tmp/e"; WIN="$tmp/w"   # exported: bash herestrings need a writable one
-amb=""
+amb=""; lastm=""
 case "$ID" in
   *[!0-9]*) JID=""; LOG=$ID ;;
   *) [ "$KIND" != nohup ] || { echo "ERROR: a nohup target takes the log path, not a job id" >&2; exit 2; }
@@ -65,7 +65,7 @@ esac
 # --- scheduler view (slurm): squeue while queued/running/just ended; sacct once it aged out — labelled with WHY -------
 if [ -n "$JID" ]; then
   q=$(squeue -h -j "$JID" --Format='State:0|,Reason:0|,TimeUsed:0|,TimeLeft:0|,RestartCnt:0|,NodeList:0' 2>"$E"); qrc=$?
-  row=$(printf '%s\n' "$q" | grep -m 1 '|.*|.*|.*|.*|'); err=$(head -n 1 "$E" | clip 100)   # the first row-shaped line
+  row=$(printf '%s\n' "$q" | grep -a -m 1 '|.*|.*|.*|.*|'); err=$(head -n 1 "$E" | clip 100)   # the first row-shaped line (-a: a NUL in it is no 'binary file')
   ok=0; if [ "$qrc" = 0 ] && [ -n "$row" ]; then
     IFS='|' read -r st rs tu tl rc nl <<<"$row"; ok=1
     case "$st" in ''|*[!A-Z_]*) ok=0 ;; esac; case "$rc" in ''|*[!0-9]*) ok=0 ;; esac   # a state word and a restart count, else not a row
@@ -74,7 +74,7 @@ if [ -n "$JID" ]; then
   else
     case "$qrc:$err:$q" in *"Invalid job id"*) why="gone from the queue" ;; 0::) why="not in the queue" ;; 0:*) why="unparsable squeue output, queue state unverified" ;; *) why="squeue FAILED (exit $qrc${err:+: $err})" ;; esac
     a=$(sacct -j "$JID" -X -n -P -o State,ExitCode,Elapsed,End 2>"$E"); arc=$?   # status captured BEFORE parsing
-    row=$(printf '%s\n' "$a" | grep -m 1 -E '^[A-Z_]+(\+| by [0-9]+)?\|[0-9]+:[0-9]+\|[0-9:-]+\|[^|]+$')
+    row=$(printf '%s\n' "$a" | grep -a -m 1 -E '^[A-Z_]+(\+| by [0-9]+)?\|[0-9]+:[0-9]+\|[0-9:-]+\|[^|]+$')
     if [ "$arc" = 0 ] && [ -n "$row" ]; then IFS='|' read -r st ec el en <<<"$row"; echo "job=$JID state=$st exit=$ec elapsed=$el end=$en (sacct; $why)"
     else
       if [ "$arc" != 0 ]; then detail="sacct FAILED (exit $arc)"; elif [ -n "$a" ]; then detail="unparsable sacct output"; else detail="sacct has no record"; fi
@@ -144,7 +144,10 @@ if [ -n "$LOG" ] && { [ "$KIND" = nohup ] || { [ "$KIND" = unknown ] && [ -f "$L
     else
       pmt=$(stat -L -c %Y "$LOG.pid" 2>/dev/null) || pmt=""; case "$pmt" in ''|*[!0-9]*) pmt="" ;; esac
       p=$(ps -o etimes=,stat=,pcpu=,cmd= -p "$pid" 2>"$E"); prc=$?; perr=$(head -n 1 "$E" | clip 100); set -f; set -- ${p:-}; set +f
-      if [ -z "$p" ] && [ "$prc" = 1 ] && [ -z "$perr" ]; then echo "proc=gone pid=$pid exit=unknown (nothing records a nohup exit: judge by the last lines + the final artifact)"
+      if [ -z "$p" ] && [ "$prc" = 1 ] && [ -z "$perr" ]; then   # its end: <log>.rc (the wrapper's), else its EXIT footer naming this pid
+        r=$(head -c 200 "$LOG.rc" 2>/dev/null | sed -n '1s/^rc=\([0-9]\{1,3\}\) term=\([01]\) at=[0-9]\{1,12\}$/exit=\1 term=\2 (<log>.rc)/p')
+        [ -n "$r" ] || r=$(printf '%s\n' "$lastm" | sed -n "s/^EXIT rc=\([0-9]\{1,3\}\) term=\([01]\) pid=$pid .*/exit=\1 term=\2 (the log's EXIT footer)/p")
+        echo "proc=gone pid=$pid ${r:-exit=unknown (no <log>.rc or EXIT footer of this pid: judge by the last lines + the final artifact)}"
       elif [ "$prc" != 0 ] || [ -n "$perr" ] || [ "$#" -lt 4 ] || [ -n "${1//[0-9]/}" ]; then echo "proc=unknown (ps FAILED or unparsable (exit $prc${perr:+: $perr}))"
       elif [ -z "$pmt" ]; then echo "proc=unknown pid=$pid (cannot stat $LOG.pid, so the process cannot be tied to the launch)"
       elif [ "$1" -lt $(( now - pmt - 60 )) ]; then echo "proc=unknown pid=$pid (that process is ${1}s old but the launch was $(( now - pmt ))s ago: reused pid or clock skew)"

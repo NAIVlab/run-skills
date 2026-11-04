@@ -6,6 +6,7 @@
 # for invocations prefixed PATH="$T/bin:$PATH" (sub/with_path do this) — forget it and you hit real binaries.
 : "${RS_HOME:?tests/lib.sh: set RS_HOME}"
 export RS_USER_DIR="${RS_USER_DIR:-$HOME/.config/run-skills}"
+export RS_VIA_RSK=1   # tests drive bin/run-launch as rsk does (an installed rsk would else redirect it); 60-launch unsets it
 T=$(mktemp -d); PASS=0; FAIL=0
 trap 'rm -rf "$T"' EXIT
 ok(){ echo "  PASS: $1"; PASS=$((PASS+1)); }

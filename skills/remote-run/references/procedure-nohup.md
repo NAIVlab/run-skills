@@ -42,8 +42,9 @@ which may fit better; the plan cites what is free there. On the chosen box:
 ssh <host> "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --format=csv,noheader"
 ssh <host> "ps -eo pid,etime,cmd | grep -i '[p]ython'"      # what is already running, and whose
 ```
-Auto-pick takes the **idlest** GPUs by `memory.used`, not necessarily free ones: read the table and use `-d` when the
-pick would land on a busy card. **Print a one-line plan (target / GPU ids / run command / `ref: <reference path>` —
+Auto-pick takes the **idlest** GPUs by `memory.used` among those with no compute process (`launch.sh` asks
+`nvidia-smi --query-compute-apps` once and names them `GPU(s) in use (id:user:pid)`); memory alone is not "free": read the
+table and use `-d` when the pick would land on a busy card. **Print a one-line plan (target / GPU ids / run command / `ref: <reference path>` —
 re-read it if only a summary of it is in context) and wait for an explicit go.** Never launch onto a GPU another job
 is using without the user's OK.
 Classify and name the run per `experiment-conventions.md` (run class, structured `-N` name, wandb mapping). A smoke
@@ -53,10 +54,15 @@ checkpoint dir even when its attempt suffix changes; confirm that resume behavio
 
 ## 4. Launch (nohup, detached)
 ```
-TARGET=<t> bash $ROOT/bin/run-launch [-d 0,1 | -n <count>] [-N <name>] [--same-name-ok] -- <RUN>
+TARGET=<t> bash $ROOT/bin/run-launch [-d 0,1 | -n <count>] [-N <name>] [--same-name-ok] [--gpu-busy-ok] -- <RUN>
 ```
-`-d ids` uses exactly those GPUs (bypasses `GPU_EXCLUDE`); `-n N` picks the N idlest, skipping `GPU_EXCLUDE` (default
-`DEFAULT_NGPU`, 1; positive integer; fewer than N ids left is a hard error, never a silent smaller world size); `-N`
+With rsk installed the launch goes through `rsk launch -T <t> …` (plan → the user's words → launch): `run-launch` called
+directly then prints `use: rsk launch -T <t> …` and exits 2 (rsk runs it with `RS_VIA_RSK=1`); without rsk (an install
+without uv) it launches as below, with a one-line NOTE.
+`-d ids` uses exactly those GPUs (bypasses `GPU_EXCLUDE`); `-n N` picks the N idlest free ones (no compute process),
+skipping `GPU_EXCLUDE` (default `DEFAULT_NGPU`, 1; positive integer; fewer than N free is a hard error, exit 1, never a
+silent smaller world size). A `-d` GPU with a compute process is exit 6, and a failed `--query-compute-apps` (busy state
+unknown) exit 1 — `--gpu-busy-ok` overrides both (it then prints a `WARNING:`), only when the user named those GPUs; `-N`
 names the run (default `JOB_NAME`, else the remote dir's basename); without `--`, `RUN` from the conf is used; `NICE` (0-19)
 applies `nice -n`. It prints the GPU table (one read-only ssh), then ONE ssh runs the deployed `.ws/launch.sh`: claim
 `<project>/.rs/attempts/<NONCE>/` (printed `attempt: .rs/attempts/<NONCE>`) → refuse a run of the same name from this
@@ -65,8 +71,14 @@ project that is still alive (exit 6; `--same-name-ok` runs both — only with th
 `RUN_ENV_READY=$PROJ` and `python` *is* `$RS_VENV (uv only)/bin/python` (`uv venv not active (run: … run-bootstrap)`) or
 the conda env is active → start `<RUN>` detached (`setsid` + `nohup`, `PYTHONUNBUFFERED=1`) into
 `logs/<name>-<timestamp>.log`; it prints `[<t>] started PID … ; log …` + a `verify:` line. Report PID + log path.
-Address GPUs as `cuda:0…` in the program. Exit: 0 launched, 1 failed (env gate, nvidia-smi, start), 2 usage, 6 same
-name alive, 75 that attempt already ran, 255 ssh.
+Address GPUs as `cuda:0…` in the program. Exit: 0 launched, 1 failed (env gate, nvidia-smi, start) or too few free GPUs,
+2 usage, 6 same name alive / a busy `-d` GPU / not the approved plan, 75 that attempt already ran, 255 ssh.
+rsk's protocol (api=3, the deployed `.ws/API`): `--rs-mode plan` runs every step above, the env gate included, then prints ONE
+`@@plan v1` … `@@end` block and starts nothing (bound: `name gpus_req exclude nice payload env_kind env_name`; `info_gpus=`
+`info_uuids=` `info_busy=<id:user:pid,…>|unknown`; `warnings=N` `bound_hash=`; result `verdict=planned`). `--rs-expect
+<bound_hash>` launches only while the request still hashes the same — else the current block + `ERROR: the resolved
+submission differs from the approved plan`, exit 6, before anything starts. The picked ids are envelope: a GPU that got busy since the
+plan moves the pick, never the request. A plan is a card for the user, not an approval.
 
 launch.sh records before it prints: the attempt dir holds `out`/`err` (every line it printed), `stage`, `result`
 (`stage= rc= verdict=launched|refused|failed`) and `receipt` (`pid pgid start boot_id gpus log name nonce at`); the run
@@ -94,7 +106,8 @@ Never read a log unbounded (`cat`, `tail -n`, `grep` over the whole file): bound
 re-sync only with the user's OK (a sync also pushes local code). The log opens
 with a harness header (`[<date>] target=<t> job=<pid> restart=0 attempt=<NONCE> gpus=<ids>`) and ends with
 `[<date>] EXIT rc=N term=0|1 …`; `<log>.rc` holds `rc= term= at=` (`term=1`: stopped by TERM/INT, rc 143; rc 125: never
-started, its launch was not confirmed). The footer is the exit record even where status.sh says `exit=unknown`; a run
+started, its launch was not confirmed). Once the pid is gone status.sh reads them: `proc=gone pid=… exit=N term=0|1 (<log>.rc)`
+(else `(the log's EXIT footer)`, which must name that pid; `exit=unknown` when neither exists); a run
 launched before launch.sh existed has neither: there `proc=gone` + the last lines + the final artifact ARE the evidence. Idle = ALL of the run's GPUs under ~5 % util
 AND the log not advancing across two checks — never one sample. A nohup'd run survives ssh disconnect, not a reboot:
 relaunch with the next `a<attempt>` (conventions §3) and confirm it resumed. **Never `kill` a process without explicit approval**; after an

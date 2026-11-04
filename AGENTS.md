@@ -60,8 +60,8 @@ hardcode the check count.
 
 | | local (cwd = project root) | on the target |
 |---|---|---|
-| slurm | `run-sync`, `run-pull`, `run-bootstrap` (ssh wrapper) | `<REMOTE_DIR>/.<t>/{env.sh,bootstrap.sh,status.sh,submit.sh,job.sbatch,profile.sh,MANIFEST[,policy.sh,policy.local.sh]}`; submit = `ssh host 'bash …/.<t>/submit.sh …'` |
-| nohup | `run-sync`, `run-pull`, `run-bootstrap`, `run-launch` (one ssh) | `~/<WS_REMOTE_DIR>/.ws/{env.sh,bootstrap.sh,status.sh,launch.sh,profile.sh,MANIFEST}` |
+| slurm | `run-sync`, `run-pull`, `run-bootstrap` (ssh wrapper) | `<REMOTE_DIR>/.<t>/{API,env.sh,bootstrap.sh,status.sh,submit.sh,job.sbatch,profile.sh,MANIFEST[,policy.sh,policy.local.sh]}`; submit = `ssh host 'bash …/.<t>/submit.sh …'` |
+| nohup | `run-sync`, `run-pull`, `run-bootstrap`, `run-launch` (one ssh) | `~/<WS_REMOTE_DIR>/.ws/{API,env.sh,bootstrap.sh,status.sh,launch.sh,profile.sh,MANIFEST}` |
 
 Every file copy goes to `rs_xfer_host` (the profile's `T_XFER_HOST`, a site fact with no conf key, else the ssh
 host), every ssh to `rs_host`: a transfer node's restricted shell takes rsync only, so `run-pull` never sshes.
@@ -119,6 +119,17 @@ NONCE = `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, the set spelled out; taken = exit 75)
 `result` (`stage= rc= verdict=submitted|launched|refused|failed|unknown`), THEN replays out/err (`trap '' PIPE`): a dead ssh
 (SIGPIPE on the first write) loses nothing, the exit status is unchanged. Slurm adds the snapshots `conf hook profile.sh env.sh`;
 `/.rs/` is an anchored sync exclude, refused by run-pull; nothing deletes attempts. 6 = a live same-name job of the project.
+**api=3** (`remote/API`, deployed for both kinds, in MANIFEST): both pre-scan `--rs-mode plan` and `--rs-expect <64 hex>` (submit.sh
+also `--rs-chain`) as separate words before `--` — an older parser exits 2 on the bare value word (tested against `git show
+8560838:` / `650d7d6:remote/submit.sh` and the P2 launch.sh); an unknown `--rs-*` is exit 2. Plan mode runs every check (`FORCE=1`:
+a -y gate prints its `WARNING:` and goes on; launch.sh runs the env gate) and prints ONE `@@plan v1` … `@@end` block: `api= kind= target=`,
+the bound fields (`rs_bound`, one function), `info_*` (envelope), `warnings=` (the `WARNING:` lines in out+err, not `WARNING (lint)`),
+`bound_hash=` (sha256 of the lines `kind=` … the last bound field, each + newline); it stops before the snapshots / the wrapper (`stage=plan
+rc=0 verdict=planned`). `--rs-expect H` recomputes that hash right before the snapshots and sbatch (nohup: before the env gate's subshell):
+a mismatch prints the block + `ERROR: … differs from the approved plan`, exit 6 (`stage=expect`, refused). `--rs-chain` adds
+`--dependency=singleton` (another dependency: exit 2) and passes the duplicate guard. launch.sh: a GPU with a compute process
+(`--query-compute-apps`) is never auto-picked (too few free: exit 1), `-d` onto one is exit 6, an unknown state exit 1 — unless
+`--gpu-busy-ok`. run-launch without `RS_VIA_RSK` while `rsk` is on PATH points at `rsk launch` (exit 2); `tests/lib.sh` exports it.
 
 ### Storage policy (env.sh, driven by `T_*`)
 
@@ -140,11 +151,13 @@ check reuses it) is static on purpose (hand-built `.venv-foo` dirs must survive 
 P_CPU_ONLY P_MEM_PER_CPU P_NOTE` (submit.sh resets all to '' first), may `SB_ARGS+=(…)`, returns 1 for unknown. `t_policy`
 (optional; every target should define it so an overlay can wrap it as `t_policy_shipped`) runs right after arg
 parsing with `PART PART_FROM_CLI NGPU GTYPE GTYPE_FROM_CLI TIME FORCE ACK T_FLAGS SB_ARGS SB_EXTRA NAME PROJ CLUSTER
-TAG` visible; its exit code propagates verbatim (3 = refusal; `-y` never unlocks it). Unknown `--word` flags land in
+TAG PLAN` visible (`PLAN=1`: plan mode, with `FORCE=1` — so a -y gate prints its `WARNING:` before testing `FORCE`, and the plan
+shows it); its exit code propagates verbatim (3 = refusal; `-y` never unlocks it). Unknown `--word` flags land in
 `T_FLAGS`, `--*-user-asked` sets `ACK=1`. Then: partition → `-g` range → cpu/mem heuristics → MaxTime (`P_MAXTIME` else
 `T_MAXTIME`) → payload guard → `SBATCH_EXTRA` scan (`-p`, `T_FORBIDDEN_QOS`, dangling flag) → sinfo availability
-(`WARNING: only … Re-run -y`) → duplicate guard (`--same-name-ok`, singleton chains skip it) → `SBATCH_EXTRA` lint (WARN: not in the
-allowlist + `T_SBATCH_EXTRA_ALLOW`, or a harness option) → `sbatch` (env `RS_ATTEMPT`, last `--comment` + ` rs=<NONCE>`). Nothing
+(`WARNING: only … Re-run -y`) → duplicate guard (`--same-name-ok`, singleton chains and `--rs-chain` skip it) → `SBATCH_EXTRA` lint (WARN: not in the
+allowlist + `T_SBATCH_EXTRA_ALLOW`, or a harness option) → plan block / `--rs-expect` check → snapshots → `sbatch` (env `RS_ATTEMPT`,
+last `--comment` + ` rs=<NONCE>`). Nothing
 cluster-named lives in shared code; a policy's own EXIT trap, `exit` or fds stay in submit.sh's subshell, away from the journal.
 
 ### Tests contract (`tests/lib.sh`)
