@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+# tests/61-launch-remote.sh — phase A: the deployed .ws/launch.sh itself, run here as run-launch's ssh would run it
+# (cwd = $HOME/projects/<p>, TARGET set; real setsid/sleep/kill, stub nvidia-smi with UUIDs). Covers: the attempt
+# journal (claim, out/err replay, stage, result, receipt fields), a dead caller loses nothing, NONCE reuse (75), the env
+# gate fail-closed paths, the duplicate guard by live triple, GPU ids (+ UUIDs in the receipt), NICE, group/wrapper TERM -> rc=143 term=1,
+# no payload without a confirmed gate, the conf cannot steer launch.sh, RUN's plain conf/hook variables (named ones only,
+# mode 600, deleted once read; the harness's CUDA env wins), nested launches, status.sh / rsk reading the run.
+# Run by selftest.sh with RS_HOME set:  bash tests/61-launch-remote.sh
+set -u
+. "$RS_HOME/tests/lib.sh"
+if [ ! -r /proc/self/stat ] || ! command -v setsid >/dev/null 2>&1; then
+  echo "  SKIP: 61-launch-remote — launch.sh is a Linux remote script (/proc, setsid); run selftest on Linux for it"; exit 0; fi
+H=$T/home; mkdir -p "$H/projects" "$H/miniconda3/etc/profile.d"
+printf 'conda() { case "$1" in activate) [ "$2" = broken ] && export CONDA_DEFAULT_ENV=other || export CONDA_DEFAULT_ENV=$2 ;; *) return 1 ;; esac; }\n' \
+  > "$H/miniconda3/etc/profile.d/conda.sh"
+cat > "$T/bin/nvidia-smi" <<EOS
+#!/usr/bin/env bash
+[ ! -f "$T/nvsmi.fail" ] || { echo "NVIDIA-SMI has failed" >&2; exit 9; }
+case "\$*" in *index,uuid,memory.used*) printf '0, GPU-aaaa0000-0000, 8000\n1, GPU-aaaa0000-0001, 2\n2, GPU-aaaa0000-0002, 5\n3, GPU-aaaa0000-0003, 9000\n' ;;
+  *) echo "nvidia-smi stub: unexpected \$*" >&2; exit 2 ;; esac
+EOS
+chmod +x "$T/bin/nvidia-smi"
+mkp() { local d; d=$(mk_proj ws-box "$2") || return 1; ln -s "$d" "$H/projects/$1"; echo "$d"; }
+L() { local p=$1; shift; ( cd "$H/projects/$p" && HOME="$H" PATH="$T/bin:$PATH" TARGET=ws-box bash .ws/launch.sh "$@" 2>&1 ); }   # stderr merged
+kv() { sed -n "s/^$1=//p" "$2" 2>/dev/null | head -n 1; }
+pst() { awk '{ sub(/.*\) /, ""); print $20 }' "/proc/$1/stat" 2>/dev/null; }          # field 22, counted after the last ')'
+latt() { ls -dt "$1"/.rs/attempts/*/ 2>/dev/null | head -n 1 | sed 's|/$||'; }
+waitfor() { local i=0; while [ "$i" -lt 100 ]; do for f in $1; do [ -e "$f" ] && return 0; done; sleep 0.1; i=$((i+1)); done; return 1; }   # glob, 10 s
+ngrp() { ps -e -o pgid= | tr -d ' ' | grep -cx "$1"; }                                # processes left in a process group
+reap() { local r p; for r in "$T"/proj_*/.rs/attempts/*/receipt; do [ -f "$r" ] || continue; p=$(kv pgid "$r")
+  [ -n "$p" ] && [ "$(pst "$p")" = "$(kv start "$r")" ] && kill -KILL -- "-$p" 2>/dev/null; done; }
+trap 'reap; [ -z "${SP:-}" ] || kill "$SP" 2>/dev/null; rm -rf "$T"' EXIT
+BOOT=$(cat /proc/sys/kernel/random/boot_id)
+N=$(mkp n 'WS_REMOTE_DIR=projects/n
+ENV_KIND=none') || { bad "mk_proj"; exit 1; }
+
+echo "-- journal + receipt --"
+O=$(L n --rs-attempt r1 -N rcpt -d 1,3 -- sleep 30); RC=$?; A=$N/.rs/attempts/r1
+[ "$RC" = 0 ] && ok "launches (rc 0)" || { bad "launches (rc=$RC)"; echo "$O" | sed 's/^/    | /'; }
+R=$(cat "$A/receipt" 2>/dev/null); PID=$(kv pid "$A/receipt"); LG=$N/$(kv log "$A/receipt")
+[ -n "$PID" ] && [ "$PID" = "$(cat "$LG.pid" 2>/dev/null)" ] && ok "receipt pid = <log>.pid (the wrapper)" || bad "receipt pid = <log>.pid ($PID)"
+grep -qx '[0-9]*' "$LG.pid" && ok "<log>.pid holds digits only (status.sh / rsk / run-watch read it)" || bad "<log>.pid holds digits only"
+[ "$(kv pgid "$A/receipt")" = "$PID" ] && ok "pgid = pid: the wrapper leads its process group" || bad "pgid = pid"
+[ "$(ps -o sid= -p "$PID" | tr -d ' ')" = "$PID" ] && ok "setsid: the wrapper leads its own session" || bad "setsid: own session"
+[ -n "$(kv start "$A/receipt")" ] && [ "$(kv start "$A/receipt")" = "$(pst "$PID")" ] && ok "start = field 22 of /proc/<pid>/stat" || bad "start = /proc field 22"
+[ "$(kv boot_id "$A/receipt")" = "$BOOT" ] && ok "boot_id recorded" || bad "boot_id recorded"
+has "$R" '^gpus=GPU-aaaa0000-0001,GPU-aaaa0000-0003$' "-d 1,3 -> their UUIDs, in that order"
+has "$R" '^log=logs/rcpt-[0-9]\{8\}-[0-9]\{6\}\.log$' "log= is the project-relative log"; has "$R" '^name=rcpt$' "name="
+has "$R" '^nonce=r1$' "nonce="; has "$R" '^at=[0-9]\{10\}$' "at= (epoch)"
+has "$(cat "$A/result")" '^stage=done rc=0 verdict=launched at=[0-9]*$' "result: stage=done rc=0 verdict=launched"
+[ "$(cat "$A/stage")" = done ] && [ "$(readlink "$A/gate")" = go ] && ok "stage=done, gate -> go" || bad "stage=done, gate -> go"
+has "$(cat "$A/out")" '^attempt: \.rs/attempts/r1$' "out keeps the attempt line"; has "$(cat "$A/out")" '^\[ws-box\] started PID '"$PID"' on GPU(s) 1,3' "out keeps the PID line (ids shown)"
+[ "$O" = "$(cat "$A/out" "$A/err")" ] && ok "the caller got exactly out then err (replayed at exit)" || bad "the caller got exactly out then err"
+S=$( cd "$H/projects/n" && bash .ws/status.sh "$(kv log "$A/receipt")" )
+has "$S" "^proc=alive pid=$PID " "status.sh: proc=alive for the wrapper pid"; has "$S" '^starts=1 restart=0 footer=none' "status.sh: the header opens a start"
+if command -v python3 >/dev/null 2>&1 && PR=$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); from remote_run import observe; print(observe.NOHUP)' "$RS_HOME/src" 2>/dev/null); then
+  has "$(RDIR="$N" bash -c "$PR" 2>&1)" "^logs/rcpt-.* alive:[0-9]*:$PID\$" "rsk status's nohup probe: alive, with the wrapper pid"
+else echo "  SKIP: python3 / remote_run not importable: rsk's nohup probe not exercised"; fi
+
+echo "-- duplicates: a receipt whose pid, /proc start and boot_id still match --"
+O=$(L n -N rcpt -d 0 -- sleep 30); RC=$?; D=$(latt "$N")
+[ "$RC" = 6 ] && has "$O" "'rcpt' is already running from this project: pid $PID (attempt \.rs/attempts/r1" "same name alive -> exit 6, names pid + attempt" || bad "same name alive -> exit 6 (rc=$RC)"
+has "$(cat "$D/result")" '^stage=pre-policy rc=6 verdict=refused' "...journaled: verdict=refused"; [ "$(ls "$N"/logs/rcpt-*.log | wc -l)" = 1 ] && ok "...no second log" || bad "...no second log"
+sleep 1   # a second launch of one name in the same second finds its log name taken (exit 2)
+O=$(L n -N rcpt --same-name-ok -d 0 -- sleep 30); RC=$?; [ "$RC" = 0 ] && ok "--same-name-ok launches the second" || bad "--same-name-ok (rc=$RC)"
+A2=$(latt "$N"); PID2=$(kv pid "$A2/receipt")
+sleep 30 & SP=$!; SS=$(pst "$SP")   # a live process stands in for a run: only the receipt decides
+fake() { local d=$N/.rs/attempts/$1; mkdir -p "$d"; printf 'pid=%s\npgid=%s\nstart=%s\nboot_id=%s\nname=%s\nlog=logs/x.log\n' "$SP" "$SP" "$2" "$3" "$4" > "$d/receipt"; ln -s "$5" "$d/gate"; }
+fake f1 "$SS" "$BOOT" fk-a go;    O=$(L n -N fk-a -d 0 -- c); [ "$?" = 6 ] && ok "a live triple blocks" || bad "a live triple blocks"
+fake f2 "$((SS+1))" "$BOOT" fk-b go; O=$(L n -N fk-b -d 0 -- c); [ "$?" = 0 ] && ok "same pid, other /proc start (a reused pid) does not block" || bad "reused pid blocks"
+fake f3 "$SS" 00000000-0000-0000-0000-000000000000 fk-c go; O=$(L n -N fk-c -d 0 -- c); [ "$?" = 0 ] && ok "another boot's receipt does not block" || bad "another boot blocks"
+fake f4 "$SS" "$BOOT" fk-d abort; O=$(L n -N fk-d -d 0 -- c); [ "$?" = 0 ] && ok "a run whose gate never opened does not block" || bad "gate abort blocks"
+kill "$SP" 2>/dev/null; wait "$SP" 2>/dev/null; SP=""
+O=$(L n -N fk-a -d 0 -- c); [ "$?" = 0 ] && ok "the triple's process gone -> the name is free" || bad "dead triple blocks"
+
+echo "-- TERM --"
+PG=$(kv pgid "$A/receipt"); kill -TERM -- "-$PG"
+waitfor "$LG.rc" && has "$(cat "$LG.rc")" '^rc=143 term=1 at=[0-9]*$' "group TERM -> <log>.rc rc=143 term=1" || bad "group TERM -> <log>.rc"
+has "$(tail -n 1 "$LG")" '^\[.*\] EXIT rc=143 term=1 pid='"$PID"' attempt=r1$' "...and the log's EXIT footer"
+S=$( cd "$H/projects/n" && bash .ws/status.sh "$(kv log "$A/receipt")" )
+has "$S" '^starts=1 restart=0 footer=EXIT rc=143 term=1' "status.sh reads the footer"; has "$S" "^proc=gone pid=$PID" "status.sh: proc=gone"
+LG2=$N/$(kv log "$A2/receipt"); kill -TERM "$PID2"   # the wrapper alone (`kill <pid>`): forwarded once to the run
+waitfor "$LG2.rc" && has "$(cat "$LG2.rc")" '^rc=143 term=1 ' "TERM to the wrapper pid alone -> forwarded, rc=143 term=1" || bad "wrapper TERM -> <log>.rc"
+i=0; while [ "$(ngrp "$PID2")" != 0 ] && [ "$i" -lt 20 ]; do sleep 0.1; i=$((i+1)); done   # the wrapper exits just after .rc
+[ "$(ngrp "$PID2")" = 0 ] && ok "...and nothing of the run is left in its group" || bad "...the run's group still has $(ngrp "$PID2") process(es)"
+O=$(L n -N ex3 -d 0 -- "sh -c 'exit 3'"); LG3=$N/$(kv log "$(latt "$N")/receipt")
+waitfor "$LG3.rc" && has "$(cat "$LG3.rc")" '^rc=3 term=0 ' "a run's own exit code -> rc=3 term=0" || bad "own exit code"
+has "$(sed -n 1p "$LG3")" '^\[.*\] target=ws-box job=[0-9]* restart=0 attempt=.* gpus=0$' "the log opens with the harness header"
+
+echo "-- no confirmed gate, no payload --"
+K=$(mkp slow 'WS_REMOTE_DIR=projects/slow
+ENV_KIND=none
+ENV_HOOK=slow.sh'); printf 'sleep 1\n' > "$K/slow.sh"
+( cd "$H/projects/slow" && HOME="$H" PATH="$T/bin:$PATH" TARGET=ws-box exec bash .ws/launch.sh --rs-attempt k1 -N k1 -d 0 -- touch "$T/ran" > "$T/k1.out" 2>&1 ) & KP=$!
+i=0; until [ "$(cat "$K/.rs/attempts/k1/stage" 2>/dev/null)" = launch ] || [ "$i" -ge 100 ]; do sleep 0.05; i=$((i+1)); done
+kill -TERM "$KP"; wait "$KP"; RC=$?
+[ "$RC" = 143 ] && ok "launch.sh killed during env.sh -> exit 143" || bad "launch.sh killed during env.sh (rc=$RC)"
+waitfor "$K/logs/k1-*.log.rc" && has "$(cat "$K"/logs/k1-*.log.rc)" '^rc=125 term=0 ' "...its wrapper never got go: rc=125" || bad "...its wrapper never got go"
+[ ! -e "$T/ran" ] && ok "...and the payload never ran" || bad "...and the payload never ran"
+has "$(cat "$K/.rs/attempts/k1/result")" '^stage=launch rc=143 verdict=failed' "...journaled: stage=launch verdict=failed"
+[ "$(readlink "$K/.rs/attempts/k1/gate")" = abort ] && ok "...gate -> abort" || bad "...gate -> abort"
+has "$(cat "$K"/logs/k1-*.log)" 'EXIT rc=125 .*(not started' "...the log says not started"
+
+echo "-- the caller --"
+( cd "$H/projects/n" && HOME="$H" PATH="$T/bin:$PATH" TARGET=ws-box bash .ws/launch.sh --rs-attempt disc -N disc -d 2 -- sleep 30 2>&1 | true
+  echo "${PIPESTATUS[0]}" > "$T/disc.rc" )
+A=$N/.rs/attempts/disc
+[ "$(cat "$T/disc.rc")" = 0 ] && ok "a caller that is gone: launch.sh still exits 0 (the replay's EPIPE ignored)" || bad "dead caller: rc=$(cat "$T/disc.rc")"
+has "$(cat "$A/result")" 'verdict=launched' "...result written"; [ -n "$(pst "$(kv pid "$A/receipt")")" ] && ok "...receipt written, the run alive" || bad "...receipt / run"
+has "$(cat "$A/out")" '^\[ws-box\] started PID' "...and out still holds every line"
+SECONDS=0; O=$(L n -N hold -d 2 -- sleep 30); RC=$?
+[ "$RC" = 0 ] && [ "$SECONDS" -lt 10 ] && ok "the caller's pipe is released at once (the run holds none of its fds)" || bad "pipe released at once (rc=$RC, ${SECONDS}s)"
+O=$(L n --rs-attempt j1 -N j1 -d 0 -- c); O=$(L n --rs-attempt j1 -N j2 -d 0 -- c); RC=$?
+[ "$RC" = 75 ] && has "$O" 'already claimed' "a claimed NONCE -> exit 75" || bad "a claimed NONCE -> exit 75 (rc=$RC)"
+ls "$N"/logs/j2-*.log >/dev/null 2>&1 && bad "...launched anyway" || ok "...nothing launched"; has "$(cat "$N/.rs/attempts/j1/out")" 'j1' "...the first attempt's journal untouched"
+B=$(ls "$N/.rs/attempts" | wc -l)
+for n in 'a b' '' . .. -y .x a/b 'é' "$(printf 'x%.0s' $(seq 65))"; do   # submit.sh's rule: [A-Za-z0-9][A-Za-z0-9._-]{0,63}
+  O=$(L n --rs-attempt "$n" -N j3 -- c); RC=$?; [ "$RC" = 2 ] && ok "an invalid NONCE '${n:0:12}' -> exit 2" || bad "invalid NONCE '${n:0:12}' (rc=$RC)"; done
+[ "$(ls "$N/.rs/attempts" | wc -l)" = "$B" ] && ok "...nothing claimed by any of them" || bad "...an invalid NONCE claimed a dir"
+O=$(L n -N j4 -d 0 -- c); has "$(basename "$(latt "$N")")" '^[0-9]\{8\}T[0-9]\{6\}Z-[0-9]*-[0-9]*$' "no NONCE given -> a generated one"
+O=$(L n -N j5 --bogus -- c); RC=$?; [ "$RC" = 2 ] && has "$(cat "$(latt "$N")/result")" '^stage=pre-policy rc=2 verdict=refused' "a usage error after the claim is journaled (exit 2)" || bad "usage error (rc=$RC)"
+O=$(RS_ATTEMPT=parent RS_RUN=x RS_ACKS=y RS_CONF_FILE=z L n -N nest -d 0 -- "sh -c 'echo att=\${RS_ATTEMPT:-none}'"); RC=$?
+[ "$RC" = 0 ] && [ ! -e "$N/.rs/attempts/parent" ] && ok "a launch from inside a run gets its own attempt, never the parent's" || bad "nested launch (rc=$RC)"
+waitfor "$N/$(kv log "$(latt "$N")/receipt").rc"; has "$(cat "$N/$(kv log "$(latt "$N")/receipt")")" '^att=none$' "...and the payload sees no RS_ATTEMPT"
+
+echo "-- GPUs (ids in PCI_BUS_ID order, UUIDs in the receipt), NICE, the payload's env --"
+O=$(L n -N env1 -d 2,0 -- "sh -c 'echo CVD=\$CUDA_VISIBLE_DEVICES ORDER=\$CUDA_DEVICE_ORDER UNBUF=\$PYTHONUNBUFFERED READY=\$RUN_ENV_READY'")
+has "$O" 'GPU(s) \[2,0\]' "the printed lines keep showing ids"; E1=$N/$(kv log "$(latt "$N")/receipt"); waitfor "$E1.rc"
+has "$(cat "$E1")" "^CVD=2,0 ORDER=PCI_BUS_ID UNBUF=1 READY=$H/projects/n\$" "payload env: the ids in -d order, PCI_BUS_ID (= nvidia-smi index order), unbuffered, the contained env"
+O=$(L n -N pick -n 2 -x 1 -- c); has "$O" 'GPU(s) \[2,0\]' "-n 2 -x 1: the two idlest outside the exclude"
+has "$(cat "$(latt "$N")/receipt")" '^gpus=GPU-aaaa0000-0002,GPU-aaaa0000-0000$' "...pinned by UUID"
+O=$(L n -N g7 -d 7 -- c); RC=$?; [ "$RC" = 2 ] && has "$O" 'GPU id 7 is not on this box (ids: 0,1,2,3)' "-d with an absent id -> exit 2" || bad "-d 7 (rc=$RC)"
+O=$(L n -N g8 -d 1,01 -- c); RC=$?; [ "$RC" = 2 ] && has "$O" 'twice' "-d naming one GPU twice -> exit 2" || bad "-d 1,01 (rc=$RC)"
+O=$(L n -N g9 -d 0 -n 1 -- c); RC=$?; [ "$RC" = 2 ] && has "$O" 'exclusive' "-d with -n -> exit 2" || bad "-d -n (rc=$RC)"
+touch "$T/nvsmi.fail"; O=$(L n -N g10 -d 0 -- c); RC=$?; rm -f "$T/nvsmi.fail"
+[ "$RC" = 1 ] && has "$O" 'nvidia-smi failed' "nvidia-smi failing -> exit 1, nothing launched" || bad "nvidia-smi failing (rc=$RC)"
+ls "$N"/logs/g10-*.log >/dev/null 2>&1 && bad "...no log" || ok "...no log"; has "$(cat "$(latt "$N")/result")" 'verdict=failed' "...verdict=failed"
+O=$(L n -N nice1 -d 0 --nice 5 -- "sh -c 'echo NI=\$(nice)'"); E2=$N/$(kv log "$(latt "$N")/receipt"); waitfor "$E2.rc"
+w=$(( $(nice) + 5 )); [ "$w" -le 19 ] || w=19; has "$(cat "$E2")" "^NI=$w\$" "--nice 5 -> the payload runs at nice +5"
+
+echo "-- the env gate fails closed --"
+G=$(mkp gu 'WS_REMOTE_DIR=projects/gu
+ENV_KIND=uv')
+O=$(L gu -N g -d 0 -- c); RC=$?; [ "$RC" = 1 ] && has "$O" 'uv venv not active' "uv without the venv -> exit 1" || bad "uv without the venv (rc=$RC)"
+has "$(cat "$(latt "$G")/result")" '^stage=launch rc=1 verdict=failed' "...verdict=failed"; ls "$G"/logs/g-*.log >/dev/null 2>&1 && bad "...no log" || ok "...no log, no run"
+mkdir -p "$G/.venv/bin"; printf '#!/bin/sh\n' > "$G/.venv/bin/python"; chmod +x "$G/.venv/bin/python"
+O=$(L gu -N g -d 0 -- c); [ "$?" = 0 ] && ok "...with the venv: launches" || bad "...with the venv: launches"
+G=$(mkp gc 'WS_REMOTE_DIR=projects/gc
+ENV_KIND=conda
+ENV_NAME=broken')
+O=$(L gc -N g -d 0 -- c); RC=$?; [ "$RC" = 1 ] && has "$O" "conda env 'broken' not active (got 'other')" "conda env not the active one -> exit 1" || bad "conda gate (rc=$RC)"
+G=$(mkp gh 'WS_REMOTE_DIR=projects/gh
+ENV_KIND=none
+ENV_HOOK=nohook.sh')
+O=$(L gh -N g -d 0 -- c); RC=$?; [ "$RC" = 1 ] && has "$O" 'containment env not loaded' "env.sh refusing -> exit 1" || bad "env.sh refusing (rc=$RC)"
+has "$O" "ENV_HOOK 'nohook.sh' not found" "...with env.sh's own reason"
+O=$(RUN_ENV_READY="$H/projects/gh" WS_ENV_READY="$H/projects/gh" L gh -N g -d 0 -- c); [ "$?" = 1 ] && ok "an inherited sentinel never passes the gate" || bad "an inherited sentinel passes the gate"
+O=$(cd "$H/projects/gh" && HOME="$H" PATH="$T/bin:$PATH" TARGET=other-box bash .ws/launch.sh -N g -d 0 -- c 2>&1); RC=$?
+[ "$RC" = 2 ] && has "$O" "deployed for target 'ws-box', not 'other-box'" "a .ws/ deployed for another box -> exit 2" || bad "other box's .ws (rc=$RC)"
+
+echo "-- the conf cannot steer launch.sh; RUN expands as in a login shell --"
+C=$(mkp cv "WS_REMOTE_DIR=projects/cv
+ENV_KIND=none
+NAME=evil LOG=logs/evil.log A=/nonexistent NONCE=evil UUIDS=GPU-evil TN=evil PROJ_X=1
+DATA=hello
+export EXPD=exp")
+O=$(L cv -N cv1 -d 1 -- 'sh -c "echo data=$DATA inner=\${DATA:-unset} exp=\$EXPD cvd=\$CUDA_VISIBLE_DEVICES"'); RC=$?
+[ "$RC" = 0 ] && has "$O" '^\[ws-box\] started PID' "a conf setting NAME/LOG/A/NONCE/UUIDS/TN launches as asked" || bad "conf clobber (rc=$RC)"
+E3=$C/$(kv log "$(latt "$C")/receipt"); waitfor "$E3.rc"
+has "$E3" '/logs/cv1-' "...the log is -N's"; [ ! -e "$C/logs/evil.log" ] && ok "...not the conf's LOG" || bad "...not the conf's LOG"
+has "$(cat "$E3")" '^data=hello inner=unset exp=exp cvd=1$' "RUN sees the conf's plain variables (not exported to the run), exports, the picked ids"
+
+echo "-- plain conf/hook variables: only those RUN names, never over the harness's CUDA env, never left on disk --"
+mkdir -p "$T/ss"; printf '#!/usr/bin/env bash\nd=$(dirname "$2"); [ ! -f "$d/vars" ] || { ls -ln "$d/vars"; cat "$d/vars"; } > %q\nexec %q "$@"\n' \
+  "$T/vars.seen" "$(command -v setsid)" > "$T/ss/setsid"; chmod +x "$T/ss/setsid"   # what the wrapper is handed, as it starts
+V=$(mkp pv "WS_REMOTE_DIR=projects/pv
+ENV_KIND=none
+ENV_HOOK=hook.sh
+CUDA_VISIBLE_DEVICES=0
+TAG=v2 NAME=confname LOG=x DEV=9 i=7")
+printf 'HF_TOKEN=hf_SECRET123\nMYV=from-hook\nPYTHONUNBUFFERED=0\nCUDA_DEVICE_ORDER=FASTEST_FIRST\n' > "$V/hook.sh"
+printf 'WANDB_API_KEY=wandbSECRET\n' > "$V/.wandb_env"; chmod 600 "$V/.wandb_env"
+RV='sh -c "echo cvd=\$CUDA_VISIBLE_DEVICES order=\$CUDA_DEVICE_ORDER unbuf=\$PYTHONUNBUFFERED outer=$CUDA_VISIBLE_DEVICES myv=$MYV tag=$TAG name=$NAME dev=$DEV i=$i"'
+O=$( cd "$H/projects/pv" && HOME="$H" PATH="$T/ss:$T/bin:$PATH" TARGET=ws-box bash .ws/launch.sh -N pv1 -d 1 -- "$RV" 2>&1 ); RC=$?
+A=$(latt "$V"); E4=$V/$(kv log "$A/receipt"); waitfor "$E4.rc"
+[ "$RC" = 0 ] && has "$(cat "$E4")" '^cvd=1 order=PCI_BUS_ID unbuf=1 outer=1 ' \
+  "a plain CUDA_VISIBLE_DEVICES (conf), CUDA_DEVICE_ORDER / PYTHONUNBUFFERED (hook): the harness's values reach the run" || bad "harness CUDA env wins (rc=$RC)"
+has "$(cat "$E4")" ' myv=from-hook tag=v2 name=confname dev=9 i=7$' "RUN expands the conf's/hook's TAG NAME DEV i (names launch.sh uses itself) as a login shell would"
+has "$(cat "$T/vars.seen" 2>/dev/null)" '^-rw-------' "the vars file handed to the wrapper is mode 600"
+has "$(cat "$T/vars.seen" 2>/dev/null)" '^declare -- MYV="from-hook"$' "...and carries the plain variables RUN names"
+hasnt "$(cat "$T/vars.seen" 2>/dev/null)" 'SECRET\|CUDA\|PYTHONUNBUFFERED' "...never one RUN does not name (a hook's token, .wandb_env's key) nor the harness's CUDA env"
+[ ! -e "$A/vars" ] && [ -z "$(grep -rl SECRET "$V/.rs" "$V/logs" 2>/dev/null)" ] && ok "...and nothing of it stays on disk once the run started" || bad "vars left on disk"
+printf 'WS_REMOTE_DIR=projects/pv\nENV_KIND=none\nENV_HOOK=hook.sh\n' > "$V/.ws.conf"; printf 'CUDA_VISIBLE_DEVICES=3\n' > "$V/hook.sh"
+O=$(L pv -N pv2 -d 2 -- "$RV"); E5=$V/$(kv log "$(latt "$V")/receipt"); waitfor "$E5.rc"
+has "$(cat "$E5")" '^cvd=2 order=PCI_BUS_ID unbuf=1 outer=2 ' "a plain CUDA_VISIBLE_DEVICES in the hook: the harness's ids still win"
+
+echo "-- CUDA numbers GPUs as nvidia-smi does under PCI_BUS_ID (opt-in, needs a real GPU: RS_GPU_TEST=1 bash selftest.sh) --"
+# libcuda via ctypes (stdlib only): with CUDA_DEVICE_ORDER=PCI_BUS_ID, CUDA_VISIBLE_DEVICES=<nvidia-smi ids> lists exactly
+# those GPUs in that order (cuda:0 = the first id; checked by UUID) — launch.sh's ids mean what nvidia-smi showed.
+CU='import ctypes
+c = ctypes.CDLL("libcuda.so.1"); r = c.cuInit(0); n = ctypes.c_int(); out = []
+if r == 0: c.cuDeviceGetCount(ctypes.byref(n))
+for i in range(n.value):
+    d = ctypes.c_int(); c.cuDeviceGet(ctypes.byref(d), i); u = (ctypes.c_ubyte * 16)(); c.cuDeviceGetUuid(u, d); h = bytes(u).hex()
+    out.append("GPU-%s-%s-%s-%s-%s" % (h[:8], h[8:12], h[12:16], h[16:20], h[20:]))
+print("init=%d n=%d %s" % (r, n.value, ",".join(out)))'
+if [ "${RS_GPU_TEST:-0}" = 1 ] && U=$(nvidia-smi --query-gpu=uuid --format=csv,noheader 2>/dev/null) && [ -n "$U" ] && command -v python3 >/dev/null; then
+  I=$(nvidia-smi --query-gpu=index --format=csv,noheader | tr -d ' ')   # nvidia-smi's own order: index i <-> UUID line i
+  ALL=$(printf '%s\n' "$U" | tr -d ' ' | paste -sd, -); REV=$(printf '%s\n' "$U" | tr -d ' ' | tac | paste -sd, -)
+  IALL=$(printf '%s\n' "$I" | paste -sd, -); IREV=$(printf '%s\n' "$I" | tac | paste -sd, -)
+  has "$(CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES="$IREV" python3 -I -c "$CU")" "^init=0 n=$(printf '%s\n' "$U" | wc -l) $REV\$" "ids $IREV under PCI_BUS_ID = those nvidia-smi GPUs, in that order"
+  has "$(CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES="$IALL" python3 -I -c "$CU")" " $ALL\$" "all ids in index order = nvidia-smi's UUID order"
+else echo "  SKIP: CUDA id-order check (set RS_GPU_TEST=1 on a machine with a GPU)"; fi

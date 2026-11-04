@@ -209,7 +209,7 @@ These are part of the skill's instructions and are enforced by the harness where
 | `INSTALL.md` | the install runbook your agent follows |
 | `bin/` | local commands: `run-avail` (free GPUs everywhere), `run-sync`, `run-pull`, `run-bootstrap`, `run-launch`, `run-watch` (batch watch), `run-probe` |
 | `lib/common.sh` | local helpers: target discovery, conf precedence, conf linter, INDEX generation |
-| `remote/` | deployed next to each project: `env.sh`, `bootstrap.sh`, `status.sh`, `submit.sh`, `job.sbatch` |
+| `remote/` | deployed next to each project: `env.sh`, `bootstrap.sh`, `status.sh`, `submit.sh` + `job.sbatch` (Slurm), `launch.sh` (workstations); `run-sync` adds a `MANIFEST` |
 | `targets/` | `_template-slurm/`, `_template-nohup/` |
 | `templates/` | conf examples, `ssh_config`, `wandb_env`, and `pack/` (a target-pack skeleton) |
 | `codex/` | Codex UI metadata for the skill |

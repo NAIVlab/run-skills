@@ -16,25 +16,23 @@ rs_path() { printf %s "$1" | sed -e "s|\\\${HOME}|$HOME|g" -e "s|\\\$HOME|$HOME|
 
 rs_roots() {   # target roots, highest precedence first: user overlay, each pack (glob order), shipped
   local p; echo "$RS_USER_DIR/targets"
-  for p in "$RS_PACKS_DIR"/*/; do [ -d "${p}targets" ] && echo "${p}targets"; done; echo "$RS_HOME/targets"
-}
+  for p in "$RS_PACKS_DIR"/*/; do [ -d "${p}targets" ] && echo "${p}targets"; done; echo "$RS_HOME/targets"; }
 rs_targets() {   # names, sorted unique; a dir counts only with profile.sh; _template-* skipped
   local r d n
   rs_roots | while IFS= read -r r; do for d in "$r"/*/; do
     [ -f "$d/profile.sh" ] || continue
     n=$(basename "$d"); case "$n" in _*) ;; *) echo "$n" ;; esac
-  done; done | sort -u
-}
+  done; done | sort -u; }
 rs_target_dir() {   # dir whose profile.sh is authoritative (first root that has one)
   local d; d=$(rs_roots | while IFS= read -r r; do [ -f "$r/$1/profile.sh" ] && { echo "$r/$1"; break; }; done)
-  [ -n "$d" ] && echo "$d" || die "unknown target '$1' (known: $(rs_targets | tr '\n' ' '))"
-}
+  [ -n "$d" ] && echo "$d" || die "unknown target '$1' (known: $(rs_targets | tr '\n' ' '))"; }
 rs_target_local_dir() { [ -d "$RS_USER_DIR/targets/$1" ] && echo "$RS_USER_DIR/targets/$1"; return 0; }
-rs_load_target() {   # sets T_NAME T_TAG T_DIR T_LOCAL_DIR + every T_* from profile.sh
+rs_load_target() {   # sets T_NAME T_TAG T_DIR T_LOCAL_DIR + every T_* from profile.sh; the name 'rs' is reserved
+  [ "$1" != rs ] || die "target name 'rs' is reserved (<REMOTE_DIR>/.rs/ holds the harness's attempt journal) — rename the target dir"
   T_DIR=$(rs_target_dir "$1") || exit 2
   T_LOCAL_DIR=$(rs_target_local_dir "$1")
   unset T_KIND T_HOST T_DESC T_TRIGGERS T_GPUS T_CUDA_ARCH T_SUFFIX T_CONDA_INIT T_CUDA_HOME T_ENV_ROOT T_TMPDIR \
-    T_COMPILE_CACHE T_REMOTE_DIR_REQUIRED T_CONF_KEYS T_DEFAULT_PARTITION T_DEFAULT_GPU_TYPE T_MAXTIME T_FORBIDDEN_QOS T_PARTITIONS T_XFER_HOST T_WATCH_RECOVER T_BOOTSTRAP_JOB
+    T_COMPILE_CACHE T_REMOTE_DIR_REQUIRED T_CONF_KEYS T_DEFAULT_PARTITION T_DEFAULT_GPU_TYPE T_MAXTIME T_FORBIDDEN_QOS T_PARTITIONS T_XFER_HOST T_WATCH_RECOVER T_BOOTSTRAP_JOB T_SBATCH_EXTRA_ALLOW
   . "$T_DIR/profile.sh"
   T_NAME=$1; T_TAG=$(rs_tag "$1")
   case "${T_KIND:-}" in slurm|nohup) ;; *) die "$T_DIR/profile.sh: T_KIND must be slurm|nohup (got '${T_KIND:-}')" ;; esac
@@ -42,8 +40,7 @@ rs_load_target() {   # sets T_NAME T_TAG T_DIR T_LOCAL_DIR + every T_* from prof
 }
 rs_init() {   # bin/* prologue: TARGET (CLUSTER= / STATION= are aliases) -> rs_load_target
   TARGET="${TARGET:-${CLUSTER:-${STATION:-}}}"; [ -n "$TARGET" ] || die "set TARGET=<name> (or CLUSTER=/STATION=); known: $(rs_targets | tr '\n' ' ')"
-  rs_load_target "$TARGET"
-}
+  rs_load_target "$TARGET"; }
 rs_host() { [ "$T_KIND" = slurm ] && printf %s "${REMOTE_HOST:-$T_HOST}" || printf %s "$T_HOST"; }   # slurm honours REMOTE_HOST
 # every file copy (run-sync, run-pull) goes here: a site's data-transfer node whose restricted shell takes rsync/scp/sftp
 # only; ssh control commands stay on rs_host. Same filesystem by definition.
@@ -73,19 +70,22 @@ rs_sync_excludes() {   # run-sync's exclude patterns, one per line (static on pu
   # Generated/output dirs are ANCHORED (leading /) so a same-named SOURCE dir (mypkg/data/) is kept; junk matches at any depth.
   printf '%s\n' .git .claude/ .codex/ .agent/ .agents/ '.vscode*/' .idea/ __pycache__/ '*.pyc' .pytest_cache/ .mypy_cache/ \
     .ruff_cache/ .DS_Store node_modules/ '*.parquet' /.venv '/.venv-*' /.cache/ /.local/ /.config/ /bin/ /tmp/ /wandb/ \
-    /wandb-artifacts/ /logs/ /run_logs/ /ckpts/ /checkpoints/ /runs/ /outputs/ /videos/ /data/ .wandb_env /.run-source
+    /wandb-artifacts/ /logs/ /run_logs/ /ckpts/ /checkpoints/ /runs/ /outputs/ /videos/ /data/ .wandb_env /.run-source /.rs/
   local n g; for n in $(rs_targets) ws; do echo ".$n/"; done   # every deploy dir: targets sharing a filesystem see each other's
   set -f; for g in ${EXTRA_EXCLUDES:-}; do echo "$g"; done; set +f   # -f: keep the conf's patterns literal
 }
 rs_deploy_dir() { [ "$T_KIND" = slurm ] && echo ".$T_NAME" || echo .ws; }
 rs_deploy_files() {   # absolute paths, one per line (profile.sh is deployed separately with T_NAME appended)
   echo "$RS_HOME/remote/env.sh"; echo "$RS_HOME/remote/bootstrap.sh"; echo "$RS_HOME/remote/status.sh"
-  [ "$T_KIND" = slurm ] || return 0
+  [ "$T_KIND" = slurm ] || { echo "$RS_HOME/remote/launch.sh"; return 0; }
   echo "$RS_HOME/remote/submit.sh"; echo "$RS_HOME/remote/job.sbatch"
   [ -f "$T_DIR/policy.sh" ] && echo "$T_DIR/policy.sh"
   [ -n "$T_LOCAL_DIR" ] && [ -f "$T_LOCAL_DIR/policy.local.sh" ] && echo "$T_LOCAL_DIR/policy.local.sh"
   return 0
 }
+rs_sha256() { local h; if command -v sha256sum >/dev/null 2>&1; then h=$(sha256sum < "$1") || return 1   # FILE -> hex digest
+  elif command -v shasum >/dev/null 2>&1; then h=$(shasum -a 256 < "$1") || return 1; else die "neither sha256sum nor shasum (macOS) found"; fi; printf '%s\n' "${h%% *}"; }
+rs_manifest() { local f h; for f in "$@"; do h=$(rs_sha256 "$f") || return 1; printf '%s  %s\n' "$h" "${f##*/}"; done; }   # FILE... -> `<sha256>  <basename>`
 rs_lint_conf() {   # rs_lint_conf FILE: warn on <TAG>_KEY lines whose KEY no target honours (kind's list + every T_CONF_KEYS)
   local tags keys line n rest p k
   tags=" $(rs_targets | while read -r n; do rs_tag "$n"; echo; done | tr '\n' ' ') "

@@ -63,7 +63,7 @@ has "$(cat "$T/rsync.log")" "^profile-xfer:$R/\./res\$" "conf XFER_HOST lines ig
 
 echo "-- run-pull: refusals (exit 2, nothing copied) --"
 for a in /etc/passwd ../x a/../b a/./b a//b . ./ '' 'a b' -x 'b*' '.c*' '.[a-z]*' 'res/?' 'a;b' '$HOME' .venv .venv-fx/lib .cache/x .local bin/uv .git/config .wandb_env \
-         .hpc.conf .ws.conf .fx-slurm/env.sh .ws .fx-home; do
+         .hpc.conf .ws.conf .fx-slurm/env.sh .ws .fx-home .rs .rs/attempts/n1/receipt ./.rs/; do   # .rs/ = submit.sh's attempt journal
   pull "$P" TARGET=fx-slurm -- "$a" >/dev/null; RC=$?
   [ "$RC" = 2 ] && [ ! -s "$T/rsync.log" ] && ok "refused: '$a'" || bad "refused: '$a' (rc=$RC)"
 done

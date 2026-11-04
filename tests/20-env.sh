@@ -2,7 +2,8 @@
 # tests/20-env.sh — phase A: remote/env.sh policy matrix on the deployed fixtures. fx-slurm (everything
 # in-project, suffix -fx), fx-home (T_ENV_ROOT=$HOME/.rs-test, TMPDIR inherit, compile caches in tmp),
 # ws-box (nohup, uv default, conda via a fake conda.sh); VENV_DIR overrides; every fail-closed path
-# withholds RUN_ENV_READY. Run by selftest.sh with RS_HOME set:  bash tests/20-env.sh
+# withholds RUN_ENV_READY; inside a Slurm job with RS_ATTEMPT the attempt's snapshots (profile, conf, hook; another job's
+# receipt or a missing snapshot fails closed), else a NOTE; the profile's T_* win over a conf's.  bash tests/20-env.sh
 set -u
 . "$RS_HOME/tests/lib.sh"
 U=rstest$$   # RS_USER for every sourcing below, so the /tmp fallbacks env.sh creates are ours to remove
@@ -137,3 +138,42 @@ printf 'path=/l\nbranch=main\ncommit=abc123\n' > "$N/.run-source"
 R=$(envq "$N" "$N/.fx-slurm" "$QN" TARGET=fx-slurm RS_SOURCE_COMMIT=stale); has "$R" 'src=abc123 ' "RS_SOURCE_COMMIT from <PROJ>/.run-source"
 printf 'REMOTE_DIR=/x\nENV_KIND=pip\n' > "$N/.hpc.conf"
 R=$(envq "$N" "$N/.fx-slurm" "$QN" TARGET=fx-slurm); has "$R" 'ready=unset' "invalid ENV_KIND -> no READY"; has "$R" 'uv|conda|none' "error lists none"
+
+echo "-- attempt snapshots: inside a Slurm job with RS_ATTEMPT, profile/conf/hook as of submit time --"
+S=$(mk_proj fx-slurm 'REMOTE_DIR=/x
+ENV_KIND=uv
+ENV_HOOK=hook.sh') || { bad "mk_proj attempt"; exit 1; }
+printf 'export HOOK_MARK=live\n' > "$S/hook.sh"; SA=$S/.rs/attempts/n1; mkdir -p "$SA"
+sed 's/^T_SUFFIX=.*/T_SUFFIX=-snap/' "$S/.fx-slurm/profile.sh" > "$SA/profile.sh"
+printf 'REMOTE_DIR=/x\nENV_KIND=none\nENV_HOOK=hook.sh\n' > "$SA/conf"; printf 'export HOOK_MARK=snap\n' > "$SA/hook"
+QS='echo ready=${RUN_ENV_READY:-unset} suf=${RS_SUFFIX-unset} venv=${UV_PROJECT_ENVIRONMENT:-unset} mark=${HOOK_MARK:-} att=${RS_ATTEMPT:-unset}'
+R=$(envq "$S" "$S/.fx-slurm" "$QS" TARGET=fx-slurm SLURM_JOB_ID=5 RS_ATTEMPT=n1)
+has "$R" "ready=$S suf=-snap venv=unset mark=snap att=n1" "in a job: the attempt's profile, conf (ENV_KIND=none) and hook — never the live ones"
+hasnt "$R" 'NOTE' "no NOTE when the snapshots are used"
+printf 'job=5\n' > "$SA/receipt"; has "$(envq "$S" "$S/.fx-slurm" "$QS" TARGET=fx-slurm SLURM_JOB_ID=5 RS_ATTEMPT=n1)" "ready=$S .*mark=snap" "a receipt naming this job: fine"
+arefuse() {   # arefuse LABEL MSG-REGEX [env...] : a job's env.sh must withhold READY and say why
+  local l=$1 m=$2; shift 2; local r; r=$(envq "$S" "$S/.fx-slurm" "$QS" TARGET=fx-slurm SLURM_JOB_ID=5 RS_ATTEMPT=n1 "$@")
+  has "$r" 'ready=unset' "$l -> no READY"; has "$r" "env.sh: .*$m.*refusing to continue" "$l message"; }
+printf 'job=99\n' > "$SA/receipt"; arefuse "a receipt naming another job" 'attempt n1 belongs to job 99, not 5'
+printf 'job=5\n' > "$SA/receipt"; mv "$SA/hook" "$SA/hook.x"
+arefuse "ENV_HOOK set but no hook snapshot (never the live hook)" 'MISSING snapshot .*/attempts/n1/hook'
+mv "$SA/hook.x" "$SA/hook"; mv "$SA/conf" "$SA/conf.x"; arefuse "no conf snapshot (never the live conf)" 'MISSING snapshot .*/attempts/n1/conf'
+mv "$SA/conf.x" "$SA/conf"; mv "$SA/profile.sh" "$SA/profile.x"; arefuse "no profile snapshot (never the live profile)" 'MISSING snapshot .*/attempts/n1/profile\.sh'
+mv "$SA/profile.x" "$SA/profile.sh"
+R=$(envq "$S" "$S/.fx-slurm" "$QS" -u SLURM_JOB_ID TARGET=fx-slurm RS_ATTEMPT=n1)
+has "$R" "ready=$S suf=-fx venv=$S/.venv-fx mark=live att=unset" "outside a job: the deployed files, RS_ATTEMPT unset"
+has "$R" "env.sh: NOTE: RS_ATTEMPT='n1' ignored" "...with a NOTE"
+for a in ../x -n1 'a b' n2; do   # invalid, or valid without its dir
+  R=$(envq "$S" "$S/.fx-slurm" "$QS" TARGET=fx-slurm SLURM_JOB_ID=5 RS_ATTEMPT="$a")
+  has "$R" "ready=$S suf=-fx .*mark=live att=unset" "RS_ATTEMPT='$a' in a job: deployed files, unset"; has "$R" 'NOTE: RS_ATTEMPT=' "RS_ATTEMPT='$a': NOTE"
+done
+if command -v zsh >/dev/null 2>&1; then
+  R=$(env USER="$U" TARGET=fx-slurm SLURM_JOB_ID=5 RS_ATTEMPT=n1 zsh -c "export PROJ='$S'; . '$S/.fx-slurm/env.sh' 2>&1; echo ready=\${RUN_ENV_READY:-unset} mark=\$HOOK_MARK")
+  has "$R" "ready=$S mark=snap" "the snapshot path works under zsh"
+fi
+echo "-- the site's T_* win over a conf that sets them (profile re-sourced after the conf) --"
+printf 'REMOTE_DIR=/x\nENV_KIND=uv\nT_SUFFIX=-evil\nT_ENV_ROOT=/tmp/rs-evil-root\nT_TMPDIR=bogus\nT_KIND=nohup\n' > "$S/.hpc.conf"
+R=$(envq "$S" "$S/.fx-slurm" "$Q" TARGET=fx-slurm)
+has "$R" "ready=$S .*venv=$S/.venv-fx .*tmp=$S/tmp .*root=$S kind=slurm " "conf T_SUFFIX/T_ENV_ROOT/T_TMPDIR/T_KIND ignored: the profile's apply"
+[ -e /tmp/rs-evil-root ] && bad "nothing created under a conf-chosen T_ENV_ROOT" || ok "nothing created under a conf-chosen T_ENV_ROOT"
+rm -rf "/tmp/ray_$U-fx" "/tmp/ray_$U" "/tmp/ray_$U-snap"

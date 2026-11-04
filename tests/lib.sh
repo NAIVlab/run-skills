@@ -1,7 +1,8 @@
 # run-skills tests/lib.sh — stub + helper library, sourced by every tests/NN-*.sh and targets/*/tests.sh.
 # Caller sets RS_HOME (harness root) and RS_USER_DIR (fixtures in phase A, the real overlay in phase B).
 # Scratch dir $T (removed on exit); counters PASS/FAIL; helpers ok bad has hasnt nosub mk_proj sub with_path
-# stub_sinfo stub_fail stub_rsync. ssh prints $T/run-source.remote for run-sync's stamp read. Stubs sbatch scontrol squeue sinfo ssh uv live in $T/bin, on PATH ONLY
+# stub_sinfo stub_fail stub_rsync last_attempt. ssh prints $T/run-source.remote for run-sync's stamp read; sbatch prints
+# ARG:<each arg> and ENV:RS_ATTEMPT=<its env>. Stubs sbatch scontrol squeue sinfo ssh uv live in $T/bin, on PATH ONLY
 # for invocations prefixed PATH="$T/bin:$PATH" (sub/with_path do this) — forget it and you hit real binaries.
 : "${RS_HOME:?tests/lib.sh: set RS_HOME}"
 export RS_USER_DIR="${RS_USER_DIR:-$HOME/.config/run-skills}"
@@ -15,7 +16,7 @@ nosub(){ [ ! -s "$T/sbatch.log" ] && ok "$1" || { bad "$1"; sed 's/^/    | /' "$
 
 # ---------- stubs ----------
 mkdir -p "$T/bin" "$T/sinfo.d"
-printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/sbatch.log"\nfor a in "$@"; do echo "ARG:$a"; done\necho "Submitted batch job 1"\n' "$T" > "$T/bin/sbatch"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/sbatch.log"\nfor a in "$@"; do echo "ARG:$a"; done\necho "ENV:RS_ATTEMPT=${RS_ATTEMPT:-}"\necho "Submitted batch job 1"\n' "$T" > "$T/bin/sbatch"
 printf '#!/usr/bin/env bash\necho "NodeName=node01 AllocTRES=cpu=8,gres/gpu=1"\n' > "$T/bin/scontrol"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$T/bin/squeue"
 cat > "$T/bin/sinfo" <<EOS
@@ -57,3 +58,5 @@ mk_proj(){
 # sub PROJ TARGET ARGS... : run the deployed submit.sh with the stub PATH, stderr dropped (assert rejections by
 # exit status); sbatch.log is truncated first so a following `nosub` is meaningful.
 sub(){ local p="$1" t="$2"; shift 2; : > "$T/sbatch.log"; PATH="$T/bin:$PATH" bash "$p/.$t/submit.sh" "$@" 2>/dev/null; }
+# last_attempt PROJ : the newest attempt dir submit.sh claimed under PROJ/.rs/attempts (empty if none)
+last_attempt(){ ls -dt "$1"/.rs/attempts/*/ 2>/dev/null | head -n 1 | sed 's|/$||'; }

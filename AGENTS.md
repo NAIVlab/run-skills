@@ -51,20 +51,22 @@ hardcode the check count.
    Prologue: `RS_HOME=$(cd "$(dirname "$0")/.." && pwd)`; `TARGET` (aliases `CLUSTER`/`STATION`) → `rs_load_target`.
 3. **Remote:** `remote/env.sh`, `remote/bootstrap.sh`, `remote/status.sh` (both kinds; status.sh = the agent's one bounded
    monitoring read), `remote/submit.sh`, `remote/job.sbatch` (slurm),
-   deployed by `run-sync` with the target's `profile.sh` (+ `T_NAME='<t>'` and `T_REF` = `rs_ref`, the local reference
-   path(s) that submit.sh/status.sh re-print, appended), `policy.sh` and the user's `policy.local.sh`. Remote scripts never source `lib/`; `env.sh` and `bootstrap.sh` carry the same 10-line resolver
-   (`TARGET` → `$PROJ/.<t>` if it exists else `$PROJ/.ws` → `profile.sh` → conf).
+   `remote/launch.sh` (nohup), deployed by `run-sync` with the target's `profile.sh` (+ `T_NAME='<t>'` and `T_REF` = `rs_ref`,
+   the local reference path(s) that submit.sh/status.sh re-print, appended), `policy.sh`, the user's `policy.local.sh` and,
+   written last, `MANIFEST` (`<sha256>  <file>` per deployed file). Remote scripts never source `lib/`; `env.sh` and `bootstrap.sh`
+   carry the same resolver (`TARGET` → `$PROJ/.<t>` if it exists else `$PROJ/.ws` → `profile.sh` → conf → `profile.sh` again: the site's `T_*` win).
 
 ### Where each script runs
 
 | | local (cwd = project root) | on the target |
 |---|---|---|
-| slurm | `run-sync`, `run-pull`, `run-bootstrap` (ssh wrapper) | `<REMOTE_DIR>/.<t>/{env.sh,bootstrap.sh,status.sh,submit.sh,job.sbatch,profile.sh[,policy.sh,policy.local.sh]}`; submit = `ssh host 'bash …/.<t>/submit.sh …'` |
-| nohup | `run-sync`, `run-pull`, `run-bootstrap`, `run-launch` (one ssh) | `~/<WS_REMOTE_DIR>/.ws/{env.sh,bootstrap.sh,status.sh,profile.sh}` |
+| slurm | `run-sync`, `run-pull`, `run-bootstrap` (ssh wrapper) | `<REMOTE_DIR>/.<t>/{env.sh,bootstrap.sh,status.sh,submit.sh,job.sbatch,profile.sh,MANIFEST[,policy.sh,policy.local.sh]}`; submit = `ssh host 'bash …/.<t>/submit.sh …'` |
+| nohup | `run-sync`, `run-pull`, `run-bootstrap`, `run-launch` (one ssh) | `~/<WS_REMOTE_DIR>/.ws/{env.sh,bootstrap.sh,status.sh,launch.sh,profile.sh,MANIFEST}` |
 
 Every file copy goes to `rs_xfer_host` (the profile's `T_XFER_HOST`, a site fact with no conf key, else the ssh
 host), every ssh to `rs_host`: a transfer node's restricted shell takes rsync only, so `run-pull` never sshes.
-An edit to `remote/*` reaches a project only after `install.sh` **and** a re-sync. Logs: slurm `logs/<name>_<jobid>.out` (header `restart=N`, footer `EXIT rc=N`; submit.sh prints the path), nohup `logs/<name>-<timestamp>.log` + `.pid`.
+An edit to `remote/*` reaches a project only after `install.sh` **and** a re-sync. Logs: slurm `logs/<name>_<jobid>.out` (line 1 `rs-attempt=`
+before env.sh, header `target= job= restart=N node=… attempt=`, footer `EXIT rc=N`; submit.sh prints the path), nohup `logs/<name>-<timestamp>.log` + `.pid`.
 `status.sh <jobid|log> [ckpt-dir]` (squeue/sacct or the PID, last 256 KiB → hints + last lines, last 64 MiB → harness start/exit markers,
 ~2 KB output) is the monitoring read. `ckpt_entry` is directory activity, never proof of resume; log reads are byte-bounded.
 
@@ -77,7 +79,7 @@ that has one. A pack (and `$RS_USER_DIR`) may add `routing/remote-run.md`, appen
 legacy `routing/hpc-run.md` + `ws-run.md` (never required to rename), each rule under a kind lead-in (`rs_legacy_routing`). A user dir **with** `profile.sh` replaces a pack's target; one
 **without** extends it (`policy.local.sh` sourced by submit.sh after `policy.sh`, `reference.local.md` appended to
 the INDEX row, `tests.local.sh` in phase B). `rs_load_target` unsets every `T_*`, sources the profile, sets
-`T_NAME T_TAG T_DIR T_LOCAL_DIR`, validates `T_KIND`/`T_HOST`. Tag = `rs_tag NAME` (alnum only, uppercased:
+`T_NAME T_TAG T_DIR T_LOCAL_DIR`, validates `T_KIND`/`T_HOST`, refuses the name `rs` (`.rs/` is the journal). Tag = `rs_tag NAME` (alnum only, uppercased:
 `ws-box` → `WSBOX`) — no knob. `profile.sh` is POSIX data: single-quoted paths, only `$HOME`/`$USER` expand, on the
 remote (`rs_path`). Consumers: sync excludes (`.<name>/` + literal `.ws/`), INDEX, the linter, install, phase B.
 
@@ -91,7 +93,8 @@ REMOTE_HOST DEFAULT_CLUSTER DEFAULT_STATION WS_REMOTE_DIR` are generic-only; `rs
 on any other `<TAG>_KEY` line. Remote dir: slurm `ovr REMOTE_DIR` (tagged form mandatory when `T_REMOTE_DIR_REQUIRED=1`);
 nohup `<TAG>_REMOTE_DIR` else `WS_REMOTE_DIR` — never guessed. Jobs go out with `--export=ALL`, so every local /
 login-node reader `unset`s the keys it reads (generic + `<TAG>_`) before sourcing the conf (`rs_load_conf KEY...` in
-bin/*, submit.sh's list); env.sh trusts that cleared environment. Extend those lists when adding a key.
+bin/*, submit.sh's list); env.sh trusts that cleared environment. Extend those lists when adding a key. submit.sh sources the
+conf (after profile.sh) in a child `bash --noprofile --norc` and imports only that list as NUL-separated data, never eval'd: a conf's function/alias/PATH never reaches the policy.
 
 ### The fail-closed sentinel — preserve this shape
 
@@ -100,11 +103,22 @@ bin/*, submit.sh's list); env.sh trusts that cleared environment. Extend those l
 the kind's legacy sentinel (`HPC_ENV_READY` | `WS_ENV_READY`). Every consumer does `unset RUN_ENV_READY HPC_ENV_READY
 WS_ENV_READY CONDA_DEFAULT_ENV` → source → require `RUN_ENV_READY == $PROJ`, then verifies the env materialised:
 `job.sbatch` needs `$UV_PROJECT_ENVIRONMENT/bin/python` (`uv venv missing`; waived only for the payload `bash $PROJ/.<t>/bootstrap.sh`
-= `run-bootstrap --job`) or `CONDA_DEFAULT_ENV == ENV_NAME` (`ENV_KIND=none`: nothing); the `run-launch` chain needs `python -ef $RS_VENV/bin/python` (`uv venv not active`) or the conda env active;
+= `run-bootstrap --job`) or `CONDA_DEFAULT_ENV == ENV_NAME` (`ENV_KIND=none`: nothing); `launch.sh`'s env subshell needs `python -ef $RS_VENV/bin/python` (`uv venv not active`) or the conda env active;
 `bootstrap.sh` (uv and none source env.sh, conda never does; uv additionally) needs `UV_PROJECT_ENVIRONMENT` under a root snapshotted
 **before** sourcing (`$PROJ`, `T_ENV_ROOT`, `VENV_DIR`), so an `ENV_HOOK` (sourced last, may override anything) cannot
-move the guard; a derived venv's owner file `.run-skills-proj` must match unless `VENV_DIR` is explicit. New early
+move the guard; a derived venv's owner file `.run-skills-proj` must match unless `VENV_DIR` is explicit. `job.sbatch` sources
+the attempt's `env.sh` snapshot if present; env.sh/bootstrap.sh in a job with a valid `RS_ATTEMPT` and its dir read profile/conf/hook
+from it (a missing snapshot or another job's `receipt` fails closed, never the live file; else `RS_ATTEMPT` is unset, NOTE). New early
 exits in env.sh and new consumers keep this pattern and get a test.
+
+### The attempt journal (`<PROJ>/.rs/attempts/<NONCE>/`; submit.sh, launch.sh)
+
+Each call `mkdir`s its dir (the claim: `--rs-attempt NONCE`, a separate word an old parser rejects with exit 2, else generated;
+NONCE = `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, the set spelled out; taken = exit 75), keeps the caller's fds as 3/4, `exec >>out
+2>>err </dev/null` (submit.sh then runs the rest, policy included, in a subshell with 3/4 closed), writes `stage`, the `receipt` (once the job exists, before a byte about it is printed) and, in the EXIT trap,
+`result` (`stage= rc= verdict=submitted|launched|refused|failed|unknown`), THEN replays out/err (`trap '' PIPE`): a dead ssh
+(SIGPIPE on the first write) loses nothing, the exit status is unchanged. Slurm adds the snapshots `conf hook profile.sh env.sh`;
+`/.rs/` is an anchored sync exclude, refused by run-pull; nothing deletes attempts. 6 = a live same-name job of the project.
 
 ### Storage policy (env.sh, driven by `T_*`)
 
@@ -129,12 +143,14 @@ parsing with `PART PART_FROM_CLI NGPU GTYPE GTYPE_FROM_CLI TIME FORCE ACK T_FLAG
 TAG` visible; its exit code propagates verbatim (3 = refusal; `-y` never unlocks it). Unknown `--word` flags land in
 `T_FLAGS`, `--*-user-asked` sets `ACK=1`. Then: partition → `-g` range → cpu/mem heuristics → MaxTime (`P_MAXTIME` else
 `T_MAXTIME`) → payload guard → `SBATCH_EXTRA` scan (`-p`, `T_FORBIDDEN_QOS`, dangling flag) → sinfo availability
-(`WARNING: only … Re-run -y`) → `sbatch`. Nothing cluster-named lives in shared code.
+(`WARNING: only … Re-run -y`) → duplicate guard (`--same-name-ok`, singleton chains skip it) → `SBATCH_EXTRA` lint (WARN: not in the
+allowlist + `T_SBATCH_EXTRA_ALLOW`, or a harness option) → `sbatch` (env `RS_ATTEMPT`, last `--comment` + ` rs=<NONCE>`). Nothing
+cluster-named lives in shared code; a policy's own EXIT trap, `exit` or fds stay in submit.sh's subshell, away from the journal.
 
 ### Tests contract (`tests/lib.sh`)
 
 Caller sets `RS_HOME`; `$T` is a scratch dir; helpers `ok bad has hasnt nosub mk_proj sub with_path stub_sinfo
-stub_fail stub_rsync`. Stubs live in `$T/bin`, on `PATH` **only** via `sub`/`with_path`/an explicit
+stub_fail stub_rsync last_attempt` (the sbatch stub prints `ARG:<arg>` lines and `ENV:RS_ATTEMPT=`). Stubs live in `$T/bin`, on `PATH` **only** via `sub`/`with_path`/an explicit
 `PATH="$T/bin:$PATH"`, and dispatch on literal strings (`ssh` answers `nvidia-smi --query-gpu=…`, logs anything
 else as a launch; `sinfo` returns lines registered with `stub_sinfo PATTERN LINE`) — a reworded remote command or
 a new partition needs a stub case. `mk_proj TARGET CONF` fakes a deploy from `rs_deploy_files` (absolute paths);

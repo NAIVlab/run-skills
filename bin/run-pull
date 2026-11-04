@@ -5,7 +5,7 @@
 #   TARGET=<name> bash ~/.agents/run-skills/bin/run-pull [-n|--dry-run] <path>...
 # <path> is relative to the remote project dir and lands at the same path here (rsync -R). Additive: never deletes,
 # never replaces a local file that is newer (-u). Env and harness state (venvs, caches, deploy dirs, the conf,
-# .wandb_env, .git) is refused. -n = file count + total size, nothing written: use it before a large pull.
+# .wandb_env, .git, the .rs/ attempt journal) is refused. -n = file count + total size, nothing written: use it before a large pull.
 set -euo pipefail
 RS_HOME=$(cd "$(dirname "$0")/.." && pwd)
 . "$RS_HOME/lib/common.sh"
@@ -33,7 +33,7 @@ for p in "${PATHS[@]}"; do
   d=$p; while :; do [ ! -L "$d" ] || die "run-pull: local '$d' is a symlink and rsync would replace it with a real dir — ask the user"
     case "$d" in */*) d=${d%/*} ;; *) break ;; esac; done
   top=${p%%/*}
-  case "$top" in .venv|.venv-*|.cache|.local|.config|bin|.git|.wandb_env|.hpc.conf|.ws.conf) die "run-pull: '$p' is env/harness state, never pulled" ;; esac
+  case "$top" in .venv|.venv-*|.cache|.local|.config|bin|.git|.wandb_env|.hpc.conf|.ws.conf|.rs) die "run-pull: '$p' is env/harness state, never pulled" ;; esac
   case "$DEPLOYS" in *" $top "*) die "run-pull: '$p' is a deployed harness dir, never pulled" ;; esac
   PATHS[$i]=$p; SRC+=("$XHOST:$RDIR/./$p"); i=$((i+1))   # /./ = the -R anchor: the path below it is recreated here
 done

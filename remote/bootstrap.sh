@@ -10,14 +10,27 @@ set -euo pipefail
 : "${PROJ:?export PROJ=<remote project dir> first}"
 TARGET=${TARGET:-${CLUSTER:-}}
 if [ -n "$TARGET" ] && [ -d "$PROJ/.$TARGET" ]; then D=$PROJ/.$TARGET; else D=$PROJ/.ws; fi
+ENVSH=$D/env.sh; SNAP=""   # as a Slurm job (run-bootstrap --job): the attempt's snapshots, under env.sh's rules
+if [ -n "${RS_ATTEMPT:-}" ]; then
+  AN=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789; ok=1   # NONCE = [A-Za-z0-9][A-Za-z0-9._-]{0,63}
+  case "$RS_ATTEMPT" in [$AN]*) case "$RS_ATTEMPT" in *[!$AN._-]*) ok=0 ;; esac ;; *) ok=0 ;; esac; [ "${#RS_ATTEMPT}" -le 64 ] || ok=0
+  if [ "$ok" = 1 ] && [ -n "${SLURM_JOB_ID:-}" ] && [ -d "$PROJ/.rs/attempts/$RS_ATTEMPT" ]; then
+    SNAP=$PROJ/.rs/attempts/$RS_ATTEMPT; J=""; [ ! -f "$SNAP/receipt" ] || J=$(sed -n 's/^job=//p' "$SNAP/receipt" | head -n 1)
+    [ ! -f "$SNAP/receipt" ] || [ "$J" = "$SLURM_JOB_ID" ] || { echo "ERROR: attempt $RS_ATTEMPT belongs to job ${J:-?}, not $SLURM_JOB_ID." >&2; exit 2; }
+    for f in profile.sh conf; do [ -f "$SNAP/$f" ] || { echo "ERROR: MISSING snapshot $SNAP/$f." >&2; exit 2; }; done
+    D=$SNAP; [ ! -f "$SNAP/env.sh" ] || ENVSH=$SNAP/env.sh
+  else echo "NOTE: RS_ATTEMPT='$RS_ATTEMPT' ignored (not a Slurm job's valid attempt dir) — using the deployed files." >&2; unset RS_ATTEMPT; fi
+fi
 [ -f "$D/profile.sh" ] || { echo "ERROR: MISSING $D/profile.sh (partial sync?) — run run-sync first." >&2; exit 2; }
 . "$D/profile.sh"
 TARGET=${TARGET:-${T_NAME:-}}
 [ -n "$TARGET" ] || { echo "ERROR: no target: export TARGET=<name> first." >&2; exit 2; }
 case "${T_KIND:-}" in slurm) CONF=$PROJ/.hpc.conf ;; nohup) CONF=$PROJ/.ws.conf ;;
   *) echo "ERROR: T_KIND='${T_KIND:-}' in $D/profile.sh must be slurm|nohup." >&2; exit 2 ;; esac
+[ -z "$SNAP" ] || CONF=$SNAP/conf
 [ -f "$CONF" ] || { echo "ERROR: MISSING $CONF (partial sync?) — run run-sync first." >&2; exit 2; }
 . "$CONF" || { echo "ERROR: failed sourcing $CONF (unquoted spaces?) — fix it first." >&2; exit 2; }
+unset T_KIND T_NAME T_ENV_ROOT T_CONDA_INIT; . "$D/profile.sh"   # the site's T_* win over a conf that sets them
 RS_USER=${USER:-$(id -un)}
 TAG=$(printf %s "$TARGET" | tr -cd '[:alnum:]' | tr '[:lower:]' '[:upper:]')
 rs_path() { printf %s "$1" | sed -e "s|\\\${HOME}|$HOME|g" -e "s|\\\$HOME|$HOME|g" -e "s|\\\${USER}|$RS_USER|g" -e "s|\\\$USER|$RS_USER|g"; }
@@ -32,7 +45,7 @@ case "${ENV_KIND:-uv}" in
   uv)
     # an inherited sentinel from an earlier good run must not certify a NOW-broken env.sh
     unset RUN_ENV_READY HPC_ENV_READY WS_ENV_READY CONDA_DEFAULT_ENV
-    set +eu; . "$D/env.sh"; set -eu
+    set +eu; . "$ENVSH"; set -eu
     [ "${RUN_ENV_READY:-}" = "$PROJ" ] || { echo "ERROR: env.sh did not complete (see its message above) — fix that, then re-run." >&2; exit 1; }
     VENV=${UV_PROJECT_ENVIRONMENT:-}; contained=0
     for r in $ROOTS; do case "$VENV" in "$r"|"$r"/*) contained=1 ;; esac; done
@@ -75,7 +88,7 @@ case "${ENV_KIND:-uv}" in
     ;;
   none)
     unset RUN_ENV_READY HPC_ENV_READY WS_ENV_READY
-    set +eu; . "$D/env.sh"; set -eu
+    set +eu; . "$ENVSH"; set -eu
     [ "${RUN_ENV_READY:-}" = "$PROJ" ] || { echo "ERROR: env.sh did not complete (see its message above) — fix that, then re-run." >&2; exit 1; }
     [ -z "${BOOTSTRAP_HOOK:-}" ] || [ -f "$PROJ/$BOOTSTRAP_HOOK" ] || { echo "ERROR: BOOTSTRAP_HOOK '$BOOTSTRAP_HOOK' not found under $PROJ." >&2; exit 1; }
     if [ -n "${BOOTSTRAP_HOOK:-}" ]; then echo "running BOOTSTRAP_HOOK $BOOTSTRAP_HOOK ..."; bash "$PROJ/$BOOTSTRAP_HOOK"

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # tests/55-job.sh — phase A: remote/job.sbatch run directly (bash, SLURM_JOB_ID faked) on the fx-slurm fixture:
 # the uv gate blocks a missing venv and runs once it exists, TARGET is accepted as an alias of CLUSTER,
-# inherited sentinels cannot certify a broken env.sh, conda gate. Run by selftest.sh:  bash tests/55-job.sh
+# inherited sentinels cannot certify a broken env.sh, conda gate, signals, the attempt line before env.sh, the attempt's
+# env.sh snapshot and attempt= on the header (status.sh still parses it). Run by selftest.sh:  bash tests/55-job.sh
 set -u
 . "$RS_HOME/tests/lib.sh"
 U=rstest$$
@@ -56,6 +57,7 @@ printf '#!/bin/sh\nsleep 1\n' > "$T/bin/nvidia-smi"; chmod +x "$T/bin/nvidia-smi
 JP=$!; for _i in $(seq 1 100); do grep -q "target=" "$T/term0.out" 2>/dev/null && break; sleep 0.05; done; sleep 0.2
 kill -TERM "$JP"; wait "$JP"; RC=$?; rm -f "$T/bin/nvidia-smi"
 [ "$RC" = 143 ] && has "$(cat "$T/term0.out")" 'EXIT rc=143 usr1=0 term=pending' "TERM before launch: aborts with 143 + footer" || { bad "startup TERM (rc=$RC)"; sed 's/^/    | /' "$T/term0.out"; }
+has "$(cat "$T/term0.out")" 'EXIT rc=143 usr1=0 term=pending job=t1 restart=0 (TERM before' "...the footer names the job and restart"
 hasnt "$(cat "$T/term0.out")" 'LAUNCHED\|RUN:' "TERM before launch: the trainer is never started"
 O=$(cd "$J" && PROJ="$J" CLUSTER=fx-slurm SLURM_JOB_ID=t1 USER="$U" PATH="$T/bin:$PATH" bash .fx-slurm/job.sbatch no-such-cmd-xyz 2>&1); RC=$?
 [ "$RC" = 127 ] && has "$O" 'EXIT rc=127 usr1=0' "a trainer that does not exist reports its real 127, not a reaped-guess" || bad "exit 127 preserved (rc=$RC)"
@@ -102,3 +104,30 @@ O=$(job "$B" PROJ="$B" CLUSTER=fx-slurm); has "$O" 'source: branch=main commit=a
 printf 'REMOTE_DIR=/x\nENV_KIND=pip\n' > "$B/.hpc.conf"
 O=$(job "$B" PROJ="$B" CLUSTER=fx-slurm) && bad "invalid ENV_KIND blocked" || hasnt "$O" '^hi$' "invalid ENV_KIND blocked"
 rm -rf "/tmp/ray_$U-fx" "/tmp/ray_$U"
+
+echo "-- attempt: line 1 before env.sh, the attempt's env.sh snapshot, attempt= on the header --"
+K=$(mk_proj fx-slurm 'REMOTE_DIR=/x
+ENV_KIND=none') || { bad "mk_proj attempt"; exit 1; }
+O=$(job "$K" PROJ="$K" CLUSTER=fx-slurm)
+has "$(printf '%s\n' "$O" | head -n 1)" '^\[.*\] rs-attempt=none job=t1 restart=0$' "line 1 (before env.sh): rs-attempt=none job= restart="
+has "$O" '\] target=fx-slurm job=t1 restart=0 node=.* attempt=none$' "the header keeps its prefix and appends attempt=none"
+KA=$K/.rs/attempts/k1; mkdir -p "$KA"; cp "$K/.fx-slurm/profile.sh" "$K/.hpc.conf" "$KA/"; mv "$KA/.hpc.conf" "$KA/conf"
+{ echo 'echo SNAPSHOT-ENV-SH'; cat "$K/.fx-slurm/env.sh"; } > "$KA/env.sh"
+O=$(job "$K" PROJ="$K" CLUSTER=fx-slurm RS_ATTEMPT=k1 SLURM_RESTART_COUNT=2)
+has "$(printf '%s\n' "$O" | head -n 1)" '^\[.*\] rs-attempt=k1 job=t1 restart=2$' "line 1 names the attempt and the restart"
+has "$O" '^SNAPSHOT-ENV-SH$' "RS_ATTEMPT with an env.sh snapshot: job.sbatch sources the snapshot"; has "$O" '^hi$' "...and runs the payload"
+has "$O" 'target=fx-slurm job=t1 restart=2 node=.* attempt=k1$' "...header ends attempt=k1"
+rm "$KA/env.sh"; O=$(job "$K" PROJ="$K" CLUSTER=fx-slurm RS_ATTEMPT=k1)
+hasnt "$O" 'SNAPSHOT-ENV-SH' "no env.sh snapshot: the deployed env.sh"; has "$O" '^hi$' "...still runs (profile/conf snapshots present)"
+O=$(job "$K" PROJ="$K" CLUSTER=fx-slurm RS_ATTEMPT='../k1')
+has "$(printf '%s\n' "$O" | head -n 1)" 'rs-attempt=invalid job=t1' "an invalid RS_ATTEMPT is logged as invalid, never used as a path"
+has "$O" 'attempt=none$' "...env.sh dropped it (header attempt=none)"; has "$O" '^hi$' "...and the deployed files ran the payload"
+printf 'job=99\n' > "$KA/receipt"; O=$(job "$K" PROJ="$K" CLUSTER=fx-slurm RS_ATTEMPT=k1); RC=$?
+[ "$RC" != 0 ] && has "$(printf '%s\n' "$O" | head -n 1)" 'rs-attempt=k1 job=t1' "env.sh refuses (another job's receipt): line 1 still names the attempt" || bad "refused job keeps line 1 (rc=$RC)"
+hasnt "$O" '^hi$' "...and the payload never runs"; has "$O" 'belongs to job 99' "...env.sh says why"
+rm "$KA/receipt"; mkdir -p "$K/logs"
+( cd "$K" && PROJ="$K" CLUSTER=fx-slurm RS_ATTEMPT=k1 SLURM_JOB_ID=77 USER="$U" PATH="$T/bin:$PATH" bash .fx-slurm/job.sbatch echo hi > logs/run_77.out 2>&1 )
+if stat -c %s /dev/null >/dev/null 2>&1; then   # status.sh is a Linux remote script (GNU stat)
+  O=$(PATH="$T/bin:$PATH" bash "$K/.fx-slurm/status.sh" logs/run_77.out 2>&1)
+  has "$O" '^starts=1 restart=0 footer=EXIT rc=0 ' "status.sh: the new line 1 is not a start; the extended header and footer still parse"
+fi

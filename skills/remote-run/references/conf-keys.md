@@ -2,7 +2,9 @@
 
 The conf lives in the project root — `.hpc.conf` for Slurm targets, `.ws.conf` for workstations, both when the project
 uses both kinds — and is **sourced as shell** (double-quote values with spaces; plain `export VAR=…` lines also reach
-the job or run). Precedence, highest first: CLI flag → `<TAG>_KEY` → `KEY` → default. `<TAG>` = target name uppercased
+the job or run: env.sh sources the conf at its start). `submit.sh` reads `.hpc.conf` in a child shell and takes back only
+the keys below: a function, alias or `PATH` change in the conf never affects the submit itself, and `T_*` lines never
+override the target's profile. A Slurm job uses the conf as it was at submit time (a snapshot), also after a requeue. Precedence, highest first: CLI flag → `<TAG>_KEY` → `KEY` → default. `<TAG>` = target name uppercased
 with non-alphanumerics dropped (`mycluster` → `MYCLUSTER_`, `my-hpc` → `MYHPC_`, `ws-box` → `WSBOX_`).
 Only the keys marked **prefixable** honour `<TAG>_`; `run-sync` warns about any other `<TAG>_KEY` line
 (`WARN: … is not honoured` — e.g. a `<TAG>_ENV_KIND` is never read). A target's profile may add its own prefixable keys
@@ -13,7 +15,7 @@ via `T_CONF_KEYS`.
 | key | prefixable | meaning / default |
 |---|---|---|
 | `ENV_KIND` | no | `uv` (default: a venv per target built by `run-bootstrap` from `pyproject.toml`), `conda` (a named env that must already exist) or `none` (no managed env: the payload brings its own runtime, e.g. `apptainer exec img.sif …`; containment env vars still apply, PATH is otherwise left as inherited, `BOOTSTRAP_HOOK` still runs) |
-| `ENV_NAME` | yes | conda env name (`ENV_KIND=conda` only); exported to the job; the workstation launch chain requires it to be the active env |
+| `ENV_NAME` | yes | conda env name (`ENV_KIND=conda` only); exported to the job; the workstation launch (`launch.sh`) requires it to be the active env |
 | `RUN` | yes | default run command; `python` is the target venv's python (`uv run` also works). Slurm: the agent pastes it after `--` (submit.sh has no fallback). Workstation: used when `run-launch` gets no `--`; keep it simple — quoting is not preserved across ssh + nohup |
 | `JOB_NAME` | yes | default job/run name — Slurm `-n` (else the project dir basename), log `logs/<name>_<jobid>.out`; workstation `-N` (else the remote dir's basename), log `logs/<name>-<timestamp>.log` |
 | `VENV_DIR` | yes | explicit uv venv path, single-quoted (`'$HOME/.venvs/proj'` expands on the remote); accepted by the containment guard and shared between projects on purpose |
@@ -36,7 +38,7 @@ via `T_CONF_KEYS`.
 | `DEFAULT_MEM` | yes | default `-m`, e.g. `200G`; unset → partition heuristic (GPUs × per-GPU GB) |
 | `DEFAULT_TIME` | yes | default `-t` (`1-00:00:00`); rejected when it exceeds the partition MaxTime |
 | `ACCOUNT` | yes | adds `--account=…` |
-| `SBATCH_EXTRA` | yes | extra sbatch flags, space-separated, one option per word (`"--qos=high --exclude=n1"`; `--no-requeue` opts out of the default auto-requeue; no bundled short flags). May not contain `-p/--partition`, `-J/--job-name`, `-o/--output`, `-e/--error` (the harness owns name and log path), `--array`, `--wait`, a hetjob `:`, a forbidden QOS, or a trailing `-q/--qos` without a value. Accepted, e.g.: `--dependency=singleton` (segment chains, conventions §6), `--signal=B:USR1@600` (a longer save warning: the command line overrides `job.sbatch`'s `#SBATCH` 120 s), `--mail-type=END,FAIL` |
+| `SBATCH_EXTRA` | yes | extra sbatch flags, space-separated, one option per word (`"--qos=high --exclude=n1"`; `--no-requeue` opts out of the default auto-requeue; no bundled short flags). May not contain `-p/--partition`, `-J/--job-name`, `-o/--output`, `-e/--error` (the harness owns name and log path), `--array`, `--wait`, a hetjob `:`, a forbidden QOS, or a trailing `-q/--qos` without a value. Accepted, e.g.: `--dependency=singleton` (segment chains, conventions §6), `--signal=B:USR1@600` (a longer save warning: the command line overrides `job.sbatch`'s `#SBATCH` 120 s), `--mail-type=END,FAIL`. The allowed set is `--qos/-q --account/-A --exclude/-x --dependency/-d --requeue --no-requeue --signal --mail-type --mail-user --constraint/-C --nice --reservation --comment` plus the profile's `T_SBATCH_EXTRA_ALLOW`; any other option, and one the harness sets itself (`--time --cpus-per-task --mem --gres --export --chdir`, `--account` next to `ACCOUNT`: sbatch keeps the LAST, which the warning names), prints `WARNING (lint): …` — refused in a later version. A `--comment` is kept, with ` rs=<NONCE>` (the submit's journal entry) appended |
 | `REMOTE_HOST` | no | override the profile's ssh alias for sync/bootstrap (rare) |
 | `DEFAULT_CLUSTER` | no | target to use when the user names none (skill routing only) |
 
