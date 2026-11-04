@@ -1,12 +1,12 @@
 """rsk — install, update and check the run-skills harness (more commands arrive phase by phase).
 
-    rsk setup                       install the harness copy + skills from this rsk (re-run after any pack change)
+    rsk setup                       install the harness copy + the remote-run skill (re-run after any pack change)
     rsk update [--check] [--dry-run] [--packs-only|--tool-only] [--to REF]     (alias: upgrade)
     rsk pack list | rsk pack add <git-url|dir> [--name N]
     rsk status [-T T]... [--days N] [--json]   read-only: this project's jobs on every target its conf names
     rsk logs -T T <jobid|log> [ckpt-dir] [-n N]  read-only: the bounded digest of one run (remote status.sh)
     rsk exec -T T -- <cmd> [args]   read-only allowlist (squeue sacct sinfo nvidia-smi ps df ls stat head/tail -c …)
-    rsk doctor                      offline checks: install, skills, packs, targets, ssh aliases, config
+    rsk doctor                      offline checks: install, the remote-run skill, packs, targets, ssh aliases, config
     rsk config [--template]         rsk's own settings (~/.config/run-skills/config.toml)
 
 Exit codes: 0 ok · 1 the remote command ran and failed (rsk exec / rsk logs print its code) · 2 usage/config/setup ·
@@ -28,6 +28,10 @@ from remote_run import status as status_cmd
 from remote_run.errors import OK, UNKNOWN, USAGE, RskError
 
 
+SKILL = "remote-run"                          # the one skill install.sh installs
+REPLACED_SKILLS = ("hpc-run", "ws-run")       # the skills it replaced: install.sh uninstalls them from every root
+
+
 def out(msg: str = "") -> None:
     print(msg, flush=True)
 
@@ -37,7 +41,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     src = paths.harness_src()
     with state.locked(paths.state_dir() / "setup.lock", "rsk setup"):
         if args.after_update:
-            out(f"== rsk {args.from_version or '?'} -> {__version__}: refreshing the installed harness and skills ==")
+            out(f"== rsk {args.from_version or '?'} -> {__version__}: refreshing the installed harness and skill ==")
         rc = harness.run_install(src)
         inst = install.current()
         state.write_json(paths.state_dir() / "install.json", {
@@ -104,7 +108,7 @@ def _check(inst: install.Install, plist: list[packs.Pack]) -> int:
 
 
 def _setup_is_current(commit: str) -> bool:
-    """install.json proves the harness copy and skills were installed, without a failure, by this commit's rsk from
+    """install.json proves the harness copy and skill were installed, without a failure, by this commit's rsk from
     this tool env — the only case where rsk update may skip setup (`uv tool upgrade` alone never runs it)."""
     rec = state.read_json(paths.state_dir() / "install.json") or {}
     try:
@@ -176,7 +180,7 @@ def cmd_update(args: argparse.Namespace) -> int:
         now_commit = str(((install.read_direct_url() or {}).get("vcs_info") or {}).get("commit_id", ""))
         if inst.kind == "git" and now_commit and now_commit == inst.commit and not changed:
             if _setup_is_current(now_commit):
-                out(f"  {_nothing_new(inst, now_commit)}\n  the harness copy and skills are from it: nothing to set up again")
+                out(f"  {_nothing_new(inst, now_commit)}\n  the harness copy and skill are from it: nothing to set up again")
                 return _pack_verdict(pack_rc, packs_failed)
             out(f"  {now_commit[:12]} is installed, but install.json shows no successful rsk setup from it — running it")
         state.append_jsonl(paths.state_dir() / "update-history.jsonl", {
@@ -200,7 +204,7 @@ def cmd_pack(args: argparse.Namespace) -> int:
     if args.pack_command == "add":
         path, msg = packs.add(paths.packs_dir(), args.source, args.name)
         out(msg)
-        out("next: rsk setup   (puts the pack's targets into the skills' INDEX and runs its tests)")
+        out("next: rsk setup   (puts the pack's targets into the skill's INDEX and runs its tests)")
         return OK
     plist = packs.all_packs(paths.packs_dir())
     if not plist:
@@ -240,7 +244,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             report("WARN", f"{cfg.path}: unknown key {key} (see: rsk config --template)")
     except RskError as exc:
         report("FAIL", str(exc))
-    out("== harness and skills ==")
+    out("== harness and skill ==")
     try:
         src = paths.harness_src()
         report("ok", f"harness shipped at {src}")
@@ -262,15 +266,21 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         report("WARN", f"the last rsk setup ended with exit {rec.get('install_rc')} — run it again and read its FAIL lines")
     else:
         report("ok", f"{root} installed by rsk setup at {rec.get('at')}")
-    for s in ("hpc-run", "ws-run"):
-        copy = paths.skills_root() / s / "SKILL.md"
-        link = paths.home() / ".claude" / "skills" / s
-        if not copy.is_file():
-            report("FAIL", f"skill {s}: {copy} missing — run: rsk setup")
-        elif link.resolve() != copy.parent.resolve():
-            report("WARN", f"skill {s}: {link} does not point at {copy.parent} — Claude Code will not see it")
-        else:
-            report("ok", f"skill {s}: {copy.parent} (+ {link})")
+    copy = paths.skills_root() / SKILL / "SKILL.md"
+    link = paths.home() / ".claude" / "skills" / SKILL
+    if not copy.is_file():
+        report("FAIL", f"skill {SKILL}: {copy} missing — run: rsk setup")
+    elif link.resolve() != copy.parent.resolve():
+        report("WARN", f"skill {SKILL}: {link} does not point at {copy.parent} — Claude Code will not see it")
+    else:
+        report("ok", f"skill {SKILL}: {copy.parent} (+ {link})")
+    roots: dict[Path, Path] = {}
+    for r in paths.skill_roots():   # one root reached under two names (RS_SKILLS_ROOT=~/.claude/skills) is one root
+        roots.setdefault(r.resolve(), r)
+    for old in REPLACED_SKILLS:     # listed next to remote-run, its stale text would compete with it
+        for found in (r / old for r in roots.values() if (r / old / "SKILL.md").is_file()):
+            report("FAIL", f"skill {old} (replaced by {SKILL}) is still installed: {found} — run: rsk setup "
+                           "(it removes installed copies and moves anything else out of the skills root)")
     out("== packs ==")
     plist = packs.all_packs(paths.packs_dir())
     if not plist:
@@ -326,7 +336,7 @@ def build_parser() -> argparse.ArgumentParser:
                                 epilog=__doc__.split("\n\n", 1)[1])
     p.add_argument("--version", action="version", version=f"rsk {__version__}")
     sub = p.add_subparsers(dest="command", required=True, metavar="<command>")
-    s = sub.add_parser("setup", help="install the harness copy and skills from this rsk")
+    s = sub.add_parser("setup", help="install the harness copy and the skill from this rsk")
     s.add_argument("--after-update", action="store_true", help=argparse.SUPPRESS)
     s.add_argument("--from", dest="from_version", default="", help=argparse.SUPPRESS)
     s.add_argument("--from-commit", default="", help=argparse.SUPPRESS)

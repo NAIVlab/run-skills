@@ -4,7 +4,8 @@
   source checkout this package sits in (editable installs, `python -m remote_run` from a clone);
 - the user's dir ~/.config/run-skills (overlay targets, packs/, wandb_env, config.toml) — never touched by updates;
 - the state dir ~/.local/state/run-skills (install record, update history, later the run ledger);
-- the installed harness copy ~/.agents/run-skills and the skills root ~/.agents/skills (written by install.sh).
+- the installed harness copy ~/.agents/run-skills and the skills root ~/.agents/skills (written by install.sh);
+- the other roots agents scan for skills: ~/.claude/skills, $CODEX_HOME/skills, $PI_HOME/skills (install.sh's defaults).
 """
 
 from __future__ import annotations
@@ -66,3 +67,9 @@ def harness_root() -> Path:
 
 def skills_root() -> Path:
     return _env_path("RS_SKILLS_ROOT", home() / ".agents" / "skills")
+
+
+def skill_roots() -> list[Path]:
+    """Every directory an agent scans for skills, as install.sh names them: Claude Code, Codex, pi, the shared root."""
+    return [home() / ".claude" / "skills", _env_path("CODEX_HOME", home() / ".codex") / "skills",
+            _env_path("PI_HOME", home() / ".pi" / "agent") / "skills", skills_root()]

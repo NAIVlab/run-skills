@@ -21,8 +21,7 @@ my-lab-pack/
 │       ├── profile.sh
 │       └── reference.md
 ├── routing/
-│   ├── hpc-run.md          # optional: bullets appended to the Slurm skill's routing rules
-│   └── ws-run.md           # optional: same for workstations
+│   └── remote-run.md       # optional: bullets appended to the skill's routing rules (older packs: hpc-run.md, ws-run.md)
 ├── ssh_config              # optional: Host blocks with <user> placeholders
 └── hpc.conf.example        # optional: a project conf with your group's directory layout
 ```
@@ -55,13 +54,20 @@ every key; [`../AGENTS.md`](../AGENTS.md) documents the `policy.sh` API (`t_part
 
 ## Routing hints
 
-The installed `references/INDEX.md` of each skill lists every target and ends with a **Routing** section. Each
-pack's `routing/<skill>.md` is appended to it verbatim, so write Markdown bullets, for example:
+The installed skill's `references/INDEX.md` lists every target of both kinds and ends with a **Routing** section. Each
+pack's `routing/remote-run.md` is appended to it verbatim, so write Markdown bullets, for example:
 
 ```markdown
 - "H100" alone is ambiguous: `bigcluster` partition `h100` (8 per node, NVLink, 2 d) vs `gpubox` (2 cards, no
   scheduler). Multi-GPU training → bigcluster; quick interactive checks → gpubox; else ask.
 ```
+
+Packs written for the two earlier skills ship `routing/hpc-run.md` and `routing/ws-run.md`; nothing needs renaming.
+A pack (or the member's `~/.config/run-skills/routing/`) without `remote-run.md` has both legacy files appended, each
+once, every rule under a lead-in naming its kind (``- For `slurm` targets only …``), because it used to apply inside
+that kind's skill only; a rule both files carry appears once, unscoped. With `remote-run.md`, only that file is read,
+so move the legacy bullets into it when you add it, scoping each one to a kind or target where it needs that. Members
+on an older engine read only the legacy names: keep those files too until everyone has run `rsk update`.
 
 ## Publishing and onboarding
 
@@ -80,7 +86,7 @@ pack's `routing/<skill>.md` is appended to it verbatim, so write Markdown bullet
    targets read-only.
 3. Updates: `rsk update` fast-forwards every clean pack clone, upgrades rsk and re-runs `rsk setup` (a pack linked
    to a working tree is the owner's to pull; then `rsk setup`). Profile and policy edits apply at the next sync;
-   changes to names, descriptions or routing need the setup to reach the skills' INDEX.
+   changes to names, descriptions or routing need the setup to reach the skill's INDEX.
 
 The pack's `install.sh` knobs (environment variables): `RS_ENGINE_URL` (engine repo, e.g. your fork), `RS_ENGINE_DIR`
 (its clone, default `~/.local/share/run-skills`), `RS_PACKS_DIR` (default `~/.config/run-skills/packs`, which rsk reads too).

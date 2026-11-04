@@ -9,22 +9,27 @@ C() { ( . "$RS_HOME/lib/common.sh"; eval "$1" ) 2>&1; }
 if [ ! -d "$RS_HOME/skills" ] || [ "${RS_PACKAGED:-0}" = 1 ]; then   # installed copy (rsk's wheel keeps no symlinks): clone-only
   echo "-- docs: skipped ($RS_HOME is an installed copy — run selftest from the git clone for the doc checks) --"; return 0 2>/dev/null || exit 0
 fi
-echo "-- skills --"
-for s in hpc-run ws-run; do
-  f=$RS_HOME/skills/$s/SKILL.md
-  [ -f "$f" ] || { bad "$s/SKILL.md exists"; continue; }
-  d=$(grep -m1 '^description:' "$f"); n=${#d}
-  [ "$n" -gt 20 ] && [ "$n" -lt 1024 ] && ok "$s description present, < 1024 chars ($n)" || bad "$s description present, < 1024 chars ($n)"
-  hasnt "$d" '[<>]' "$s description has no < >"
-  S=$(cat "$f"); has "$S" "^name: $s\$" "$s frontmatter name"; has "$S" '^allowed-tools: Bash, Read, Write, Edit$' "$s allowed-tools"
-  has "$S" 'references/INDEX.md' "$s body points at references/INDEX.md"
-  for r in INDEX.md conf-keys.md experiment-conventions.md; do [ -f "$RS_HOME/skills/$s/references/$r" ] && ok "$s references/$r" || bad "$s references/$r"; done
-done
-[ -f "$RS_HOME/skills/hpc-run/references/procedure-slurm.md" ] && ok "procedure-slurm.md" || bad "procedure-slurm.md"
-[ -f "$RS_HOME/skills/ws-run/references/procedure-nohup.md" ] && ok "procedure-nohup.md" || bad "procedure-nohup.md"
-[ "$(readlink "$RS_HOME/skills/ws-run/references/experiment-conventions.md")" = "../../hpc-run/references/experiment-conventions.md" ] \
-  && ok "ws-run experiment-conventions.md -> hpc-run's (one copy)" || bad "ws-run experiment-conventions.md -> hpc-run's (one copy)"
-E=$(cat "$RS_HOME/skills/hpc-run/references/experiment-conventions.md" 2>/dev/null)
+echo "-- skill --"
+SK=skills/remote-run; F=$SK/SKILL.md; PSL=$SK/references/procedure-slurm.md; PNO=$SK/references/procedure-nohup.md
+IDX=$SK/references/INDEX.md; CKF=$SK/references/conf-keys.md
+[ "$(ls "$RS_HOME/skills")" = remote-run ] && ok "one skill ships: remote-run" || bad "one skill ships: remote-run (got: $(ls "$RS_HOME/skills" | tr '\n' ' '))"
+[ "$(ls "$RS_HOME/codex")" = remote-run.openai.yaml ] && ok "codex/remote-run.openai.yaml (and nothing else)" || bad "codex/remote-run.openai.yaml (and nothing else)"
+S=$(cat "$RS_HOME/$F" 2>/dev/null); ST=$(tr '\n' ' ' < "$RS_HOME/$F" 2>/dev/null | tr -s ' ')   # wrapped lines joined, one space
+d=$(grep -m1 '^description:' "$RS_HOME/$F"); n=${#d}
+# install.sh prepends every target's T_TRIGGERS and the result must stay < 1024: keep >= ~150 chars of room for them
+[ "$n" -gt 20 ] && [ "$n" -lt 870 ] && ok "description present, < 870 chars ($n; room for T_TRIGGERS)" || bad "description present, < 870 chars ($n)"
+hasnt "$d" '[<>]' "description has no < >"
+for w in 'Run, submit, launch' monitor 'stop or cancel' Slurm '\.hpc\.conf' '\.ws\.conf' 'GPU workstations' sbatch nohup HPC \
+         partition workstation 'GPU server' 'the box' 'job status' logs 'results copied back' 'Replaces the hpc-run and ws-run skills'; do
+  has "$d" "$w" "description keeps the trigger vocabulary of both replaced skills: $w"; done
+has "$S" '^name: remote-run$' "frontmatter name"; has "$S" '^allowed-tools: Bash, Read, Write, Edit$' "allowed-tools"
+has "$S" 'references/INDEX.md' "body points at references/INDEX.md"
+for r in INDEX.md conf-keys.md experiment-conventions.md project-setup.md procedure-slurm.md procedure-nohup.md; do
+  [ -f "$RS_HOME/$SK/references/$r" ] && [ ! -L "$RS_HOME/$SK/references/$r" ] && ok "references/$r (one copy, no symlink)" || bad "references/$r (one copy, no symlink)"; done
+hasnt "$(grep -rn 'hpc-run\|ws-run' "$RS_HOME/$SK" | grep -v ':[0-9]*:description: ')" . "the skill names the replaced skills only in its description"
+for k in slurm nohup; do has "$S" "\`$k\`" "SKILL.md: INDEX kind $k explained"; done
+has "$ST" 'procedure-slurm\.md' "SKILL.md routes Slurm to procedure-slurm.md"; has "$ST" 'procedure-nohup\.md' "SKILL.md routes workstations to procedure-nohup.md"
+E=$(cat "$RS_HOME/$SK/references/experiment-conventions.md" 2>/dev/null)
 has "$E" 'WANDB_MODE=disabled' "conventions: smoke tracker isolation"; has "$E" '--requeue' "conventions: slurm auto-resume"
 has "$E" '<task>--<stage>--<variant>--<origin>' "conventions: structured name shape"
 has "$E" 'anomaly or restart' "conventions: anomalies and restarts need closer reviews"
@@ -47,36 +52,52 @@ has "$E" 'exits 0 without training' "conventions: chain precondition (exit 0 whe
 #   the dependent job will never be run, even if the preceding job is requeued".
 has "$E" 'after a FAILURE' "conventions: singleton continues after a failure (said)"; has "$E" 'Every finding is reported' "conventions: every finding reported"
 has "$E" 'wake-up mechanism' "conventions: the wake-up mechanism is stated, never assumed"
-for f in skills/hpc-run/SKILL.md skills/ws-run/SKILL.md skills/hpc-run/references/procedure-slurm.md skills/ws-run/references/procedure-nohup.md; do
+for f in $F $PSL $PNO; do
   has "$(cat "$RS_HOME/$f")" 'summary of' "$f: a summary of the reference is not the reference"; has "$(cat "$RS_HOME/$f")" 'ref: <' "$f: the plan cites the reference"; done
-for f in skills/hpc-run/SKILL.md skills/ws-run/SKILL.md; do has "$(cat "$RS_HOME/$f")" 'wake-up mechanism' "$f rail: state the wake-up mechanism"; done
-for f in skills/hpc-run/references/procedure-slurm.md skills/ws-run/references/procedure-nohup.md; do
+has "$S" 'wake-up mechanism' "$F rail: state the wake-up mechanism"
+for f in $PSL $PNO; do
   has "$(cat "$RS_HOME/$f")" 'resume=unverified' "$f: ckpt_entry is not proof of resume"; has "$(cat "$RS_HOME/$f")" 'Never read a log unbounded' "$f: byte-bounded reads rail"
   has "$(cat "$RS_HOME/$f")" 'hints, not diagnoses' "$f: the digest's counts are hints, so 0 is not 'no errors'"
   has "$(cat "$RS_HOME/$f")" 'the deploy predates it' "$f: what to do when the digest is not deployed yet"
+  has "$(cat "$RS_HOME/$f")" 'rsk logs -T <t>' "$f: the digest is also one rsk logs away"
 done
-for f in skills/hpc-run/SKILL.md skills/ws-run/SKILL.md skills/hpc-run/references/procedure-slurm.md \
-         skills/ws-run/references/procedure-nohup.md; do
+for f in $F $PSL $PNO; do
   hasnt "$(cat "$RS_HOME/$f")" 'tail -f' "$f keeps monitoring examples byte-bounded"
   hasnt "$(cat "$RS_HOME/$f")" 'tail -n [0-9]' "$f never tells the agent to read a log unbounded"
   has "$(cat "$RS_HOME/$f")" 'status\.sh' "$f monitors through the bounded status digest"
-done
-for f in skills/hpc-run/SKILL.md skills/ws-run/SKILL.md skills/hpc-run/references/procedure-slurm.md \
-         skills/ws-run/references/procedure-nohup.md; do
   has "$(cat "$RS_HOME/$f")" 'experiment-conventions' "$f points at experiment-conventions.md"
 done
-[ "$(readlink "$RS_HOME/skills/ws-run/references/project-setup.md")" = "../../hpc-run/references/project-setup.md" ] \
-  && ok "ws-run project-setup.md -> hpc-run's (one copy)" || bad "ws-run project-setup.md -> hpc-run's (one copy)"
-PS=$(cat "$RS_HOME/skills/hpc-run/references/project-setup.md" 2>/dev/null)
-for f in skills/hpc-run/SKILL.md skills/ws-run/SKILL.md; do
-  has "$(cat "$RS_HOME/$f")" 'references/project-setup.md' "$f: a project without a conf goes through project-setup.md"
-  has "$(cat "$RS_HOME/$f")" 'INSTALL.md' "$f: registering a target points at INSTALL.md"
-  has "$(tr '\n' ' ' < "$RS_HOME/$f")" 'installed without rsk: re-run `bash ~/.local/share/run-skills/install.sh`' "$f: registering without rsk re-runs install.sh"
-done
-has "$PS" 'never guess' "project-setup: never guess the remote dir"; has "$PS" 'never create it' "project-setup: never create a conda env"
-has "$PS" 'run-sync -n' "project-setup: dry-run before the first sync"; has "$PS" 'Never launch it unasked' "project-setup: no launch without the user"
-has "$PS" 'Remote-only edits' "project-setup: checks an existing remote copy before syncing"; has "$PS" '.run-skills-proj' "project-setup: a foreign venv is not adopted silently"
-has "$PS" 'git/info/exclude' "project-setup: a shared repo keeps the conf untracked"
+PS=$(cat "$RS_HOME/$SK/references/project-setup.md" 2>/dev/null)
+has "$S" 'references/project-setup.md' "$F: a project without a conf goes through project-setup.md"
+has "$S" 'INSTALL.md' "$F: registering a target points at INSTALL.md"
+has "$ST" '_template-slurm/` or `$ROOT/targets/_template-nohup/' "$F: a new target starts from the template of its kind"
+has "$ST" 'installed without rsk: re-run `bash ~/.local/share/run-skills/install.sh`' "$F: registering without rsk re-runs install.sh"
+has "$ST" 'never guess them' "$F: never guess REMOTE_DIR / WS_REMOTE_DIR"
+echo "-- the rails of both replaced skills, all in remote-run --"
+for r in 'Confirm before every submit or launch' 'never `scancel` any job — the user.s or anyone else.s — without an explicit OK' \
+         'never launch onto a GPU another job is using' 'never `kill` a running process, without an explicit OK' \
+         'Auto-pick takes the \*idlest\* GPUs, not necessarily free ones' 'use `-d` when the pick would land on a busy card' \
+         'partition and QOS are `submit.sh`.s decision' 'no raw `sbatch`/`srun`/`salloc`, no `scontrol update`' \
+         'no `--partition` inside `SBATCH_EXTRA`' 'A policy refusal (exit 3) is final' '`-y` also confirms policy warnings' \
+         'user.s own key\*\* (the deployed `.wandb_env`)' 'no key → offline' 'Never `wandb login` on a cluster' \
+         'Never create a conda env: if `ENV_NAME` is missing on the target, stop and ask' 'scaffold new `.ws.conf` files as uv unless the user asks for conda' \
+         'stays under the project.s remote dir' 'Files cross the wire only through `run-sync` (up) and `run-pull` (back)' \
+         'Never hand-roll `rsync`/`scp`/`sftp`' 'Slurm jobs go out with `--requeue`' 'confirm before a long submit' \
+         'nothing restarts a nohup run after a crash or reboot' 'Smoke tests always run `WANDB_MODE=disabled`' \
+         'widen review intervals only with evidence' 'state the wake-up mechanism' 'keep log reads byte-bounded' \
+         'Report every finding promptly' 'Detect-only' 'stopping, killing or resubmitting a run is the user.s call' \
+         'on workstations `run-watch` only detects'; do
+  has "$ST" "$r" "rail: $r"; done
+has "$ST" 'One exception, Slurm only: `run-watch --act` first-submits or resubmits only table rows the user approved' "rail: the one detect-only exception, user-approved rows only"
+hasnt "$S" 'only clears availability' "rail: -y also confirms policy warnings (not just availability)"
+echo "-- rsk, the read-only observation path, as the CLI defines it --"
+CLI=$(cat "$RS_HOME"/src/remote_run/*.py 2>/dev/null)
+for c in status logs exec doctor update; do has "$S" "rsk $c" "$F names rsk $c"; has "$CLI" "add_parser(\"$c\"" "rsk $c is a real subcommand"; done
+has "$ST" 'UNOBSERVABLE = unknown, never "none"' "$F: a target that does not answer is unknown, never 'none'"
+has "$CLI" 'UNOBSERVABLE' "...and rsk status says UNOBSERVABLE"
+for o in '\[-T <t>\]\.\.\. \[--days N\]' 'rsk logs -T <t> <jobid|log> \[<ckpt-dir>\] \[-n 40\]' 'rsk exec -T <t> -- <cmd>'; do has "$S" "$o" "$F rsk usage: $o"; done
+for o in '"--days"' '"-n", dest="lines"' '"-T", "--target", required=True' 'UNKNOWN = 5' 'FAILED = 1' 'USAGE = 2'; do
+  has "$CLI" "$o" "the CLI has what $F promises: $o"; done
 I=$(cat "$RS_HOME/INSTALL.md" 2>/dev/null)
 has "$I" 'Read-only on remote machines' "INSTALL rail: read-only on servers"; has "$I" 'BatchMode=yes' "INSTALL rail: never wait at a password prompt"
 has "$I" 'Secrets never enter the conversation' "INSTALL rail: secrets stay out"; has "$I" 'need an explicit OK' "INSTALL rail: ~/.ssh/config needs an OK"
@@ -101,40 +122,38 @@ has "$I" 'uv tool dir --bin' "INSTALL: rsk is found when uv's tool bin dir is of
 has "$I" 'Installed without rsk' "INSTALL Step 6: a setup without rsk re-runs install.sh"
 has "$I" '^- updating: `rsk update`' "INSTALL Step 7: updating is rsk update (re-running uv tool install is a no-op)"
 has "$(cat "$RS_HOME/README.md")" '`rsk update --to main` follows main' "README: --to pins, --to main follows main again"
-has "$(cat "$RS_HOME/skills/hpc-run/SKILL.md")" 'run-sync\|run-bootstrap' "hpc-run names the bin/ commands"
-has "$(cat "$RS_HOME/skills/ws-run/SKILL.md")" 'run-launch' "ws-run names run-launch"
-for f in skills/hpc-run/SKILL.md skills/ws-run/SKILL.md skills/hpc-run/references/procedure-slurm.md \
-         skills/ws-run/references/procedure-nohup.md; do
+has "$S" 'run-sync' "$F names run-sync"; has "$S" 'run-bootstrap' "$F names run-bootstrap"; has "$S" 'run-launch' "$F names run-launch"
+has "$S" 'submit\.sh' "$F names submit.sh"
+for f in $F $PSL $PNO; do
   has "$(cat "$RS_HOME/$f")" 'run-pull' "$f: results come back through run-pull"
   has "$(cat "$RS_HOME/$f")" 'hand-roll' "$f rail: files move only through run-sync / run-pull"
 done
-for f in skills/hpc-run/SKILL.md skills/ws-run/SKILL.md skills/hpc-run/references/INDEX.md skills/ws-run/references/INDEX.md \
-         skills/hpc-run/references/procedure-slurm.md skills/ws-run/references/procedure-nohup.md; do
+for f in $F $IDX $PSL $PNO; do
   has "$(cat "$RS_HOME/$f")" 'run-avail' "$f: an open placement starts with run-avail"; done
-has "$(cat "$RS_HOME/skills/hpc-run/references/INDEX.md")" 'The user fixed it' "INDEX: a fixed placement is used as given (no fleet check)"
-for f in skills/hpc-run/SKILL.md skills/ws-run/SKILL.md skills/hpc-run/references/procedure-slurm.md skills/ws-run/references/procedure-nohup.md; do
+has "$(cat "$RS_HOME/$IDX")" 'The user fixed it' "INDEX: a fixed placement is used as given (no fleet check)"
+for f in $F $PSL $PNO; do
   has "$(cat "$RS_HOME/$f")" 'run-watch' "$f: many jobs or long waits go through run-watch"
   hasnt "$(cat "$RS_HOME/$f")" 'Monitor(\|/loop\|CronCreate\|ScheduleWakeup\|run_in_background' "$f names no runtime-specific waiting tool"; done
-for f in skills/hpc-run/references/procedure-slurm.md skills/ws-run/references/procedure-nohup.md; do
+for f in $PSL $PNO; do
   has "$(tr '\n' ' ' < "$RS_HOME/$f")" 'Never  *detach it (no `nohup`, `setsid`, cron)' "$f: run-watch stays owned by the session"; done
-has "$(tr '\n' ' ' < "$RS_HOME/skills/hpc-run/SKILL.md")" 'One exception: `run-watch --act` first-submits or resubmits only table rows the user  *approved' "hpc-run rail: the one detect-only exception, user-approved rows only"
-hasnt "$(cat "$RS_HOME/skills/hpc-run/SKILL.md")" 'only clears availability' "hpc-run rail: -y also confirms policy warnings (not just availability)"
-has "$(tr '\n' ' ' < "$RS_HOME/skills/hpc-run/references/procedure-slurm.md")" 'only after their explicit OK run `run-watch <table> --approve' "procedure-slurm: --approve only after the user's OK"
+has "$(tr '\n' ' ' < "$RS_HOME/$PSL")" 'only after their explicit OK run `run-watch <table> --approve' "procedure-slurm: --approve only after the user's OK"
 has "$E" 'sole exception: `run-watch --act`' "conventions: detect-only names its one exception"
-for f in skills/hpc-run/references/conf-keys.md skills/ws-run/references/conf-keys.md; do
-  has "$(cat "$RS_HOME/$f")" 'T_XFER_HOST.*profile' "$f: the transfer host is a profile fact"
-  hasnt "$(cat "$RS_HOME/$f")" '^| `XFER_HOST`' "$f: no XFER_HOST conf key (one per conf would misroute other targets)"; done
+CK=$(cat "$RS_HOME/$CKF" 2>/dev/null)
+has "$CK" 'T_XFER_HOST.*profile' "conf-keys: the transfer host is a profile fact"
+hasnt "$CK" '^| `XFER_HOST`' "conf-keys: no XFER_HOST conf key (one per conf would misroute other targets)"
+for h in '^## Keys of both confs$' '^## `.hpc.conf` only (kind `slurm`)$' '^## `.ws.conf` only (kind `nohup`)$'; do has "$CK" "$h" "conf-keys section: $h"; done
+# every key of both confs survives the merge: the prefixable lists the code reads, plus the generic-only keys (AGENTS.md)
+for k in $(C 'echo $RS_PREFIXABLE_SLURM $RS_PREFIXABLE_NOHUP' | tr ' ' '\n' | sort -u) ENV_KIND ENV_HOOK BOOTSTRAP_HOOK UV_SYNC_ARGS \
+         WANDB_MODE EXTRA_EXCLUDES SYNC_ALSO REMOTE_HOST DEFAULT_CLUSTER DEFAULT_STATION WS_REMOTE_DIR; do
+  [ "$(printf '%s\n' "$CK" | grep -c "^| \`$k\` |")" = 1 ] && ok "conf-keys: one row for $k" || bad "conf-keys: one row for $k"; done
 for t in _template-slurm _template-nohup; do has "$(cat "$RS_HOME/targets/$t/profile.sh")" '^T_XFER_HOST=' "$t profile documents T_XFER_HOST"; done
-for y in hpc-run ws-run; do [ -f "$RS_HOME/codex/$y.openai.yaml" ] && ok "codex/$y.openai.yaml" || bad "codex/$y.openai.yaml"; done
 
-echo "-- INDEX stubs == rs_gen_index (no overlay, root placeholder) --"
-for k in slurm:hpc-run nohup:ws-run; do
-  kind=${k%%:*}; s=${k#*:}
-  RS_USER_DIR=/nonexistent RS_PACKS_DIR=/nonexistent C "rs_gen_index $kind '$T/idx-$kind.md' '~/.agents/run-skills'" >/dev/null
-  if cmp -s "$T/idx-$kind.md" "$RS_HOME/skills/$s/references/INDEX.md"; then ok "$s/references/INDEX.md matches rs_gen_index"
-  else bad "$s/references/INDEX.md matches rs_gen_index"; diff "$T/idx-$kind.md" "$RS_HOME/skills/$s/references/INDEX.md" | head -12 | sed 's/^/    | /'; fi
-done
-has "$(cat "$T/idx-slurm.md")" '^## Routing' "slurm INDEX carries a Routing section"
+echo "-- INDEX stub == rs_gen_index (no overlay, root placeholder) --"
+RS_USER_DIR=/nonexistent RS_PACKS_DIR=/nonexistent C "rs_gen_index '$T/idx.md' '~/.agents/run-skills'" >/dev/null
+if cmp -s "$T/idx.md" "$RS_HOME/$IDX"; then ok "$IDX matches rs_gen_index"
+else bad "$IDX matches rs_gen_index"; diff "$T/idx.md" "$RS_HOME/$IDX" | head -12 | sed 's/^/    | /'; fi
+has "$(cat "$T/idx.md")" '^## Routing' "INDEX carries a Routing section"
+has "$(cat "$T/idx.md")" '^| target | kind | ' "INDEX: one table, a kind column"
 
 echo "-- shipped targets --"
 SHIPPED=$(RS_USER_DIR=/nonexistent RS_PACKS_DIR=/nonexistent C 'rs_targets')
@@ -143,7 +162,7 @@ for t in $SHIPPED; do
   for f in profile.sh reference.md tests.sh; do [ -f "$RS_HOME/targets/$t/$f" ] && ok "targets/$t/$f" || bad "targets/$t/$f"; done
   K=$(RS_USER_DIR=/nonexistent RS_PACKS_DIR=/nonexistent C "rs_load_target $t; echo \$T_KIND")
   [ "$K" = slurm ] && { [ -f "$RS_HOME/targets/$t/policy.sh" ] && ok "targets/$t/policy.sh" || bad "targets/$t/policy.sh"; }
-  has "$(cat "$T/idx-$K.md")" "^| $t | " "INDEX row for $t"
+  has "$(cat "$T/idx.md")" "^| $t | $K | " "INDEX row for $t"
   [ "$(wc -l < "$RS_HOME/targets/$t/reference.md")" -le 80 ] && ok "targets/$t/reference.md <= 80 lines" || bad "targets/$t/reference.md <= 80 lines"
 done
 for t in _template-slurm _template-nohup; do
@@ -184,10 +203,10 @@ for f in "$RS_HOME"/bin/* "$RS_HOME"/lib/*.sh "$RS_HOME"/remote/* "$RS_HOME"/tar
 done
 budget() { [ -f "$RS_HOME/$1" ] || { bad "$1 exists"; return; }; local n; n=$(wc -l < "$RS_HOME/$1")
   [ "$n" -le "$2" ] && ok "$1 within $2 lines ($n)" || bad "$1 within $2 lines ($n)"; }
-budget lib/common.sh 133; budget remote/env.sh 170; budget remote/bootstrap.sh 90; budget remote/submit.sh 190; budget remote/job.sbatch 65   # common +3: rs_ref, rs_deploy_profile
+budget lib/common.sh 141; budget remote/env.sh 170; budget remote/bootstrap.sh 90; budget remote/submit.sh 190; budget remote/job.sbatch 65   # common +3: rs_ref, rs_deploy_profile; +8: rs_legacy_routing (a legacy rule keeps its kind)
 budget remote/status.sh 175   # generous on purpose: every lookup has an explicit failure branch; compressing them hides bugs
-budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 240; budget AGENTS.md 175; budget INSTALL.md 232 # AGENTS +10: rsk; INSTALL +2: which rsk, setup without rsk
-budget skills/hpc-run/SKILL.md 62; budget skills/ws-run/SKILL.md 62; budget bin/run-watch 700   # SKILL +2: a summary is not the reference
-budget skills/hpc-run/references/experiment-conventions.md 135;   # +4: the run-watch exception (§3, §6, §7); +1: a USR1 death is FAILED
-budget skills/hpc-run/references/project-setup.md 100
-for d in hpc-run ws-run; do [ -d "$RS_HOME/$d" ] && bad "legacy $d/ tree removed" || ok "legacy $d/ tree removed"; done
+budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 240; budget AGENTS.md 176; budget INSTALL.md 232 # AGENTS +10: rsk, +1: the hpc-run/ws-run uninstall; INSTALL +2: which rsk, setup without rsk
+budget skills/remote-run/SKILL.md 95; budget bin/run-watch 700   # one entry for both kinds (the two it replaced: 62 + 61) + the rsk reads
+budget skills/remote-run/references/experiment-conventions.md 135;   # +4: the run-watch exception (§3, §6, §7); +1: a USR1 death is FAILED
+budget skills/remote-run/references/project-setup.md 100
+for d in hpc-run ws-run; do [ -e "$RS_HOME/$d" ] || [ -e "$RS_HOME/skills/$d" ] && bad "legacy $d/ trees removed" || ok "legacy $d/ trees removed"; done

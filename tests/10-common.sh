@@ -144,10 +144,10 @@ has "$(cd "$T/w1" && HOME=$T/home2 C 'rs_wandb_env_file')" '^\./\.wandb_env$' "p
 : > "$T/user2/wandb_env"
 has "$(cd "$T" && HOME=$T/home2 RS_USER_DIR=$T/user2 C 'rs_wandb_env_file')" "^$T/user2/wandb_env$" "RS_USER_DIR/wandb_env is the second choice"
 : > "$T/user2/targets/fx-slurm/reference.local.md"
-RS_USER_DIR=$T/user2 C 'rs_gen_index slurm "$T/idx-slurm.md" /root' >/dev/null; I=$(cat "$T/idx-slurm.md")
-has "$(head -1 "$T/idx-slurm.md")" '^root: /root$' "index line 1 is root:"
-has "$I" '^| target | host | GPUs | default | max time | description | reference |$' "index table header"
-has "$I" "^| fx-slurm | fx | 4x fake | gpu / any | 1-00:00:00 | fixture slurm cluster | $T/user2/targets/fx-slurm/reference.md + $T/user2/targets/fx-slurm/reference.local.md |$" "overlay row: absolute reference + reference.local.md"
+RS_USER_DIR=$T/user2 C 'rs_gen_index "$T/idx.md" /root' >/dev/null; I=$(cat "$T/idx.md")
+has "$(head -1 "$T/idx.md")" '^root: /root$' "index line 1 is root:"
+has "$I" '^| target | kind | host | GPUs | default | max time | description | reference |$' "index table header (one INDEX, a kind column)"
+has "$I" "^| fx-slurm | slurm | fx | 4x fake | gpu / any | 1-00:00:00 | fixture slurm cluster | $T/user2/targets/fx-slurm/reference.md + $T/user2/targets/fx-slurm/reference.local.md |$" "overlay row: absolute reference + reference.local.md"
 has "$(RS_USER_DIR=$T/user2 C 'rs_load_target fx-slurm; rs_ref /root')" "^$T/user2/targets/fx-slurm/reference.md + $T/user2/targets/fx-slurm/reference.local.md$" "rs_ref = the INDEX reference column (harness re-prints it)"
 hasnt "$(RS_USER_DIR=$T/user2 C 'rs_load_target fx-home; rs_ref /root')" ' + ' "rs_ref: no reference.local.md, one path"
 RS_USER_DIR=$T/user2 C 'rs_load_target fx-slurm; rs_deploy_profile "$T/dp.sh"' >/dev/null
@@ -156,19 +156,34 @@ mkdir -p "$T/q'd"; printf 'T_KIND=slurm\nT_HOST=h\n' > "$T/q'd/profile.sh"; QD="
 hasnt "$(cat "$T/dq.sh")" '^T_REF=' "a reference path with a quote is not deployed (never a corrupted path)"
 mkdir -p "$T/nest/packs/p/targets/nt"; printf 'T_KIND=slurm\nT_HOST=h\n' > "$T/nest/packs/p/targets/nt/profile.sh"
 has "$(RS_HOME=$T/nest RS_PACKS_DIR=$T/nest/packs RS_USER_DIR=/nonexistent C 'rs_load_target nt; rs_ref /root')" "^$T/nest/packs/p/targets/nt/reference.md$" "a pack under RS_HOME is not mistaken for a shipped target"
-has "$I" '^| fx-home | fx | - | gpu / any | 1-00:00:00 | ' "row with '-' for missing T_GPUS"
-hasnt "$I" 'ws-box' "slurm index has no nohup rows"
-has "$I" "^| fx-packed | fxp | - | gpu / any | 1-00:00:00 | fixture pack cluster | $RS_PACKS_DIR/fx-pack/targets/fx-packed/reference.md |$" "pack row: absolute reference"
-has "$(sed -n '/^## Routing/,$p' "$T/idx-slurm.md")" '^- fixture pack routing rule$' "a pack's routing/hpc-run.md lands in the Routing section"
+has "$I" '^| fx-home | slurm | fx | - | gpu / any | 1-00:00:00 | ' "row with '-' for missing T_GPUS"
+has "$I" "^| ws-box | nohup | wsbox | 4x fake | - | - | fixture workstation | $T/user2/targets/ws-box/reference.md |$" "the same INDEX lists the nohup target (both kinds)"
+has "$I" "^| fx-packed | slurm | fxp | - | gpu / any | 1-00:00:00 | fixture pack cluster | $RS_PACKS_DIR/fx-pack/targets/fx-packed/reference.md |$" "pack row: absolute reference"
+has "$(sed -n '/^## Routing/,$p' "$T/idx.md" | grep -A1 '^- For `slurm` targets only (legacy routing/hpc-run.md):$')" '^  - fixture pack routing rule$' "a pack's legacy routing/hpc-run.md lands in the Routing section, under a slurm-only lead-in"
 mkdir -p "$T/packs2"; ln -s "$RS_PACKS_DIR/fx-pack" "$T/packs2/a"; ln -s "$RS_PACKS_DIR/fx-pack" "$T/packs2/b"
-RS_PACKS_DIR=$T/packs2 C 'rs_gen_index slurm "$T/idx-twice.md" /root' >/dev/null
-[ "$(grep -c '^- fixture pack routing rule$' "$T/idx-twice.md")" = 1 ] && ok "a pack linked twice: its routing appears once" || bad "a pack linked twice: routing duplicated"
-C 'rs_gen_index nohup "$T/idx-nohup.md" /root' >/dev/null; I=$(cat "$T/idx-nohup.md")
-has "$I" "^| ws-box | wsbox | 4x fake | - | - | fixture workstation | $RS_USER_DIR/targets/ws-box/reference.md |$" "nohup row"
-hasnt "$I" 'no workstation registered yet' "no placeholder sentence when a nohup target exists"
-RS_USER_DIR=/nonexistent RS_PACKS_DIR=/nonexistent RS_HOME=$FH C 'rs_gen_index nohup "$T/idx-empty.md" /root' >/dev/null
-has "$(cat "$T/idx-empty.md")" 'no workstation registered yet: register one with the user (/root/INSTALL.md, Steps 2-6: run-probe, then ~/.config/run-skills/targets/<name>/ from /root/targets/_template-nohup/) or install a target pack' "empty nohup index prints the placeholder sentence"
-RS_USER_DIR=/nonexistent RS_PACKS_DIR=/nonexistent RS_HOME=$FH C 'rs_gen_index slurm "$T/idx-empty.md" /root' >/dev/null
-hasnt "$(cat "$T/idx-empty.md")" 'registered yet' "slurm index with a target has no placeholder"
-mkdir -p "$T/emptyhome/targets"; RS_USER_DIR=/nonexistent RS_PACKS_DIR=/nonexistent RS_HOME=$T/emptyhome C 'rs_gen_index slurm "$T/idx-empty.md" /root' >/dev/null
-has "$(cat "$T/idx-empty.md")" 'no cluster registered yet: register one with the user (/root/INSTALL.md.*_template-slurm/) or install a target pack' "empty slurm index prints the placeholder sentence"
+RS_PACKS_DIR=$T/packs2 C 'rs_gen_index "$T/idx-twice.md" /root' >/dev/null
+[ "$(grep -c '^  - fixture pack routing rule$' "$T/idx-twice.md")" = 1 ] && ok "a pack linked twice: its routing appears once" || bad "a pack linked twice: routing duplicated"
+# routing/remote-run.md wins over a pack's legacy per-kind files; without it both legacy files count (packs in the
+# wild and members on older engines use hpc-run.md / ws-run.md), each rule under its kind's lead-in (it applied inside
+# that kind's skill only) and a rule both files carry once, unscoped; the user's own routing dir follows the same rule
+mkdir -p "$T/packs3/new/routing" "$T/packs3/old/routing" "$T/user3/routing"
+printf -- '- new rule\n' > "$T/packs3/new/routing/remote-run.md"; printf -- '- stale rule\n' > "$T/packs3/new/routing/hpc-run.md"
+printf -- '- old cluster rule\n  more\n\n- both rule\n  ask.\n' > "$T/packs3/old/routing/hpc-run.md"
+printf -- '- both rule\n  ask.\n- old box rule\n' > "$T/packs3/old/routing/ws-run.md"
+printf -- '- my box rule\n' > "$T/user3/routing/ws-run.md"
+RS_PACKS_DIR=$T/packs3 RS_USER_DIR=$T/user3 C 'rs_gen_index "$T/idx-r.md" /root' >/dev/null; R=$(sed -n '/^## Routing/,$p' "$T/idx-r.md")
+has "$R" '^- new rule$' "a pack's routing/remote-run.md is appended"; hasnt "$R" 'stale rule' "...and its legacy hpc-run.md then is not"
+SL='- For `slurm` targets only (legacy routing/hpc-run.md):'; NH='- For `nohup` targets only (legacy routing/ws-run.md):'
+has "$(printf '%s\n' "$R" | grep -A2 -Fx -e "$SL")" '^  - old cluster rule$' "a pack with legacy files only: routing/hpc-run.md honoured, under a slurm-only lead-in"
+has "$(printf '%s\n' "$R" | grep -A2 -Fx -e "$SL")" '^    more$' "...its continuation lines stay with the rule"
+has "$(printf '%s\n' "$R" | grep -A1 -Fx -e "$NH")" '^  - old box rule$' "a pack with legacy files only: routing/ws-run.md honoured, under a nohup-only lead-in"
+[ "$(printf '%s\n' "$R" | grep -c 'both rule')" = 1 ] && has "$(printf '%s\n' "$R" | grep -A1 '^- both rule$')" '^  ask\.$' \
+  "a rule both legacy files carry: once, unscoped (cross-kind)" || bad "a rule both legacy files carry: once, unscoped (cross-kind)"
+[ "$(printf '%s\n' "$R" | grep -c -Fx -e "$NH")" = 2 ] && has "$(printf '%s\n' "$R" | grep -A1 -Fx -e "$NH" | tail -1)" '^  - my box rule$' \
+  "the user's legacy routing/ws-run.md honoured, under its own nohup-only lead-in" || bad "the user's legacy routing/ws-run.md honoured, under its own nohup-only lead-in"
+[ "$(grep -c '^- ' "$T/idx-r.md")" = "$(( $(grep -c '^- ' "$RS_HOME/skills/remote-run/references/INDEX.md") + 5 ))" ] \
+  && ok "each routing file once, after the stub's own rules" || bad "each routing file once, after the stub's own rules"
+RS_USER_DIR=/nonexistent RS_PACKS_DIR=/nonexistent RS_HOME=$FH C 'rs_gen_index "$T/idx-fh.md" /root' >/dev/null
+hasnt "$(cat "$T/idx-fh.md")" 'registered yet' "an index with a target has no placeholder"
+mkdir -p "$T/emptyhome/targets"; RS_USER_DIR=/nonexistent RS_PACKS_DIR=/nonexistent RS_HOME=$T/emptyhome C 'rs_gen_index "$T/idx-empty.md" /root' >/dev/null
+has "$(cat "$T/idx-empty.md")" 'no target registered yet: register one with the user (/root/INSTALL.md, Steps 2-6: run-probe, then ~/.config/run-skills/targets/<name>/ from /root/targets/_template-slurm/ (cluster) or _template-nohup/ (workstation)) or install a target pack' "empty index prints the placeholder sentence (both templates)"

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Remote Run"
+  short_description: "Run jobs on Slurm clusters and GPU workstations"
+  default_prompt: "Use $remote-run to run this project on the appropriate Slurm cluster or GPU workstation."

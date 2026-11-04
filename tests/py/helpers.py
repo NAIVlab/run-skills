@@ -16,15 +16,16 @@ GIT_ENV = {"GIT_AUTHOR_NAME": "fixture", "GIT_AUTHOR_EMAIL": "fixture@example.in
 
 
 class ScratchHome(unittest.TestCase):
-    """Each test runs with HOME and RS_USER_DIR / RS_PACKS_DIR / RS_STATE_DIR / RS_HARNESS_ROOT / RS_SKILLS_ROOT in a
-    temp dir, so nothing reads or writes the real ~/.config/run-skills or ~/.agents."""
+    """Each test runs with HOME and RS_USER_DIR / RS_PACKS_DIR / RS_STATE_DIR / RS_HARNESS_ROOT / RS_SKILLS_ROOT /
+    CODEX_HOME / PI_HOME in a temp dir, so nothing reads or writes the real ~/.config/run-skills, ~/.agents, ~/.codex."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.home = Path(self._tmp.name)
         env = {"HOME": str(self.home), "RS_USER_DIR": str(self.home / "cfg"), "RS_PACKS_DIR": str(self.home / "cfg/packs"),
                "RS_STATE_DIR": str(self.home / "state"), "RS_HARNESS_ROOT": str(self.home / "harness"),
-               "RS_SKILLS_ROOT": str(self.home / "skills"), **GIT_ENV}
+               "RS_SKILLS_ROOT": str(self.home / "skills"), "CODEX_HOME": str(self.home / ".codex"),
+               "PI_HOME": str(self.home / ".pi/agent"), **GIT_ENV}
         self._env = mock.patch.dict(os.environ, env)
         self._env.start()
         for k in ("XDG_STATE_HOME", "PYTHONPATH"):

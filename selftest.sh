@@ -44,7 +44,7 @@ cat > "$PK/targets/fx-packed/profile.sh" <<'EOF'
 T_KIND=slurm; T_HOST=fxp; T_DESC='fixture pack cluster'; T_TRIGGERS='fxpacked'; T_DEFAULT_PARTITION=gpu
 T_DEFAULT_GPU_TYPE=any; T_MAXTIME=1-00:00:00; T_TMPDIR=project; T_COMPILE_CACHE=project
 EOF
-printf -- '- fixture pack routing rule\n' > "$PK/routing/hpc-run.md"
+printf -- '- fixture pack routing rule\n' > "$PK/routing/hpc-run.md"   # the legacy name: still honoured
 export RS_USER_DIR=$T_A/user RS_PACKS_DIR=$T_A/user/packs
 for f in "$RS_HOME"/tests/[0-9]*.sh; do run_section "A: $(basename "$f")" bash "$f"; done
 

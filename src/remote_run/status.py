@@ -123,7 +123,9 @@ def cmd_status(args: argparse.Namespace) -> int:
 DIGEST = r'''rs_digest() {
   case "$RDIR" in "~/"*) RDIR="$HOME/${RDIR#\~/}" ;; esac
   cd "$RDIR" 2>/dev/null || { echo "rsk logs: cannot cd to $RDIR"; return 66; }
-  [ -f "$DEPLOY/status.sh" ] || { echo "rsk logs: $RDIR/$DEPLOY/status.sh is not deployed (the deploy predates it) — sync the project first"; return 66; }
+  [ -f "$DEPLOY/status.sh" ] || { echo "rsk logs: $RDIR/$DEPLOY/status.sh is not deployed (the deploy predates it) — read the log" \
+    "bounded (rsk exec -T $TGT -- tail -c 20000 <log>) and re-sync only with the user's OK: a sync also pushes local code into the" \
+    "dir a running job reads"; return 66; }
   bash "$DEPLOY/status.sh" "$@"
 }
 rs_digest'''
@@ -133,7 +135,7 @@ def cmd_logs(args: argparse.Namespace) -> int:
     proj = project_dir(args.dir)
     place = select(harness.places(paths.harness_src(), proj), [args.target])[0]
     argv = ["-n", str(args.lines), args.run] + ([args.ckpt] if args.ckpt else [])
-    body = (f"RDIR={shlex.quote(place.remote_dir)} DEPLOY={shlex.quote(place.deploy)}\n"
+    body = (f"RDIR={shlex.quote(place.remote_dir)} DEPLOY={shlex.quote(place.deploy)} TGT={shlex.quote(place.target)}\n"
             + DIGEST + " " + " ".join(shlex.quote(a) for a in argv) + "\n")
     try:
         done = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=30", place.host, "bash -s"],

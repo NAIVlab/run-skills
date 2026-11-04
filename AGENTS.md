@@ -4,12 +4,12 @@ Guidance for Codex and other coding agents — and, via the `CLAUDE.md` symlink,
 
 ## What this repo is
 
-Two agent skills (`hpc-run`, `ws-run`) plus the bash harness they drive, shipped as the uv tool `remote-run` whose
-command `rsk` (`src/remote_run/`, standard library only, Python >= 3.11) installs and updates it; the README has the
-user-facing story, `INSTALL.md` the runbook an agent follows to install it for a user (shipped to the harness dir;
-tested by `70-docs`). MIT, public. Edit the clone only — the tool env, `~/.agents/run-skills` and
-`~/.agents/skills/{hpc-run,ws-run}` are generated (`uv tool install` + `rsk setup`, which runs `install.sh` from the
-wheel's copy of the harness). The reasons behind the constraints below: `docs/DESIGN.md`; target packs: `docs/packs.md`.
+One agent skill, `remote-run` (Slurm clusters + GPU workstations; it replaced the `hpc-run` / `ws-run` pair), plus the bash
+harness it drives, shipped as the uv tool `remote-run` whose command `rsk` (`src/remote_run/`, standard library only, Python
+>= 3.11) installs and updates it; the README has the user-facing story, `INSTALL.md` the runbook an agent follows to install
+it for a user (shipped to the harness dir; tested by `70-docs`). MIT, public. Edit the clone only — the tool env, `~/.agents/run-skills`
+and `~/.agents/skills/remote-run` are generated (`uv tool install` + `rsk setup`, which runs `install.sh` from the wheel's copy of the
+harness). The reasons behind the constraints below: `docs/DESIGN.md`; target packs: `docs/packs.md`.
 
 ## Commands
 
@@ -17,7 +17,7 @@ wheel's copy of the harness). The reasons behind the constraints below: `docs/DE
 bash selftest.sh           # the only test suite, offline (stubbed sbatch/sinfo/scontrol/squeue/ssh/uv/rsync): phase A =
                            # tests/NN-*.sh on fixture targets in a temp RS_USER_DIR; phase B = targets/*/tests.sh (+ the
                            # packs' and the overlay's tests{,.local}.sh). Prints "===== RESULT: N pass, M fail =====", exit M. Run after ANY edit.
-bash install.sh            # copy to ~/.agents/run-skills, ONE skill copy in ~/.agents/skills (+ ~/.claude/skills symlink), INDEX, forwarders, selftest
+bash install.sh            # copy to ~/.agents/run-skills, ONE skill copy in ~/.agents/skills (+ ~/.claude/skills symlink), INDEX, hpc-run/ws-run uninstalled, forwarders, selftest
 uv tool install --editable . && rsk setup   # the same through rsk, from this clone (edits are live; re-run setup after them)
 bash tests/pkg-wheel.sh    # NOT in selftest (uv + network once): wheel contents, uv tool install from git, setup, update, rollback
 ```
@@ -39,10 +39,10 @@ hardcode the check count.
 
 ### Three layers
 
-1. **`skills/<s>/SKILL.md`** (thin) + `references/`: `INDEX.md` (line 1 `root:` = harness dir, one row per target,
-   Routing rules; a stub that `install.sh` regenerates with `rs_gen_index`), `procedure-<kind>.md`, `conf-keys.md`,
-   `experiment-conventions.md` (run classes, naming, wandb mapping, checkpoint/resume) and `project-setup.md`
-   (onboarding an existing project) — ONE copy each, ws-run's are symlinks into hpc-run. The agent reads INDEX, then exactly one `targets/<t>/reference.md`.
+1. **`skills/remote-run/SKILL.md`** (thin, both kinds; reads via `rsk status/logs/exec` first) + `references/`: `INDEX.md` (line 1
+   `root:` = harness dir, one row per target with a `kind` column, Routing rules; a stub that `install.sh` regenerates with
+   `rs_gen_index`), `procedure-slurm.md` / `procedure-nohup.md`, `conf-keys.md` (both confs), `experiment-conventions.md` (run classes,
+   naming, wandb mapping, checkpoint/resume), `project-setup.md` (onboarding) — ONE copy each. The agent reads INDEX, then exactly one `targets/<t>/reference.md`.
 2. **Local:** `bin/run-sync`, `bin/run-pull`, `bin/run-bootstrap`, `bin/run-launch` + `lib/common.sh` (sourced; never deployed);
    `bin/run-avail` (free GPUs on every target before an open placement: one parallel read-only ssh each, one deadline);
    `bin/run-probe` (INSTALL.md's discovery: ssh hosts, one read-only BatchMode probe, wandb key state; `tests/85-probe.sh`);
@@ -73,8 +73,8 @@ An edit to `remote/*` reaches a project only after `install.sh` **and** a re-syn
 `rs_roots` (highest first) = `$RS_USER_DIR/targets/` (default `~/.config/run-skills/targets`) → each
 `$RS_PACKS_DIR/<pack>/targets/` (default `$RS_USER_DIR/packs`, glob order) → `$RS_HOME/targets/` (templates only).
 `rs_targets` = dirs with a `profile.sh` under any root, `_*` skipped, sorted unique; `rs_target_dir` = the first root
-that has one. A pack also contributes `routing/<skill>.md`, appended verbatim to the INDEX Routing section (as does
-`$RS_USER_DIR/routing/<skill>.md`). A user dir **with** `profile.sh` replaces a pack's target; one
+that has one. A pack (and `$RS_USER_DIR`) may add `routing/remote-run.md`, appended verbatim to the INDEX Routing section — else its
+legacy `routing/hpc-run.md` + `ws-run.md` (never required to rename), each rule under a kind lead-in (`rs_legacy_routing`). A user dir **with** `profile.sh` replaces a pack's target; one
 **without** extends it (`policy.local.sh` sourced by submit.sh after `policy.sh`, `reference.local.md` appended to
 the INDEX row, `tests.local.sh` in phase B). `rs_load_target` unsets every `T_*`, sources the profile, sets
 `T_NAME T_TAG T_DIR T_LOCAL_DIR`, validates `T_KIND`/`T_HOST`. Tag = `rs_tag NAME` (alnum only, uppercased:
@@ -142,10 +142,11 @@ a new partition needs a stub case. `mk_proj TARGET CONF` fakes a deploy from `rs
 
 ### One skill copy for Claude Code, Codex and pi
 
-`install.sh` installs each skill once into `$RS_SKILLS_ROOT` (default `~/.agents/skills/<s>/`, scanned natively by Codex
-0.149+ and pi) and symlinks `~/.claude/skills/<s>` to it; stale copies under `~/.codex/skills` / `~/.pi/agent/skills` go to
-`*.pre-v2` (a second copy is listed twice). One SKILL.md: `allowed-tools:` (Claude; accepted-and-ignored elsewhere) + `codex/<s>.openai.yaml`
-as `agents/openai.yaml` (Codex UI metadata). No sed over scripts. Skills reach the harness through INDEX's `root:` line; descriptions < 1024 chars, no `<>`, start with verbatim `T_TRIGGERS` (install prepends missing ones).
+`install.sh` installs the one skill into `$RS_SKILLS_ROOT` (default `~/.agents/skills/remote-run/`, scanned natively by Codex 0.149+
+and pi), symlinks `~/.claude/skills/remote-run` to it, and moves a copy under `~/.codex/skills` / `~/.pi/agent/skills` to `<root>.pre-v2/`
+(listed twice otherwise). The replaced `hpc-run` / `ws-run` leave all four roots: a link into the shared root, a dangling link or a
+copy install.sh generated in the shared root (`references/INDEX.md` line 1 `root:`) is removed, anything else moved to `<root>.pre-v2/` (`tests/75-install.sh`); `rsk doctor` FAILs while one is discoverable. One SKILL.md: `allowed-tools:` (Claude; accepted-and-ignored elsewhere) + `codex/remote-run.openai.yaml`
+as `agents/openai.yaml` (Codex UI metadata). No sed over scripts. The skill reaches the harness through INDEX's `root:` line; its description is < 1024 chars with every target's `T_TRIGGERS` prepended (install prepends missing ones; ship it < 870), no `<>`.
 
 ### Portability
 
@@ -168,8 +169,8 @@ The rails in `SKILL.md` / `procedure-*.md` / `experiment-conventions.md` (confir
 `scancel`/`kill` without OK, never create a conda env, never guess the remote dir, own wandb key only, smokes run
 `WANDB_MODE=disabled`, formal runs checkpoint + auto-resume, monitoring = bounded reviews, adaptive cadence, explicit wake-up capability, detect-only — its one exception is `run-watch --act` on user-approved rows within their budget) are the
 product — do not trim them. Facts live
-once: values in `profile.sh`, limits in `policy.sh`, prose in `reference.md`, keys in `conf-keys.md`. The INDEX stubs
-must equal `rs_gen_index` output with no targets (test `70-docs`): regenerate under bash into a temp file
+once: values in `profile.sh`, limits in `policy.sh`, prose in `reference.md`, keys in `conf-keys.md`. The INDEX stub
+must equal `rs_gen_index OUT ROOT` output with no targets (test `70-docs`): regenerate under bash into a temp file
 (`RS_USER_DIR=/nonexistent RS_PACKS_DIR=/nonexistent`, root `~/.agents/run-skills`; the generator copies Routing
 from the stub) and move it over.
 Every Slurm / wandb / bash fact written into a doc or script comes with a reproduction or a test — never from memory.
