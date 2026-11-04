@@ -123,7 +123,7 @@ check reuses it) is static on purpose (hand-built `.venv-foo` dirs must survive 
 ### policy.sh API (slurm; bash; sourced only by submit.sh)
 
 `t_partition NAME` sets `P_GPUS=min-max P_CPU_PER_GPU P_MEM_PER_GPU P_GTYPE P_GTYPE_DEFAULT P_PREEMPT P_MAXTIME
-P_CPU_ONLY P_NOTE` (submit.sh resets all to '' first), may `SB_ARGS+=(…)`, returns 1 for unknown. `t_policy`
+P_CPU_ONLY P_MEM_PER_CPU P_NOTE` (submit.sh resets all to '' first), may `SB_ARGS+=(…)`, returns 1 for unknown. `t_policy`
 (optional; every target should define it so an overlay can wrap it as `t_policy_shipped`) runs right after arg
 parsing with `PART PART_FROM_CLI NGPU GTYPE GTYPE_FROM_CLI TIME FORCE ACK T_FLAGS SB_ARGS SB_EXTRA NAME PROJ CLUSTER
 TAG` visible; its exit code propagates verbatim (3 = refusal; `-y` never unlocks it). Unknown `--word` flags land in

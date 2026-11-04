@@ -3,7 +3,8 @@
 #  t_partition NAME  (required) sets per-partition limits; submit.sh resets every P_* to '' before calling it:
 #     P_GPUS=min-max  P_CPU_PER_GPU=N  P_MEM_PER_GPU=G (numeric GB)  P_GTYPE=<gres type, forced>
 #     P_GTYPE_DEFAULT=<gres type used when -G was not given>  P_PREEMPT=1  P_MAXTIME=D-HH:MM:SS
-#     P_CPU_ONLY=1 (no gres; -c defaults 8, -m 4G per cpu)  P_NOTE='printed before submitting'
+#     P_CPU_ONLY=1 (no gres; -c defaults 8, -m P_MEM_PER_CPU GB per cpu, default 4 — keep it <= the partition's
+#     MaxMemPerCPU)  P_NOTE='printed before submitting'
 #     It may append sbatch flags (SB_ARGS+=(--nodelist=n1)) and must `return 1` for an unknown partition.
 #  t_policy          (optional) runs right after arg parsing, before t_partition, limits, MaxTime and sinfo.
 #     Reads PART PART_FROM_CLI NGPU GTYPE GTYPE_FROM_CLI TIME FORCE ACK T_FLAGS SB_ARGS SB_EXTRA NAME PROJ CLUSTER TAG;
