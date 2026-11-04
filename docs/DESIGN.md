@@ -65,7 +65,7 @@ conf, so a stale exported value can never masquerade as configuration.
 
 ## Containment (`remote/env.sh`)
 
-One `env.sh` serves both kinds. It is *sourced* — by the Slurm job wrapper, the bootstrap, the nohup launch chain,
+One `env.sh` serves both kinds. It is *sourced* — by the Slurm job wrapper, the bootstrap, the workstation `launch.sh`,
 project scripts and interactive shells — so it never uses `set -e` and must be zsh-safe. It:
 
 - pins blob caches (HuggingFace, torch, wandb), logs and checkpoints under the project;
@@ -100,6 +100,47 @@ guard (no nested `sbatch`/`srun`), a scan of `SBATCH_EXTRA` (no partition or for
 availability check with `sinfo` (busy → warning, `-y` to queue anyway), and finally `sbatch --requeue`.
 The job wrapper writes a header per start (`restart=N`) and an `EXIT rc=N` footer, and forwards Slurm's warning and
 termination signals to the trainer, so the log itself records how each attempt ended.
+
+## Submission records (the attempt journal)
+
+A submit is one ssh, and an ssh can die between "sbatch created the job" and "the caller read the job id". The remote
+side then keeps running (a non-pty session's command is not hung up) until its first write to the dead channel, which
+kills it with SIGPIPE — so a submit that printed as it went could create a job and die before recording it, and the
+caller could not tell "never submitted" from "submitted, id lost" (a retry then makes a duplicate). Hence the rule
+*decide and record first, print last*. Every `submit.sh` (and the workstation `launch.sh`) call claims
+`<PROJ>/.rs/attempts/<NONCE>/` with `mkdir` — atomic on the project filesystems, across login nodes too — writes all of
+its output to `out` / `err` there, writes a `receipt` (job id, name, partition, argv) as soon as the job exists and a
+`result` (stage, rc, verdict) on exit, and only then replays out/err to the caller. A dead caller costs nothing but the
+replay. `submit.sh` runs everything after the claim, the site's policy code included, in a subshell: a policy that sets
+its own EXIT trap, exits, or opens and closes descriptors cannot take the journal's trap or the caller's channels. The NONCE can come from the caller (`--rs-attempt`, a separate word so that an older `submit.sh` rejects it with
+exit 2 instead of submitting without a journal), which makes a retry idempotent: the same NONCE again is exit 75. Without
+it a NONCE is generated, so every existing caller gets a journal. The verdict is honest about what it cannot know:
+`unknown` when sbatch ran but no receipt could be written (sbatch may create a job and still return non-zero);
+`refused` only for an explicit rejection (a reply that timed out after the controller accepted the job is not one —
+the same rule `run-watch` follows). The job also carries `rs=<NONCE>` in its comment (squeue keeps comments everywhere;
+sacct does not, on some sites), so even an `unknown` attempt can be matched to a job later. The Slurm and ssh behaviour
+this relies on (mkdir as a claim across login nodes, the silent-vs-writing non-pty command, which repeated sbatch
+option wins, comment storage, what a requeue re-reads) was reproduced on the targets with `tests/vgate/`.
+
+A requeued job re-runs its stored batch script with the submit-time environment, but it re-reads `env.sh`, the profile
+and the conf from disk at each start — so a re-sync or an upgrade between submit and restart would silently change a
+running experiment. `submit.sh` therefore snapshots `conf`, the `ENV_HOOK`, `profile.sh` and `env.sh` into the attempt
+dir; `job.sbatch` sources that `env.sh`, and inside the job `env.sh` reads the other three from there, failing closed if
+one is missing or the attempt's receipt names another job (an inherited `RS_ATTEMPT` must never lend one job's
+snapshots to another). A submission from inside a job never inherits the parent's attempt (`submit.sh` unsets the
+`RS_*` it owns before anything else).
+
+Two more guards came with it. The conf is shell, and `submit.sh` used to source it in the shell that then ran the
+policy and `sbatch`: a conf defining `sbatch()` or changing `PATH` changed what was submitted. It is now sourced (after the
+profile, as `env.sh` sources it) in a child shell that hands back only the keys `submit.sh` reads, as NUL-separated
+data that is never evaluated. On a workstation the run starts in a fresh shell, so `launch.sh` hands it the conf's and
+the hook's plain variables that `RUN` names, in a mode-600 file the run deletes once read, captured after the harness's
+own exports (a plain `CUDA_VISIBLE_DEVICES` in the conf cannot move the run off its GPUs). And a second live job of the same name from the same
+project (a retry after a lost reply, an agent that forgot the first submit) would write the same logs and checkpoints:
+`submit.sh` refuses it (exit 6) unless the caller says `--same-name-ok` or the job is a singleton chain, which waits
+for its predecessor by design. `SBATCH_EXTRA` is linted (warnings only for now) against an allowlist, since options
+the harness sets itself (`--time`, `--mem`, …) are silently overridden by whichever comes last on the command line.
+`run-sync` writes a `MANIFEST` (sha256 of every deployed file) last, so a half-finished deploy is detectable.
 
 ## Monitoring (`remote/status.sh`)
 

@@ -2,7 +2,7 @@
 # tests/30-bootstrap.sh — phase A: remote/bootstrap.sh on the deployed fixtures (uv stub on PATH, never the
 # network): inherited sentinel neutralised, venv containment (in-project / ENV_ROOT / VENV_DIR accepted, /tmp
 # escape and a hook-moved root refused), BOOTSTRAP_HOOK instead of uv sync, no pyproject, owner-file mismatch,
-# conda gates. Run by selftest.sh with RS_HOME set:  bash tests/30-bootstrap.sh
+# conda gates, the attempt's snapshots as a Slurm job, a conf's T_ENV_ROOT never widening the guard.  bash tests/30-bootstrap.sh
 set -u
 . "$RS_HOME/tests/lib.sh"
 U=rstest$$
@@ -114,3 +114,24 @@ if [ "$RC" = 9 ]; then ok "ulimit -v not settable here (skipped)"; else
   O=$(vboot 33554432 TARGET=fx-slurm); hasnt "$O" 'NOTE: ulimit' "no NOTE at 32 GB"
 fi
 O=$(boot "$P" "$P/.fx-slurm" TARGET=fx-slurm); hasnt "$O" 'NOTE: ulimit' "no NOTE without a cap"
+
+echo "-- as a Slurm job (run-bootstrap --job): the attempt's snapshots; site T_* win over the conf --"
+BJ=$(mk_proj fx-slurm 'REMOTE_DIR=/x
+ENV_KIND=uv') || { bad "mk_proj attempt"; exit 1; }
+BA=$BJ/.rs/attempts/b1; mkdir -p "$BA"; cp "$BJ/.fx-slurm/profile.sh" "$BA/"; printf 'REMOTE_DIR=/x\nENV_KIND=none\n' > "$BA/conf"
+{ echo 'echo SNAPSHOT-ENV-SH >&2'; cat "$BJ/.fx-slurm/env.sh"; } > "$BA/env.sh"
+O=$(boot "$BJ" "$BJ/.fx-slurm" TARGET=fx-slurm SLURM_JOB_ID=7 RS_ATTEMPT=b1); RC=$?
+[ "$RC" = 0 ] && has "$O" 'ENV_KIND=none: no env to build' "in a job: the attempt's conf (ENV_KIND=none), not the live one (uv)" || { bad "attempt conf in a job (rc=$RC)"; echo "$O" | head -5 | sed 's/^/    | /'; }
+has "$O" 'SNAPSHOT-ENV-SH' "...and the attempt's env.sh snapshot"; hasnt "$O" 'NOTE: RS_ATTEMPT' "...without a NOTE"
+O=$(boot "$BJ" "$BJ/.fx-slurm" -u SLURM_JOB_ID TARGET=fx-slurm RS_ATTEMPT=b1); RC=$?
+[ "$RC" = 1 ] && has "$O" 'no pyproject.toml' "outside a job: the live conf (uv)" || bad "outside a job: live conf (rc=$RC)"
+has "$O" "NOTE: RS_ATTEMPT='b1' ignored" "...with a NOTE"; hasnt "$O" 'SNAPSHOT-ENV-SH' "...and the deployed env.sh"
+printf 'job=8\n' > "$BA/receipt"; O=$(boot "$BJ" "$BJ/.fx-slurm" TARGET=fx-slurm SLURM_JOB_ID=7 RS_ATTEMPT=b1); RC=$?
+[ "$RC" = 2 ] && has "$O" 'attempt b1 belongs to job 8, not 7' "a receipt naming another job -> exit 2" || bad "another job's receipt (rc=$RC)"
+printf 'job=7\n' > "$BA/receipt"; rm "$BA/conf"; O=$(boot "$BJ" "$BJ/.fx-slurm" TARGET=fx-slurm SLURM_JOB_ID=7 RS_ATTEMPT=b1); RC=$?
+[ "$RC" = 2 ] && has "$O" 'MISSING snapshot .*/b1/conf' "no conf snapshot -> exit 2 (never the live conf)" || bad "missing conf snapshot (rc=$RC)"
+printf 'REMOTE_DIR=/x\nENV_KIND=uv\nT_ENV_ROOT=/tmp\nENV_HOOK=hook.sh\n' > "$BJ/.hpc.conf"; : > "$BJ/pyproject.toml"
+printf 'export UV_PROJECT_ENVIRONMENT=/tmp/escaped-rs-venv\n' > "$BJ/hook.sh"
+O=$(boot "$BJ" "$BJ/.fx-slurm" TARGET=fx-slurm) && bad "a conf-set T_ENV_ROOT widened the guard" || has "$O" 'outside' "a conf that sets T_ENV_ROOT cannot widen the venv guard (the profile's T_* win)"
+[ -e /tmp/escaped-rs-venv ] && bad "no venv created outside \$PROJ" || ok "no venv created outside \$PROJ"
+rm -rf "/tmp/ray_$U-fx" "/tmp/ray_$U"

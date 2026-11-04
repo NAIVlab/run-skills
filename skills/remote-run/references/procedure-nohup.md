@@ -14,8 +14,8 @@ then `ENV_NAME`), `RUN`; full list in `conf-keys.md`. Missing → follow `projec
 TARGET=<t> bash $ROOT/bin/run-sync        # additive; -n dry-run; -D also delete remote files gone locally; --also <path>
 ```
 First line printed: `[<t>] remote: <host>:<dir>  tag: <TAG>  deploy: .ws`. Never deletes remote `.venv* .cache
-.local .config bin tmp wandb wandb-artifacts logs run_logs ckpts checkpoints runs outputs videos data .wandb_env`
-or any `.<target>/` dir. Pushes the conf, the profile and your wandb key file as `.wandb_env` (mode 600).
+.local .config bin tmp wandb wandb-artifacts logs run_logs ckpts checkpoints runs outputs videos data .wandb_env .rs`
+(the launch journal) or any `.<target>/` dir. Pushes the conf, the profile and your wandb key file as `.wandb_env` (mode 600).
 With a transfer host (`T_XFER_HOST`) it prints `transfer host: <xfer>` and ends `sync done -> … ; files via <xfer>`.
 Every sync stamps `<REMOTE_DIR>/.run-source` (local path, host, branch, commit, dirty-file count, time; never pruned):
 it prints `[<t>] source: <branch>@<commit> dirty=N`, and every run sees it as `$RS_SOURCE_COMMIT` (env.sh). A remote
@@ -53,15 +53,28 @@ checkpoint dir even when its attempt suffix changes; confirm that resume behavio
 
 ## 4. Launch (nohup, detached)
 ```
-TARGET=<t> bash $ROOT/bin/run-launch [-d 0,1 | -n <count>] [-N <name>] -- <RUN>
+TARGET=<t> bash $ROOT/bin/run-launch [-d 0,1 | -n <count>] [-N <name>] [--same-name-ok] -- <RUN>
 ```
 `-d ids` uses exactly those GPUs (bypasses `GPU_EXCLUDE`); `-n N` picks the N idlest, skipping `GPU_EXCLUDE` (default
 `DEFAULT_NGPU`, 1; positive integer; fewer than N ids left is a hard error, never a silent smaller world size); `-N`
 names the run (default `JOB_NAME`, else the remote dir's basename); without `--`, `RUN` from the conf is used; `NICE` (0-19)
-applies `nice -n`. Over ONE ssh: `cd` project → `export PROJ TARGET` → `. .ws/env.sh` → refuse unless `RUN_ENV_READY=$PROJ`
-and `python` *is* `$RS_VENV (uv only)/bin/python` (`uv venv not active (run: … run-bootstrap)`) or the conda env is active →
-`nohup env CUDA_VISIBLE_DEVICES=<ids> PYTHONUNBUFFERED=1 <RUN> > logs/<name>-<timestamp>.log 2>&1 &`; it prints
-`[<t>] started PID … ; log …` + a `verify:` line. Report PID + log path. Address GPUs as `cuda:0…` in the program.
+applies `nice -n`. It prints the GPU table (one read-only ssh), then ONE ssh runs the deployed `.ws/launch.sh`: claim
+`<project>/.rs/attempts/<NONCE>/` (printed `attempt: .rs/attempts/<NONCE>`) → refuse a run of the same name from this
+project that is still alive (exit 6; `--same-name-ok` runs both — only with the user's OK) → GPU ids checked against
+`nvidia-smi` (`CUDA_VISIBLE_DEVICES=<ids>` + `CUDA_DEVICE_ORDER=PCI_BUS_ID`; UUIDs in the receipt) → `. .ws/env.sh`, refuse unless
+`RUN_ENV_READY=$PROJ` and `python` *is* `$RS_VENV (uv only)/bin/python` (`uv venv not active (run: … run-bootstrap)`) or
+the conda env is active → start `<RUN>` detached (`setsid` + `nohup`, `PYTHONUNBUFFERED=1`) into
+`logs/<name>-<timestamp>.log`; it prints `[<t>] started PID … ; log …` + a `verify:` line. Report PID + log path.
+Address GPUs as `cuda:0…` in the program. Exit: 0 launched, 1 failed (env gate, nvidia-smi, start), 2 usage, 6 same
+name alive, 75 that attempt already ran, 255 ssh.
+
+launch.sh records before it prints: the attempt dir holds `out`/`err` (every line it printed), `stage`, `result`
+(`stage= rc= verdict=launched|refused|failed`) and `receipt` (`pid pgid start boot_id gpus log name nonce at`); the run
+starts only once its receipt exists. **ssh died mid-launch (exit 255, a NOTE names the attempt): never relaunch blind** —
+read `ssh <host> "cat ~/<WS_REMOTE_DIR>/.rs/attempts/<NONCE>/result"`: `verdict=launched` = it runs (its `receipt` names
+the log); no file = not started or still starting (read again shortly). A retry with `--rs-attempt <NONCE>` can never
+launch twice (exit 75 = that attempt already ran). A launch of the same name within the same second finds its log name
+taken (exit 2): retry.
 
 ## 5. Monitor / manage — start reviews with a bounded digest; cadence, milestones, detect-only: `experiment-conventions.md` §7
 ```
@@ -70,20 +83,23 @@ ssh <host> "bash ~/<WS_REMOTE_DIR>/.ws/status.sh logs/<name>-<timestamp>.log [<c
 ssh <host> "bash ~/<WS_REMOTE_DIR>/.ws/status.sh -n 40 logs/<name>-<timestamp>.log"          # deep read on an anomaly: 40 lines × 200 chars, still byte-bounded
 ssh <host> "nvidia-smi --query-gpu=index,uuid,utilization.gpu,memory.used --format=csv,noheader; nvidia-smi --query-compute-apps=pid,gpu_uuid,used_memory --format=csv,noheader"   # join on the uuid
 ```
-`status.sh` takes the PID from `<log>.pid` (written by `run-launch` beside the log, so a later session finds the run
-without the launch output) and reports `proc=alive pid= etime= cpu= cmd=`, `gone`, `zombie`, or `unknown` (ps failed, or the process is
+`status.sh` takes the PID from `<log>.pid` (written beside the log by the run's wrapper — the process-group leader —
+so a later session finds the run without the launch output) and reports `proc=alive pid= etime= cpu= cmd=`, `gone`, `zombie`, or `unknown` (ps failed, or the process is
 much younger than the launch: a reused pid or clock skew — never assumed to be the run). Then the log: size/age, `scan=full|partial hints: …` counted over the
 last 256 KiB (hints, not diagnoses; `partial` = older bytes were not scanned, so 0 is not "no errors"), `last_hint=`,
 `wandb=`, the last lines (CR-normalised, 200 chars each) and, given a ckpt dir, `ckpt_entry` + its age. This is directory
 activity, possibly a temporary save or metadata; `resume=unverified` requires trainer evidence (conventions §6).
 Never read a log unbounded (`cat`, `tail -n`, `grep` over the whole file): bound the input by bytes first. No
 `.ws/status.sh` on the box = the deploy predates it: say so, read bounded (`tail -c 20000 <log> | tr '\r' '\n'`), and
-re-sync only with the user's OK (a sync also pushes local code). The log holds
-only the trainer's own output (no harness header) and nothing records an exit status: `proc=gone` + the last lines + the final
-artifact ARE the evidence (a normal end shows the trainer's own final line). Idle = ALL of the run's GPUs under ~5 % util
+re-sync only with the user's OK (a sync also pushes local code). The log opens
+with a harness header (`[<date>] target=<t> job=<pid> restart=0 attempt=<NONCE> gpus=<ids>`) and ends with
+`[<date>] EXIT rc=N term=0|1 …`; `<log>.rc` holds `rc= term= at=` (`term=1`: stopped by TERM/INT, rc 143; rc 125: never
+started, its launch was not confirmed). The footer is the exit record even where status.sh says `exit=unknown`; a run
+launched before launch.sh existed has neither: there `proc=gone` + the last lines + the final artifact ARE the evidence. Idle = ALL of the run's GPUs under ~5 % util
 AND the log not advancing across two checks — never one sample. A nohup'd run survives ssh disconnect, not a reboot:
 relaunch with the next `a<attempt>` (conventions §3) and confirm it resumed. **Never `kill` a process without explicit approval**; after an
-OK: `ssh <host> "kill <pid>"`.
+OK: `ssh <host> "kill <pid>"` (the `<log>.pid` wrapper: it forwards TERM to the run once and records `term=1`), and only if
+the run's group outlives that, `ssh <host> "kill -- -<pid>"` (the whole process group).
 
 **Many runs or long waits: `run-watch`** (cwd = project root; `bin/run-watch` header = the contract). A table
 `#@ run-watch v1` lists rows `name target done-path -` (the name = the log prefix `logs/<name>-<timestamp>.log`). Each
@@ -115,7 +131,7 @@ matplotlib); a profile may move env state (`T_ENV_ROOT`/`T_TMPDIR`/`T_COMPILE_CA
 stays node-local (socket path limit). `PATH` starts with the venv's `bin`, so bare `python` is the project's. Exported
 for scripts: `TARGET`, `WS_TAG=<tag, lowercase>` (never `CLUSTER`), `RS_TARGET`, `RS_KIND=nohup`, `RS_CUDA_ARCH`,
 `RS_ENV_ROOT`, `RS_VENV`, `ENV_NAME`; `ENV_HOOK` is sourced last. Sentinel `RUN_ENV_READY=$PROJ` (+ `WS_ENV_READY`)
-is exported only when every step succeeded; the launch chain refuses without it.
+is exported only when every step succeeded; launch.sh refuses without it.
 
 ## Safety rails (every time)
 - Files move only through `run-sync` / `run-pull` (the target's transfer host, if any); no hand-rolled `rsync`/`scp`.

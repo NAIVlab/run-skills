@@ -8,6 +8,8 @@
 # Every sync stamps <REMOTE_DIR>/.run-source (local path, branch, commit, dirty count) — the code's provenance for jobs
 # (env.sh exports RS_SOURCE_COMMIT; job.sbatch logs it). A remote dir last synced from ANOTHER local checkout (a second
 # worktree pointing at the same REMOTE_DIR) is refused, since this sync would overwrite its code: --take-over moves it here.
+# The deploy dir gets a MANIFEST (sha256 of each deployed file), written last; <REMOTE_DIR>/.rs/ (submit.sh's attempt
+# journal) is excluded like the outputs, so -D never prunes it.
 # Ownership is the local path alone (host is recorded for the message): clones at the same path on two machines pass.
 # CLUSTER= / STATION= are accepted as aliases of TARGET= (v1 forwarders rely on that).
 set -euo pipefail
@@ -90,6 +92,10 @@ if [ -n "$DRY" ]; then echo "[$T_NAME] (dry) would push ./$CONF -> $RDIR/$CONF";
 if [ -z "$DRY" ]; then   # chmod the deploy; drop v1 leftovers (cluster.sh/station.sh/run.sh) so only v2 files sit next to env.sh
   ssh "$HOST" "chmod +x '$RDIR/$DEPLOY/'*.sh '$RDIR/$DEPLOY/'job.sbatch 2>/dev/null; rm -f '$RDIR/$DEPLOY/'cluster.sh '$RDIR/$DEPLOY/'station.sh '$RDIR/$DEPLOY/'run.sh; true"
 fi
+# MANIFEST (`<sha256>  <file>` of every deployed file, profile.sh as deployed), written LAST: a deploy dir whose files
+# do not match it was not completed by a sync
+rs_manifest "${FILES[@]}" "$TMP/profile.sh" > "$TMP/MANIFEST" || die "could not hash the deploy files (MANIFEST)"
+if [ -n "$DRY" ]; then echo "[$T_NAME] (dry) would write $RDIR/$DEPLOY/MANIFEST"; else rsync -a "$TMP/MANIFEST" "$XHOST:$RDIR/$DEPLOY/MANIFEST"; fi
 
 # 3) wandb secret (mode 600): the project's own .wandb_env wins, else the central one (see rs_wandb_env_file)
 WBENV=$(rs_wandb_env_file)

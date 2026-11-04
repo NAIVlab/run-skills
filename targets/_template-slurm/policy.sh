@@ -11,6 +11,7 @@
 #     may rewrite SB_ARGS/PART/GTYPE or exit — its exit code propagates verbatim (use 3 for a policy refusal).
 #     Must end with `return 0`: its status is the verdict, so a trailing failed `&&` test would abort the submit.
 #     ACK=1 when an unknown --*-user-asked flag was passed; other unknown --flags are collected in T_FLAGS.
+# submit.sh runs this code in a subshell after its journal claim: an EXIT trap or fds set here stay there (3/4 are closed).
 # An overlay ~/.config/run-skills/targets/<name>/policy.local.sh extends the shipped policy by wrapping t_policy:
 #   eval "$(declare -f t_policy | sed '1s/^t_policy/t_policy_shipped/')"
 #   t_policy() { [ "$PART" = vip ] && { echo "REFUSED: vip is policy-gated" >&2; exit 3; }; t_policy_shipped; }

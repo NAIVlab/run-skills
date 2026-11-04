@@ -1,13 +1,17 @@
 #!/bin/bash
 # run-skills remote/job.sbatch — generic batch script (requeue-aware; forwards the time-limit USR1, records TERM). Submitted by <REMOTE_DIR>/.<target>/submit.sh,
-# which sets resources (partition/gres/cpus/mem/time/name) on the sbatch CLI and exports PROJ + CLUSTER/TARGET. The run
-# command is passed as ARGUMENTS after the script name. Sources ../.<target>/env.sh and fails closed unless env.sh
-# completed (RUN_ENV_READY) and the requested env (uv venv | conda env; none = nothing to check) actually exists.
+# which sets resources (partition/gres/cpus/mem/time/name) on the sbatch CLI and exports PROJ + CLUSTER/TARGET + RS_ATTEMPT. The
+# run command is passed as ARGUMENTS after the script name. Sources the attempt's env.sh snapshot (.rs/attempts/<NONCE>/), else
+# ../.<target>/env.sh, and fails closed unless env.sh completed (RUN_ENV_READY) and the requested env (uv venv | conda env) exists.
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --requeue
 #SBATCH --open-mode=append
 #SBATCH --signal=B:USR1@120
 
+_rs_a=${RS_ATTEMPT:-}; _rs_an=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789   # NONCE = [A-Za-z0-9][A-Za-z0-9._-]{0,63}
+case "$_rs_a" in [$_rs_an]*) case "$_rs_a" in *[!$_rs_an._-]*) _rs_a="" ;; esac ;; *) _rs_a="" ;; esac
+[ "${#_rs_a}" -le 64 ] || _rs_a=""; _rs_l=${_rs_a:-none}; [ -n "$_rs_a" ] || [ -z "${RS_ATTEMPT:-}" ] || _rs_l=invalid
+echo "[$(date)] rs-attempt=$_rs_l job=${SLURM_JOB_ID:-} restart=${SLURM_RESTART_COUNT:-0}"   # before env.sh: a job it refuses still names its attempt
 set -uo pipefail
 : "${PROJ:?PROJ not set — submit via <REMOTE_DIR>/.<target>/submit.sh}"
 CLUSTER="${CLUSTER:-${TARGET:-}}"; export CLUSTER TARGET="$CLUSTER"
@@ -16,8 +20,9 @@ cd "$PROJ"
 # Drop any sentinel/conda state inherited via sbatch --export=ALL (e.g. env.sh sourced interactively in the submit
 # shell) so the fail-closed gates below judge THIS job's env.sh run.
 unset RUN_ENV_READY HPC_ENV_READY WS_ENV_READY CONDA_DEFAULT_ENV 2>/dev/null || true
-# shellcheck disable=SC1091
-set +u; source "$PROJ/.$CLUSTER/env.sh"; set -u
+_rs_e="$PROJ/.$CLUSTER/env.sh"; [ -z "$_rs_a" ] || [ ! -f "$PROJ/.rs/attempts/$_rs_a/env.sh" ] || _rs_e="$PROJ/.rs/attempts/$_rs_a/env.sh"
+# shellcheck disable=SC1090
+set +u; source "$_rs_e"; set -u
 
 # Fail closed (1): env.sh exports RUN_ENV_READY=$PROJ as its LAST line — a partial sync / bad conf would otherwise
 # run with caches escaping to $HOME. (An explicit sentinel, so a project ENV_HOOK may legitimately override HF_HOME.)
@@ -47,11 +52,11 @@ trap on_usr1 USR1; trap on_term TERM
 # vLLM V1 uses a CuMem pool; don't combine expandable_segments with it (override before the run command if needed).
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-max_split_size_mb:128}"
 
-echo "[$(date)] target=$CLUSTER job=${SLURM_JOB_ID:-?} restart=${SLURM_RESTART_COUNT:-0} node=${SLURM_NODELIST:-?} cpus=${SLURM_CPUS_ON_NODE:-?} gpus=${SLURM_JOB_GPUS:-${CUDA_VISIBLE_DEVICES:-?}}"
+echo "[$(date)] target=$CLUSTER job=${SLURM_JOB_ID:-?} restart=${SLURM_RESTART_COUNT:-0} node=${SLURM_NODELIST:-?} cpus=${SLURM_CPUS_ON_NODE:-?} gpus=${SLURM_JOB_GPUS:-${CUDA_VISIBLE_DEVICES:-?}} attempt=${RS_ATTEMPT:-none}"
 [ ! -f "$PROJ/.run-source" ] || echo "[$(date)] source: $(awk -F= '$1 ~ /^(branch|commit|dirty|synced)$/ {printf "%s=%s ", $1, substr($0, length($1) + 2)}' "$PROJ/.run-source")(run-sync stamp)"; nvidia-smi -L 2>/dev/null || true
 
 [ "$#" -gt 0 ] || { echo "ERROR: no run command passed to job.sbatch" >&2; exit 2; }
-[ "$term" = 0 ] || { echo "[$(date)] EXIT rc=143 usr1=$usr1 term=$term (TERM before the trainer started)"; exit 143; }
+[ "$term" = 0 ] || { echo "[$(date)] EXIT rc=143 usr1=$usr1 term=$term job=${SLURM_JOB_ID:-?} restart=${SLURM_RESTART_COUNT:-0} (TERM before the trainer started)"; exit 143; }
 echo "[$(date)] RUN: $*"
 "$@" &
 child=$!; [ "$usr1" != pending ] || { usr1=0; on_usr1; }; [ "$term" != pending ] || { term=0; on_term; }   # replay pre-launch signals

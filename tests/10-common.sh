@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # tests/10-common.sh — phase A: lib/common.sh helpers against the fixture overlay (RS_USER_DIR=$T_A/user):
 # rs_tag, discovery (overlay > pack > shipped precedence, extension dirs, _* skipped), ovr precedence, conf loading, remote-dir
-# resolution, deploy file list, the conf linter on real-conf shapes, wandb_env lookup, rs_gen_index rows.
+# resolution, deploy file list (launch.sh for nohup), the reserved 'rs' name, /.rs/ exclude, MANIFEST hashing (sha256sum,
+# else shasum), the conf linter on real-conf shapes, wandb_env lookup, rs_gen_index rows.
 # Run by selftest.sh with RS_HOME set:  bash tests/10-common.sh
 set -u
 . "$RS_HOME/tests/lib.sh"
@@ -98,6 +99,26 @@ has "$O" '/remote/status.sh$' "nohup deploys status.sh"
 hasnt "$O" 'submit.sh\|job.sbatch\|policy' "nohup deploys nothing slurm-ish"
 cp -R "$RS_USER_DIR" "$T/user2"; : > "$T/user2/targets/fx-slurm/policy.local.sh"
 has "$(RS_USER_DIR=$T/user2 C 'rs_load_target fx-slurm; rs_deploy_files')" "^$T/user2/targets/fx-slurm/policy.local.sh$" "policy.local.sh deployed when present"
+has "$O" "^$RS_HOME/remote/launch.sh$" "nohup deploys remote/launch.sh"
+hasnt "$(C 'rs_load_target fx-slurm; rs_deploy_files')" 'launch' "slurm never deploys launch.sh"
+
+echo "-- the .rs/ attempt journal: reserved name, never synced or pruned; MANIFEST hashing --"
+O=$(C 'rs_load_target rs'); RC=$?
+[ "$RC" = 2 ] && has "$O" "target name 'rs' is reserved" "a target named rs is refused (it would deploy to .rs/)" || bad "target rs refused (rc=$RC)"
+mkdir -p "$OV/targets/rs"; printf 'T_KIND=slurm\nT_HOST=h\n' > "$OV/targets/rs/profile.sh"
+O=$(RS_HOME=$FH RS_USER_DIR=$OV C 'rs_load_target rs'); RC=$?; rm -rf "$OV/targets/rs"
+[ "$RC" = 2 ] && has "$O" 'reserved' "...even with a profile.sh on disk" || bad "target rs with a profile refused (rc=$RC)"
+has "$(C 'rs_load_target fx-slurm; rs_sync_excludes')" '^/\.rs/$' "rs_sync_excludes anchors /.rs/ (run-sync -D never prunes the journal)"
+printf abc > "$T/abc"; ABC=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad   # sha256("abc"), FIPS 180-2 test vector
+has "$(C 'rs_sha256 "$T/abc"')" "^$ABC\$" "rs_sha256 = the FIPS 180-2 digest of 'abc'"
+mkdir -p "$T/shabin"; printf '#!/bin/sh\n[ "$1 $2" = "-a 256" ] || exit 9\nexec %s\n' "$(command -v sha256sum || echo false)" > "$T/shabin/shasum"; chmod +x "$T/shabin/shasum"
+if command -v sha256sum >/dev/null 2>&1; then
+  has "$(PATH=$T/shabin C 'rs_sha256 "$T/abc"')" "^$ABC\$" "rs_sha256 falls back to shasum -a 256 (macOS) when sha256sum is absent"
+fi
+O=$(PATH=$T/nobin C 'rs_sha256 "$T/abc"'); [ $? = 2 ] && has "$O" 'neither sha256sum nor shasum' "no hashing tool -> exit 2 with the reason" || bad "no hashing tool -> exit 2"
+mkdir -p "$T/m d"; printf abc > "$T/m d/x.sh"
+has "$(C 'rs_manifest "$T/abc" "$T/m d/x.sh"')" "^$ABC  abc\$" "rs_manifest: '<sha256>  <basename>' per file"
+[ "$(C 'rs_manifest "$T/abc" "$T/m d/x.sh"' | wc -l | tr -d ' ')" = 2 ] && ok "rs_manifest: one line per file (a dir with a space is fine)" || bad "rs_manifest: one line per file"
 
 echo "-- rs_lint_conf --"
 cat > "$T/lint.hpc" <<'EOF'

@@ -1,8 +1,9 @@
 # run-skills remote/env.sh — ONE containment env for both kinds (slurm + nohup). Deployed as
 # <REMOTE_DIR>/.<target>/env.sh (slurm) or .ws/env.sh (nohup) and SOURCED on the remote by job.sbatch,
-# bootstrap.sh, the nohup launch chain, project scripts and interactive shells (bash or zsh).
+# bootstrap.sh, launch.sh (nohup), project scripts and interactive shells (bash or zsh).
 #   export PROJ=<remote project dir> [TARGET=<name>|CLUSTER=<name>]; . $PROJ/.<target>/env.sh
-# Reads <deploy dir>/profile.sh (T_* storage policy) + .hpc.conf/.ws.conf, pins caches/tmp/venv per that policy,
+# Reads <deploy dir>/profile.sh (T_* storage policy) + .hpc.conf/.ws.conf (in a Slurm job with RS_ATTEMPT: the attempt's
+# submit-time snapshots in .rs/attempts/<NONCE>/; site T_* win over the conf), pins caches/tmp/venv per that policy,
 # activates uv|conda (none: the payload brings its own runtime, e.g. a container), sources ENV_HOOK last, then exports RUN_ENV_READY=$PROJ (+ HPC_/WS_ENV_READY).
 # zsh-safe: no arrays, [[ ]], ${var^^}, ${!var}, BASH_SOURCE. Never set -e; every failure withholds READY.
 # Scratch state is _rs_-prefixed and unset at the end: only the documented exports reach the caller's shell.
@@ -11,8 +12,22 @@ _rs_path() { printf %s "$1" | sed -e "s|\\\${HOME}|$HOME|g" -e "s|\\\$HOME|$HOME
 _rs_env() {
   # 1. target -> deploy dir (.<target>/, else .ws/) -> profile -> conf
   : "${PROJ:?export PROJ=<remote project dir> before sourcing env.sh}"
-  TARGET=${TARGET:-${CLUSTER:-}}; _rs_d=$PROJ/.ws; _rs_alt=""
-  if [ -n "$TARGET" ]; then
+  TARGET=${TARGET:-${CLUSTER:-}}; _rs_d=$PROJ/.ws; _rs_alt=""; _rs_snap=""
+  # 0. inside a Slurm job whose submit.sh exported a valid RS_ATTEMPT: profile, conf and hook are the attempt's submit-time
+  #    snapshots (<PROJ>/.rs/attempts/<NONCE>/), never the live files — a missing snapshot or another job's receipt fails
+  if [ -n "${RS_ATTEMPT:-}" ]; then
+    _rs_an=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789   # NONCE = [A-Za-z0-9][A-Za-z0-9._-]{0,63}
+    case "$RS_ATTEMPT" in [$_rs_an]*) case "$RS_ATTEMPT" in *[!$_rs_an._-]*) _rs_snap=- ;; esac ;; *) _rs_snap=- ;; esac
+    if [ -z "$_rs_snap" ] && [ "${#RS_ATTEMPT}" -le 64 ] && [ -n "${SLURM_JOB_ID:-}" ] && [ -d "$PROJ/.rs/attempts/$RS_ATTEMPT" ]; then
+      _rs_snap=$PROJ/.rs/attempts/$RS_ATTEMPT; _rs_d=$_rs_snap
+    else echo "env.sh: NOTE: RS_ATTEMPT='$RS_ATTEMPT' ignored (not a Slurm job's valid attempt dir) — using the deployed files" >&2
+      unset RS_ATTEMPT; _rs_snap=""; fi
+  fi
+  if [ -n "$_rs_snap" ]; then
+    _rs_j=""; [ ! -f "$_rs_snap/receipt" ] || _rs_j=$(sed -n 's/^job=//p' "$_rs_snap/receipt" | head -n 1)
+    [ ! -f "$_rs_snap/receipt" ] || [ "$_rs_j" = "$SLURM_JOB_ID" ] || { _rs_fail "attempt $RS_ATTEMPT belongs to job ${_rs_j:-?}, not $SLURM_JOB_ID (its snapshots are that job's)"; return 1; }
+    [ -f "$_rs_snap/profile.sh" ] || { _rs_fail "MISSING snapshot $_rs_snap/profile.sh"; return 1; }
+  elif [ -n "$TARGET" ]; then
     if [ -d "$PROJ/.$TARGET" ]; then _rs_d=$PROJ/.$TARGET; else _rs_alt=" (no $PROJ/.$TARGET/ either)"; fi; fi
   [ -f "$_rs_d/profile.sh" ] || { _rs_fail "MISSING $_rs_d/profile.sh$_rs_alt (partial sync?)"; return 1; }
   . "$_rs_d/profile.sh" || { _rs_fail "FAILED sourcing $_rs_d/profile.sh"; return 1; }
@@ -21,8 +36,12 @@ _rs_env() {
   [ -z "${T_NAME:-}" ] || [ "$T_NAME" = "$TARGET" ] || { _rs_fail "$_rs_d/profile.sh is for target '$T_NAME', not '$TARGET'"; return 1; }
   case "${T_KIND:-}" in slurm) _rs_conf=$PROJ/.hpc.conf ;; nohup) _rs_conf=$PROJ/.ws.conf ;;
     *) _rs_fail "T_KIND='${T_KIND:-}' in $_rs_d/profile.sh must be slurm|nohup"; return 1 ;; esac
+  if [ -n "$_rs_snap" ]; then _rs_conf=$_rs_snap/conf; [ -f "$_rs_conf" ] || { _rs_fail "MISSING snapshot $_rs_conf"; return 1; }; fi
   [ -f "$_rs_conf" ] || { _rs_fail "MISSING $_rs_conf (partial sync?)"; return 1; }
   . "$_rs_conf" || { _rs_fail "FAILED sourcing $_rs_conf (unquoted spaces?)"; return 1; }
+  # the site's T_* win over a conf that sets them: drop every T_* read below, then the profile again
+  unset T_KIND T_NAME T_SUFFIX T_CUDA_ARCH T_ENV_ROOT T_TMPDIR T_COMPILE_CACHE T_CUDA_HOME T_CONDA_INIT
+  . "$_rs_d/profile.sh" || { _rs_fail "FAILED re-sourcing $_rs_d/profile.sh"; return 1; }
   # 2. identity exports: CLUSTER (slurm) xor WS_TAG (nohup), never both
   _rs_user=${USER:-$(id -un)}
   _rs_tag=$(printf %s "$TARGET" | tr -cd '[:alnum:]' | tr '[:lower:]' '[:upper:]')
@@ -102,12 +121,13 @@ _rs_env() {
     || { _rs_fail "mkdir failed under $_rs_cc (quota/perms?)"; return 1; }
   # 10. project hook, sourced LAST so it may override anything above (branch on RS_TARGET/RS_CUDA_ARCH inside)
   if [ -n "${ENV_HOOK:-}" ]; then
-    [ -f "$PROJ/$ENV_HOOK" ] || { _rs_fail "ENV_HOOK '$ENV_HOOK' not found under $PROJ"; return 1; }
-    . "$PROJ/$ENV_HOOK" || { _rs_fail "FAILED sourcing ENV_HOOK '$ENV_HOOK'"; return 1; }
+    if [ -n "$_rs_snap" ]; then _rs_h=$_rs_snap/hook; [ -f "$_rs_h" ] || { _rs_fail "MISSING snapshot $_rs_h (ENV_HOOK '$ENV_HOOK')"; return 1; }
+    else _rs_h=$PROJ/$ENV_HOOK; [ -f "$_rs_h" ] || { _rs_fail "ENV_HOOK '$ENV_HOOK' not found under $PROJ"; return 1; }; fi
+    . "$_rs_h" || { _rs_fail "FAILED sourcing ENV_HOOK '$ENV_HOOK'"; return 1; }
   fi
 }
 _rs_env || return 1 2>/dev/null || exit 1
-unset _rs_d _rs_alt _rs_conf _rs_tag _rs_suf _rs_root _rs_pname _rs_state _rs_cc _rs_local _rs_venv _rs_user
+unset _rs_d _rs_alt _rs_conf _rs_tag _rs_suf _rs_root _rs_pname _rs_state _rs_cc _rs_local _rs_venv _rs_user _rs_snap _rs_j _rs_h _rs_an
 # 11. sentinels — only reached when every step above succeeded (consumers unset them before sourcing)
 export RUN_ENV_READY="$PROJ"
 if [ "$RS_KIND" = slurm ]; then export HPC_ENV_READY="$PROJ"; else export WS_ENV_READY="$PROJ"; fi

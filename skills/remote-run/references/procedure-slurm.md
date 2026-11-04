@@ -4,7 +4,7 @@
 dropped: `my-hpc` → `MYHPC_`); `<host>` = its ssh alias from the table. Run everything with the **project root as cwd**
 (where `.hpc.conf` lives). `TARGET=<t>` selects the target for the local commands (`CLUSTER=<t>` is accepted too).
 The deployed copy of the harness lives at `<REMOTE_DIR>/.<t>/` — `env.sh status.sh submit.sh job.sbatch bootstrap.sh
-profile.sh [policy.sh policy.local.sh]` — and is refreshed by every sync.
+profile.sh MANIFEST [policy.sh policy.local.sh]` — and is refreshed by every sync (`MANIFEST`, the sha256 of each file, last).
 
 ## 0. `.hpc.conf` — the only per-project state
 Sourced as shell: values with spaces MUST be double-quoted or sync/submit abort. Minimum: `REMOTE_DIR` (absolute
@@ -19,7 +19,7 @@ TARGET=<t> bash $ROOT/bin/run-sync        # additive; -n dry-run; -D also delete
 First line printed: `[<t>] remote: <host>:<dir>  tag: <TAG>  deploy: .<t>` — check it on a new project (use `-n`). With a
 transfer host it also prints `transfer host: <xfer>` and ends `sync done -> … ; files via <xfer>`.
 Never deletes remote `.venv* .cache .local .config bin tmp wandb wandb-artifacts logs run_logs ckpts checkpoints runs
-outputs videos data .wandb_env` or any `.<target>/` dir; `EXTRA_EXCLUDES` adds patterns, `SYNC_ALSO` force-pushes
+outputs videos data .wandb_env .rs` or any `.<target>/` dir (`.rs/` = the submit journal, below; `run-pull` refuses it too); `EXTRA_EXCLUDES` adds patterns, `SYNC_ALSO` force-pushes
 excluded paths. Also pushes the conf, the profile, and your wandb key file as `<REMOTE_DIR>/.wandb_env` (mode 600),
 and warns `WARN: … is not honoured` for a `<TAG>_KEY` line whose KEY is not prefixable.
 Every sync stamps `<REMOTE_DIR>/.run-source` (local path, host, branch, commit, dirty-file count, time; never pruned):
@@ -74,9 +74,21 @@ target's `t_policy` (a refusal propagates its exit code, typically 3, and `-y` d
 partition and `-g` range, rejects a `-t` beyond the partition MaxTime (`exceeds … MaxTime` = it would pend forever; lower `-t`),
 rejects a payload that calls `sbatch/srun/salloc` and an `SBATCH_EXTRA` carrying `-p/--partition` or a forbidden QOS,
 prints per-node availability and stops with `WARNING: only N free … Re-run -y` when the GPUs are not free (`-y`
-queues anyway), then `sbatch --requeue --export=ALL,PROJ,CLUSTER,TARGET … --mem=… .<t>/job.sbatch <RUN>` (the
-early `--requeue` lets a later `SBATCH_EXTRA` `--no-requeue` win).
+queues anyway), refuses a second live job of the same name from this project (`ERROR: '<name>' is already RUNNING from
+this project (job N …)`, exit 6: follow that job, or pick another `-n`; `--same-name-ok` only when the user wants both;
+`--dependency=singleton` chains skip the check), prints `WARNING (lint): SBATCH_EXTRA …` for an option outside its allowed
+set or one the harness sets itself (warnings only, for now: tell the user), then `sbatch --requeue
+--export=ALL,PROJ,CLUSTER,TARGET … --mem=… --comment=… rs=<NONCE> .<t>/job.sbatch <RUN>` (the early `--requeue` lets a later
+`SBATCH_EXTRA` `--no-requeue` win). The `.hpc.conf` is read in a child shell: only its keys count, never a function or `PATH` it sets.
 Report the job id. Unknown `--word` flags pass through to policy (`--…-user-asked` sets `ACK=1` for it).
+**The journal.** Every call prints `attempt: .rs/attempts/<NONCE>` first and records itself in `<REMOTE_DIR>/.rs/attempts/<NONCE>/`
+before printing anything: `out` / `err` (all it printed), `stage`, `result` (`stage= rc= verdict=submitted|refused|failed|unknown`),
+`receipt` (`job= name= partition= … argv=`, written the moment the job exists) and the `conf`/`profile.sh`/`env.sh`/`hook` the
+job (and every requeued restart) uses. An ssh that died or printed nothing is **never** a reason to resubmit: read
+`ssh <host> 'cd <REMOTE_DIR>/.rs/attempts && ls -t | head -n 3'`, then `cat <NONCE>/result <NONCE>/receipt` — `submitted` +
+`job=` = queued; `unknown` = sbatch ran but recorded no id: find `rs=<NONCE>` in `squeue -h -u $USER -O 'JobID:0|,Name:0|,Comment:0'` before
+anything else; a dir from the call without `result` is still running (read it again shortly); no dir from the call = it
+never started. Exit 75 = that NONCE was already used (`--rs-attempt NONCE` callers only).
 
 ## 5. Monitor / manage — start reviews with a bounded digest; cadence, milestones, detect-only: `experiment-conventions.md` §7
 ```
@@ -96,7 +108,9 @@ Never read a log unbounded (`cat`, `tail -n`, `grep` over the whole file): bound
 `.<t>/status.sh` on the target = the deploy predates it: say so, read bounded (`tail -c 20000 <log> | tr '\r' '\n'`),
 and re-sync only with the user's OK — a sync also pushes local code into the dir a running job reads. A log old enough
 to predate the `target=…` header line reads `starts=0` while `squeue` still shows the job running.
-Every attempt opens with the `target=… restart=N` header line, `RUN:` precedes the payload, and `EXIT rc=N usr1=… term=…`
+Every start of the job opens with the `target=… restart=N … attempt=<NONCE>` header line (`attempt=` names the submit's journal
+entry; a `rs-attempt=<NONCE> job= restart=` line, written before env.sh, precedes it, so even a start env.sh refused names its
+submit), `RUN:` precedes the payload, and `EXIT rc=N usr1=… term=…`
 closes it once the payload returned — rc is the trainer's OWN status. `usr1` / `term` = what the wrapper observed: `1` =
 Slurm's USR1 warning (time limit, or preemption where the site sends it) / SIGTERM (cancel, preempt, final kill) arrived
 and was forwarded to the trainer; `lost` = it arrived after the trainer was gone; `pending` = before it started (the job

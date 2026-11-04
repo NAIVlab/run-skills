@@ -80,6 +80,7 @@ contract: `references/experiment-conventions.md` — read it before naming, subm
   `run-bootstrap` builds them from the project's own `pyproject.toml`, so running it is safe. `ENV_KIND=uv` is the
   default; scaffold new `.ws.conf` files as uv unless the user asks for conda.
 - Everything a run produces stays under the project's remote dir (the harness pins caches, tmp, logs, ckpts there).
+- A submit or launch whose ssh died or printed nothing is never retried blind: read its `.rs/attempts/<NONCE>/result` + `receipt` first (procedure §4).
 - Files cross the wire only through `run-sync` (up) and `run-pull` (back): they use the target's transfer host
   where the site requires one. Never hand-roll `rsync`/`scp`/`sftp` to `<host>`; ssh is for commands and bounded reads.
 - Experiments checkpoint and resume: Slurm jobs go out with `--requeue`, so the run command must pick up from its

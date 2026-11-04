@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # tests/40-sync.sh — phase A: bin/run-sync + bin/run-bootstrap with rsync/ssh stubs (nothing leaves the box):
 # protected excludes, derived + literal deploy-dir excludes, EXTRA_EXCLUDES, first-line summary, REMOTE_HOST,
-# T_REMOTE_DIR_REQUIRED, WSBOX_REMOTE_DIR precedence, transfer host (all rsyncs, never ssh), deployed profile carries T_NAME, no ln -s, SYNC_ALSO -R
+# T_REMOTE_DIR_REQUIRED, WSBOX_REMOTE_DIR precedence, transfer host (all rsyncs, never ssh), deployed profile carries T_NAME, the
+# MANIFEST (written last, sha256 per deployed file), /.rs/ never pushed nor pruned, no ln -s, SYNC_ALSO -R
 # semantics with the real rsync. Run by selftest.sh with RS_HOME set:  bash tests/40-sync.sh
 set -u
 . "$RS_HOME/tests/lib.sh"
 stub_rsync
 # the stub only logs args; also keep whatever profile.sh gets pushed (run-sync deploys a temp copy, then removes it)
-printf 'for a in "$@"; do [ -f "$a" ] && case "$a" in *profile.sh) cat "$a" > "%s/profile.deployed" ;; */run-source) cat "$a" > "%s/stamp.deployed" ;; esac; done; exit 0\n' "$T" "$T" >> "$T/bin/rsync"
+printf 'for a in "$@"; do [ -f "$a" ] && case "$a" in *profile.sh) cat "$a" > "%s/profile.deployed" ;; */run-source) cat "$a" > "%s/stamp.deployed" ;; */MANIFEST) cat "$a" > "%s/manifest.deployed" ;; esac; done; exit 0\n' "$T" "$T" "$T" >> "$T/bin/rsync"
 # sync_in DIR [env...] [-- flags...] : run-sync from DIR with the stub PATH and a private HOME (no real wandb_env)
 sync_in() { local d=$1; shift; local e=(); while [ "$#" -gt 0 ] && [ "$1" != -- ]; do e+=("$1"); shift; done; [ "$#" = 0 ] || shift
   ( cd "$d" && : > "$T/launch.log" && : > "$T/rsync.log" && : > "$T/ssh-host.log" && env ${e[@]+"${e[@]}"} HOME="$T/home" PATH="$T/bin:$PATH" bash "$RS_HOME/bin/run-sync" "$@" 2>&1 ); }
@@ -25,7 +26,7 @@ has "$(echo "$O" | head -1)" '^\[fx-slurm\] remote: fx:/x  *tag: FXSLURM  *deplo
 has "$O" '^\[fx-slurm\] reference: /.*/fx-slurm/reference\.md — the target rules: re-read' "sync re-prints the reference path (survives a context summary)"
 RL=$(cat "$T/rsync.log")
 for e in .git .claude/ .codex/ __pycache__/ '*.pyc' '*.parquet' /.venv '/.venv-*' /.cache/ /.local/ /.config/ /bin/ /tmp/ /wandb/ \
-         /wandb-artifacts/ /logs/ /ckpts/ /checkpoints/ /outputs/ /data/ .wandb_env .fx-slurm/ .fx-home/ .ws/ .fx-packed/ '*.bin' scratch/; do
+         /wandb-artifacts/ /logs/ /ckpts/ /checkpoints/ /outputs/ /data/ .wandb_env .fx-slurm/ .fx-home/ .ws/ .fx-packed/ '*.bin' scratch/ /.rs/; do
   excl "$RL" "$e"
 done
 has "$RL" '^\./$' "source is ./"; has "$RL" '^fx:/x/$' "destination host:dir/"
@@ -36,6 +37,14 @@ has "$RL" '/targets/fx-slurm/policy.sh$' "deploys the target's policy.sh"; has "
 has "$RL" '\.hpc\.conf$' "conf pushed"; hasnt "$RL" 'chmod=F600' "no wandb_env anywhere -> none pushed"
 has "$(cat "$T/profile.deployed" 2>/dev/null)" "^T_NAME='fx-slurm'$" "deployed profile carries T_NAME"
 has "$(cat "$T/profile.deployed" 2>/dev/null)" 'T_KIND=slurm' "deployed profile is the target's"
+M=$(cat "$T/manifest.deployed" 2>/dev/null); MS=$(printf '%s\n' "$M" | awk '{print $2}' | sort | tr '\n' ' ')
+[ "$MS" = "bootstrap.sh env.sh job.sbatch policy.sh profile.sh status.sh submit.sh " ] && ok "MANIFEST lists every deployed file (profile.sh too)" || bad "MANIFEST lists every deployed file (got: $MS)"
+[ "$(printf '%s\n' "$M" | grep -cvE '^[0-9a-f]{64}  [A-Za-z0-9._-]+$')" = 0 ] && ok "MANIFEST lines are '<sha256>  <file>'" || bad "MANIFEST line format"
+PH=$( ( . "$RS_HOME/lib/common.sh"; rs_sha256 "$T/profile.deployed" ) ); EH=$( ( . "$RS_HOME/lib/common.sh"; rs_sha256 "$RS_HOME/remote/env.sh" ) )
+has "$M" "^$PH  profile.sh\$" "MANIFEST hashes profile.sh as deployed (T_NAME/T_REF appended)"; has "$M" "^$EH  env.sh\$" "MANIFEST hashes env.sh"
+has "$RL" '^fx:/x/\.fx-slurm/MANIFEST$' "MANIFEST lands in the deploy dir"
+[ "$(grep -n '^fx:/x/\.fx-slurm/MANIFEST$' "$T/rsync.log" | cut -d: -f1)" -gt "$(grep -n '^fx:/x/\.fx-slurm/$' "$T/rsync.log" | cut -d: -f1)" ] \
+  && ok "MANIFEST is written after the deploy files (last)" || bad "MANIFEST is written after the deploy files"
 L=$(cat "$T/launch.log")
 hasnt "$L" 'ln -s' "no ln -s in any ssh command"; has "$L" 'mkdir -p' "ssh creates the remote dirs"; has "$L" 'chmod +x' "ssh chmods the remote scripts"
 has "$O" 'not honoured' "run-sync lints the conf (FXHOME_ENV_KIND)"
@@ -44,6 +53,7 @@ O=$(sync_in "$P" TARGET=fx-slurm); RL=$(cat "$T/rsync.log")
 has "$RL" '^--chmod=F600$' "wandb_env pushed as mode 600"; has "$RL" '^fx:/x/\.wandb_env$' "wandb_env destination"
 O=$(sync_in "$P" TARGET=fx-slurm -- -n); RL=$(cat "$T/rsync.log")
 has "$RL" '^--dry-run$' "-n passes --dry-run"; [ -s "$T/launch.log" ] && bad "dry run never sshes" || ok "dry run never sshes"
+hasnt "$RL" 'MANIFEST' "dry run writes no MANIFEST"; has "$O" '(dry) would write /x/\.fx-slurm/MANIFEST' "dry run names the MANIFEST it would write"
 hasnt "$RL" '\.hpc\.conf$\|chmod=F600' "dry run pushes neither the conf nor the wandb file (a new project's dir does not exist yet)"
 has "$O" '(dry) would push ./.hpc.conf' "dry run names the conf it would push"; has "$O" 'dry: not pushed' "dry run says the wandb file was not pushed"
 O=$(sync_in "$P" TARGET=fx-slurm -- -D); has "$(cat "$T/rsync.log")" '^--delete$' "-D passes --delete"
@@ -120,8 +130,8 @@ printf '\nT_XFER_HOST=profile-xfer\n' >> "$T/user-xfer/targets/fx-slurm/profile.
 : > "$P2/.wandb_env"
 O=$(sync_in "$P2" RS_USER_DIR="$T/user-xfer" TARGET=fx-slurm XFER_HOST=stale)
 RL=$(cat "$T/rsync.log")
-[ "$(printf '%s\n' "$RL" | grep -c '^profile-xfer:/tagged')" = 6 ] \
-  && ok "profile transfer host handles code, SYNC_ALSO, stamp, harness, conf and wandb file; stale export ignored" \
+[ "$(printf '%s\n' "$RL" | grep -c '^profile-xfer:/tagged')" = 7 ] \
+  && ok "profile transfer host handles code, SYNC_ALSO, stamp, harness, conf, MANIFEST and wandb file; stale export ignored" \
   || bad "profile transfer host handles all rsync paths"
 hasnt "$RL" '^alt:\|^stale:' "rsync never uses the control host or inherited XFER_HOST"
 has "$(echo "$O" | tail -1)" 'sync done -> alt:/tagged .*; files via profile-xfer' "last line names the transfer host (survives | tail -1)"
@@ -129,7 +139,7 @@ has "$(cat "$T/ssh-host.log")" '^alt$' "ssh uses REMOTE_HOST"
 hasnt "$(cat "$T/ssh-host.log")" 'xfer\|stale' "control commands never go to the transfer host"
 printf '\nXFER_HOST=conf-xfer\nFXSLURM_XFER_HOST=tag-xfer\n' >> "$P2/.hpc.conf"
 O=$(sync_in "$P2" RS_USER_DIR="$T/user-xfer" TARGET=fx-slurm)
-[ "$(cat "$T/rsync.log" | grep -c '^profile-xfer:/tagged')" = 6 ] \
+[ "$(cat "$T/rsync.log" | grep -c '^profile-xfer:/tagged')" = 7 ] \
   && ok "conf XFER_HOST / <TAG>_XFER_HOST lines are ignored: the transfer host is a profile fact" || bad "conf XFER_HOST ignored"
 O=$(sync_in "$P2" RS_USER_DIR="$T/user-xfer" TARGET=fx-slurm -- -n)
 has "$(cat "$T/rsync.log")" '^profile-xfer:/tagged' "dry run keeps the transfer destination"
@@ -163,6 +173,8 @@ has "$RL" '^wsbox:projects/y/$' "destination is \$HOME-relative"; has "$RL" '^ws
 has "$RL" '/remote/env.sh$' "nohup deploys env.sh"; has "$RL" '/remote/bootstrap.sh$' "nohup deploys bootstrap.sh"
 has "$RL" '/remote/status.sh$' "nohup deploys status.sh"
 hasnt "$RL" 'submit.sh\|job.sbatch\|policy.sh' "nohup deploys nothing slurm-ish"; has "$RL" '\.ws\.conf$' ".ws.conf pushed"
+has "$RL" '/remote/launch\.sh$' "nohup deploys launch.sh"
+has "$(cat "$T/manifest.deployed" 2>/dev/null)" '  profile\.sh$' "nohup deploy has a MANIFEST too"
 excl "$RL" .fx-slurm/; excl "$RL" .ws/; excl "$RL" /.config/; excl "$RL" '/.venv-*'
 has "$(cat "$T/profile.deployed" 2>/dev/null)" "^T_NAME='ws-box'$" "nohup profile carries T_NAME"
 hasnt "$(cat "$T/launch.log")" 'ln -s' "nohup: no ln -s either"
