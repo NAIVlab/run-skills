@@ -3,7 +3,11 @@
 import contextlib
 import dataclasses
 import io
+import os
+import subprocess
+import sys
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from helpers import ScratchHome, git, make_repo
@@ -216,6 +220,17 @@ class PackUpdates(ScratchHome):
         packs.add(paths.packs_dir(), str(tree), None)
         self.assertIn(f"x\tlink\t-> {tree} (your working tree, origin git@example.invalid:org/run-skills-x.git)",
                       run("pack", "list")[1])
+
+
+class Pipe(ScratchHome):
+    def test_a_reader_that_leaves_is_141_not_a_traceback(self):   # `rsk … | head`: stdout's pipe closes early
+        child = ("import os, sys; sys.path[:0] = sys.argv[1:2]; from remote_run import cli\n"
+                 "r, w = os.pipe(); os.close(r); os.dup2(w, 1)\n"
+                 "sys.exit(cli.main(['config', '--template']))")
+        done = subprocess.run([sys.executable, "-I", "-c", child, str(Path(cli.__file__).parent.parent)],
+                              capture_output=True, text=True, env=os.environ)
+        self.assertEqual(done.returncode, 141, done.stderr)
+        self.assertNotIn("Traceback", done.stderr)
 
 
 class Targets(ScratchHome):
