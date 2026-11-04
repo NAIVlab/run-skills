@@ -153,3 +153,17 @@ O=$(subo "$PL" -G banned -y -- echo hi); RC=$?
 nosub "local refusal submits nothing"
 has "$(sub "$PL" fx-slurm --gpu-user-asked -y -- echo hi)" 'ARG:--comment=acked$' "wrapped shipped t_policy still runs"
 rejects 3 "shipped refusal preserved by the wrapper" "$PL" -p vip -- echo hi
+
+echo "-- CPU-only partitions: -c 8 and P_MEM_PER_CPU (default 4) GB per cpu --"
+cp -R "$RS_USER_DIR" "$T/user3"
+cat > "$T/user3/targets/fx-slurm/policy.local.sh" <<'EOF'
+eval "$(declare -f t_partition | sed '1s/^t_partition/t_partition_shipped/')"
+t_partition() { case "$1" in cpu) P_CPU_ONLY=1 ;; hbm) P_CPU_ONLY=1 P_MEM_PER_CPU=2 ;; *) t_partition_shipped "$1" ;; esac; }
+EOF
+PC=$(RS_USER_DIR=$T/user3 mk_proj fx-slurm 'REMOTE_DIR=/x')
+O=$(sub "$PC" fx-slurm -p cpu -y -- echo hi); has "$O" 'ARG:--cpus-per-task=8$' "CPU partition: 8 cpus"
+has "$O" 'ARG:--mem=32G$' "CPU partition: 4G per cpu by default"; hasnt "$O" 'ARG:--gres' "CPU partition: no gres"
+has "$(sub "$PC" fx-slurm -p hbm -y -- echo hi)" 'ARG:--mem=16G$' "P_MEM_PER_CPU=2: 8 cpus -> 16G"
+has "$(sub "$PC" fx-slurm -p hbm -c 4 -y -- echo hi)" 'ARG:--mem=8G$' "P_MEM_PER_CPU follows -c"
+has "$(sub "$PC" fx-slurm -p hbm -m 20G -y -- echo hi)" 'ARG:--mem=20G$' "explicit -m wins over P_MEM_PER_CPU"
+O=$(sub "$PC" fx-slurm -p gpu -y -- echo hi); has "$O" 'ARG:--mem=40G$' "gpu partition keeps per-GPU mem next to a P_MEM_PER_CPU partition"

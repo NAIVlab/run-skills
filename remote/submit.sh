@@ -50,10 +50,10 @@ if declare -f t_policy >/dev/null; then
   t_policy || { rc=$?; echo "ERROR: t_policy returned $rc (a policy that does not refuse must end with 'return 0')" >&2; exit "$rc"; }
 fi
 declare -f t_partition >/dev/null || { echo "ERROR: $SELF/policy.sh does not define t_partition" >&2; exit 2; }
-P_GPUS=""; P_CPU_PER_GPU=""; P_MEM_PER_GPU=""; P_GTYPE=""; P_GTYPE_DEFAULT=""; P_PREEMPT=""; P_MAXTIME=""; P_CPU_ONLY=""; P_NOTE=""
+P_GPUS=""; P_CPU_PER_GPU=""; P_MEM_PER_GPU=""; P_GTYPE=""; P_GTYPE_DEFAULT=""; P_PREEMPT=""; P_MAXTIME=""; P_CPU_ONLY=""; P_MEM_PER_CPU=""; P_NOTE=""
 t_partition "$PART" || { echo "ERROR: unknown $CLUSTER partition '$PART' (${T_PARTITIONS:-})" >&2; exit 2; }
 if [ "$P_CPU_ONLY" = 1 ]; then
-  [ -n "$NCPU" ] || NCPU="${DEF_CPUS:-8}"; [ -n "$MEM" ] || MEM="${DEF_MEM:-$(( NCPU*4 ))G}"
+  [ -n "$NCPU" ] || NCPU="${DEF_CPUS:-8}"; [ -n "$MEM" ] || MEM="${DEF_MEM:-$(( NCPU*${P_MEM_PER_CPU:-4} ))G}"
 else
   : "${P_GPUS:?policy.sh: t_partition '$PART' must set P_GPUS=min-max}"
   _min="${P_GPUS%%-*}"; _max="${P_GPUS##*-}"
