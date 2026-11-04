@@ -7,7 +7,7 @@ set -u
 
 n=0; f_bad=0
 for f in "$RS_HOME"/bin/* "$RS_HOME"/lib/*.sh "$RS_HOME"/remote/* "$RS_HOME"/targets/*/*.sh "$RS_HOME"/templates/pack/install.sh \
-         "$RS_HOME"/tests/*.sh "$RS_HOME"/selftest.sh "$RS_HOME"/install.sh; do
+         "$RS_HOME"/tests/*.sh "$RS_HOME"/tests/vgate/*.sh "$RS_HOME"/selftest.sh "$RS_HOME"/install.sh; do
   [ -f "$f" ] || continue
   n=$((n+1)); bash -n "$f" 2>/dev/null || { bad "bash -n ${f#"$RS_HOME"/}"; f_bad=1; }
 done
