@@ -89,7 +89,7 @@ def targets(src: Path) -> list[Target]:
 
 
 def run_install(src: Path) -> int:
-    """install.sh from the shipped tree: harness copy, skills, INDEX, overlay scaffold, ssh check, selftest."""
+    """install.sh from the shipped tree: harness copy, the skill + INDEX (old skills out), overlay, ssh check, selftest."""
     return subprocess.call(["bash", str(src / "install.sh")], env=env(src))
 
 

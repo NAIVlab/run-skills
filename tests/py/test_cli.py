@@ -172,6 +172,31 @@ class Commands(ScratchHome):
         self.assertEqual(rc, USAGE)
         self.assertIn("run: rsk setup", text)
 
+    def test_doctor_fails_while_a_replaced_skill_is_still_discoverable(self):
+        record_setup("")
+        copy = paths.skills_root() / "remote-run"
+        copy.mkdir(parents=True)
+        (copy / "SKILL.md").write_text("---\nname: remote-run\n---\n")
+        (self.home / ".claude" / "skills").mkdir(parents=True)
+        (self.home / ".claude" / "skills" / "remote-run").symlink_to(copy)
+        clean = run("doctor")[1]
+        self.assertIn(f"ok   skill remote-run: {copy}", clean)
+        self.assertNotIn("replaced by remote-run", clean)
+        left = [self.home / ".codex" / "skills" / "hpc-run", self.home / ".pi/agent" / "skills" / "ws-run",
+                paths.skills_root() / "ws-run"]
+        for d in left:
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text("---\nname: old\n---\n")
+        (self.home / ".claude" / "skills" / "ws-run").symlink_to(paths.skills_root() / "ws-run")
+        (self.home / ".claude" / "skills" / "hpc-run").symlink_to(self.home / "gone")   # dangling: nothing to list
+        rc, text = run("doctor")
+        self.assertEqual(rc, USAGE)
+        for d in [*left, self.home / ".claude" / "skills" / "ws-run"]:
+            self.assertRegex(text, rf"FAIL skill (hpc|ws)-run \(replaced by remote-run\) is still installed: {d} — run: rsk setup")
+        self.assertNotIn(f"{self.home / '.claude' / 'skills' / 'hpc-run'}", text)
+        with mock.patch.dict(os.environ, {"RS_SKILLS_ROOT": str(self.home / ".claude" / "skills")}):
+            self.assertEqual(run("doctor")[1].count(f"{self.home / '.claude' / 'skills' / 'ws-run'} —"), 1)
+
 
 class PackUpdates(ScratchHome):
     """rsk update's exit reflects the packs it could not fast-forward, before and after the hand-over to setup."""

@@ -1,6 +1,6 @@
 # Experiment conventions (both kinds) — classify, name, track, resume
 
-Discipline for every run launched through hpc-run / ws-run. The harness supplies the mechanics (wandb dirs and
+Discipline for every run launched through remote-run. The harness supplies the mechanics (wandb dirs and
 key handling, `--requeue`, log names); the agent supplies the naming and the checks below. Nothing here is
 target-specific, and none of it renames existing wandb projects/runs — apply it to new launches only.
 
@@ -131,5 +131,5 @@ and the next check time for re-invocation. Do not promise unattended monitoring 
   user approved, within their budget — procedure §5). Clearly-bad → report the evidence (URL,
   last metrics, log lines, reason) plus a recommendation, then wait for the OK. The same failure twice after a
   fix → stop retrying and escalate.
-- A new session first lists what is running (`squeue -u $USER`, `ls -t logs/`, `logs/run-watch/`); keep the run's
+- A new session first lists what is running (`rsk status`; `squeue -u $USER`, `ls -t logs/`, `logs/run-watch/`); keep the run's
   receipt (job ids, log path, ckpt dir, URL, ETA; a watched table's state file) where the next session finds it.

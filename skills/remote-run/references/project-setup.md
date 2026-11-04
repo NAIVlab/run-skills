@@ -3,7 +3,7 @@
 Use this when a project has no `.hpc.conf` (Slurm) / `.ws.conf` (workstation) yet, or the user asks to set up,
 onboard or migrate one. Goal: a conf that reproduces how the project runs today, a checked first sync, a
 bootstrapped env, and a short list of gaps — without rewriting the project's code and without launching anything.
-cwd = the project root; `$ROOT` = line 1 of `INDEX.md`; ONE copy of this file serves both skills (ws-run links to it).
+cwd = the project root; `$ROOT` = line 1 of `INDEX.md`; this file serves both kinds.
 
 ## 1. Inspect how it runs today (local, read-only)
 ```

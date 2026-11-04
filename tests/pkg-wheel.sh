@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # tests/pkg-wheel.sh — the uv-tool life cycle, end to end, in a scratch HOME (NOT in selftest: it needs uv, and the
 # network once for the hatchling build backend). Builds the wheel and checks it carries the harness with exec bits;
-# installs rsk from a scratch git remote holding this working tree; runs rsk setup and doctor; commits a version bump
+# installs rsk from a scratch git remote holding this working tree; runs rsk setup (over an install of the replaced
+# hpc-run / ws-run skills, which it uninstalls) and doctor; commits a version bump
 # to that remote and checks `rsk update` installs it and re-runs setup; `rsk update --to` goes back and stays there
 # (a plain update keeps the pinned commit) until `rsk update --to main`.
 # Usage: bash tests/pkg-wheel.sh   (PASS/FAIL lines; exit = failures). Never touches the real ~/.agents or ~/.config.
@@ -19,11 +20,12 @@ WHL=$(ls "$SB"/dist/*.whl 2>/dev/null | head -1)
 Z=$(python3 -c 'import sys, zipfile
 for i in zipfile.ZipFile(sys.argv[1]).infolist(): print(oct((i.external_attr >> 16) & 0o777), i.filename)' "$WHL" 2>&1)
 for f in bin/run-sync bin/run-watch lib/common.sh remote/env.sh remote/submit.sh remote/job.sbatch install.sh selftest.sh \
-         INSTALL.md skills/hpc-run/SKILL.md skills/ws-run/references/procedure-nohup.md codex/hpc-run.openai.yaml \
+         INSTALL.md skills/remote-run/SKILL.md skills/remote-run/references/procedure-nohup.md codex/remote-run.openai.yaml \
          templates/pack/install.sh templates/ssh_config targets/_template-slurm/policy.sh tests/lib.sh tests/py/run.py docs/packs.md; do
   has "$Z" " remote_run/_harness/$f\$" "wheel carries $f"; done
 has "$Z" "^0o755 remote_run/_harness/bin/run-sync\$" "wheel keeps bin/* executable"
 hasnt "$Z" "__pycache__\|\.github/\|/\.claude/" "wheel carries no caches or CI files"
+hasnt "$Z" "_harness/skills/hpc-run\|_harness/skills/ws-run\|_harness/codex/hpc-run\|_harness/codex/ws-run" "wheel carries only the remote-run skill"
 
 echo "-- install from a git remote (scratch) --"
 rsync -a --exclude=.git --exclude=__pycache__ --exclude=/dist "$RS_HOME/" "$W/"
@@ -32,13 +34,18 @@ C1=$(git -C "$W" rev-parse HEAD)
 fail_sections() { awk '/^== /{ if (f) printf "%s", b; b = ""; f = 0 } { b = b "    | " $0 "\n" } /^  FAIL: /{ f = 1 } END { if (f) printf "%s", b }'; }
 sbx() { env HOME="$SB/home" UV_TOOL_DIR="$SB/tools" UV_TOOL_BIN_DIR="$SB/bin" RS_USER_DIR="$SB/home/.config/run-skills" \
   RS_PACKS_DIR="$SB/home/.config/run-skills/packs" RS_STATE_DIR="$SB/home/.local/state/run-skills" \
-  RS_HARNESS_ROOT="$SB/home/.agents/run-skills" RS_SKILLS_ROOT="$SB/home/.agents/skills" PATH="$SB/bin:$PATH" "$@"; }
+  RS_HARNESS_ROOT="$SB/home/.agents/run-skills" RS_SKILLS_ROOT="$SB/home/.agents/skills" CODEX_HOME="$SB/home/.codex" \
+  PI_HOME="$SB/home/.pi/agent" PATH="$SB/bin:$PATH" "$@"; }   # every root install.sh writes to or uninstalls from
 sbx uv tool install -q "git+file://$SB/origin.git" >/dev/null 2>&1 && ok "uv tool install git+file://…" || bad "uv tool install git+file://…"
 V=$(sbx rsk --version 2>&1); has "$V" '^rsk ' "rsk on the tool bin dir ($V)"
 H=$(find "$SB/tools" -path '*remote_run/_harness/bin/run-sync' | head -1)
 [ -x "$H" ] && ok "installed harness keeps exec bits" || bad "installed harness keeps exec bits ($H)"
+OLD=$SB/home/.agents/skills; mkdir -p "$OLD/hpc-run/references" "$OLD/ws-run/references" "$SB/home/.claude/skills"   # an earlier install
+for s in hpc-run ws-run; do echo "name: $s" > "$OLD/$s/SKILL.md"; echo "root: /old" > "$OLD/$s/references/INDEX.md"
+  ln -s "$OLD/$s" "$SB/home/.claude/skills/$s"; done
 O=$(sbx rsk doctor 2>&1); RC=$?; [ "$RC" = 2 ] && ok "doctor before setup: exit 2" || bad "doctor before setup: exit 2 (got $RC)"
 has "$O" 'run: rsk setup' "doctor says what to run"
+has "$O" "FAIL skill hpc-run (replaced by remote-run) is still installed: $SB/home/.claude/skills/hpc-run" "doctor names a replaced skill still installed"
 
 echo "-- rsk setup --"
 O=$(sbx rsk setup 2>&1); RC=$?
@@ -48,7 +55,9 @@ has "$O" 'docs: skipped' "packaged selftest skips the clone-only doc checks"; ha
 [ -x "$SB/home/.agents/run-skills/bin/run-sync" ] && ok "harness copy installed and executable" || bad "harness copy installed and executable"
 [ -f "$SB/home/.agents/run-skills/templates/ssh_config" ] && [ -f "$SB/home/.agents/run-skills/docs/packs.md" ] \
   && ok "harness copy carries templates/ and docs/ (INSTALL.md's \$H paths)" || bad "harness copy carries templates/ and docs/"
-[ -f "$SB/home/.agents/skills/hpc-run/SKILL.md" ] && [ -L "$SB/home/.claude/skills/ws-run" ] && ok "skills + Claude link" || bad "skills + Claude link"
+[ -f "$SB/home/.agents/skills/remote-run/SKILL.md" ] && [ -L "$SB/home/.claude/skills/remote-run" ] && ok "skill + Claude link" || bad "skill + Claude link"
+ls -d "$OLD"/*-run "$SB"/home/.claude/skills/*-run > "$T/left" 2>/dev/null
+[ "$(sed 's|.*/||' "$T/left" | sort -u)" = remote-run ] && ok "setup uninstalled hpc-run / ws-run (remote-run alone)" || bad "setup uninstalled hpc-run / ws-run: $(cat "$T/left")"
 O=$(sbx rsk doctor 2>&1); RC=$?; [ "$RC" = 0 ] && ok "doctor after setup: exit 0" || { bad "doctor after setup: exit 0 (got $RC)"; echo "$O" | grep FAIL | sed 's/^/    | /'; }
 
 echo "-- rsk update (new commit upstream) --"

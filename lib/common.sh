@@ -4,7 +4,7 @@
 # precedence (ovr), remote-dir resolution, deploy file list, conf linter, INDEX.
 : "${RS_HOME:?lib/common.sh: RS_HOME must be set by the caller}"
 RS_USER_DIR="${RS_USER_DIR:-$HOME/.config/run-skills}"
-RS_PACKS_DIR="${RS_PACKS_DIR:-$RS_USER_DIR/packs}"   # each subdir is a target pack: targets/<t>/ [+ routing/<skill>.md]
+RS_PACKS_DIR="${RS_PACKS_DIR:-$RS_USER_DIR/packs}"   # each subdir is a target pack: targets/<t>/ [+ routing/remote-run.md]
 RS_USER="${USER:-$(id -un)}"
 RS_PREFIXABLE_SLURM='REMOTE_DIR ENV_NAME RUN DEFAULT_PARTITION DEFAULT_GPU_TYPE DEFAULT_GPUS DEFAULT_CPUS DEFAULT_MEM DEFAULT_TIME ACCOUNT SBATCH_EXTRA JOB_NAME VENV_DIR'
 RS_PREFIXABLE_NOHUP='REMOTE_DIR ENV_NAME RUN DEFAULT_NGPU GPU_EXCLUDE NICE JOB_NAME VENV_DIR'
@@ -112,22 +112,30 @@ rs_ref() {   # rs_ref [ROOT]: the loaded target's reference file(s), as INDEX li
 rs_deploy_profile() {   # rs_deploy_profile OUT: profile.sh + T_NAME + T_REF as run-sync deploys it (a path with ' gets no T_REF)
   local r; r=$(rs_ref); case "$r" in *\'*) r="" ;; esac
   { cat "$T_DIR/profile.sh"; printf '\nT_NAME=%s\n' "'$T_NAME'"; [ -z "$r" ] || printf 'T_REF=%s\n' "'$r'"; } > "$1"; }
-rs_gen_index() {   # rs_gen_index slurm|nohup OUT [ROOT]: references/INDEX.md for the installed skill of that kind
-  local kind=$1 out=$2 root=${3:-$HOME/.agents/run-skills} skill rows=0 ref t seen='|' real
-  [ "$kind" = slurm ] && skill=hpc-run || skill=ws-run
+rs_gen_index() {   # rs_gen_index OUT [ROOT]: references/INDEX.md of the installed remote-run skill — every target, both kinds
+  local out=$1 root=${2:-$HOME/.agents/run-skills} rows=0 t d f real seen='|'
   { echo "root: $root"; echo
-    echo '| target | host | GPUs | default | max time | description | reference |'; echo '|---|---|---|---|---|---|---|'
+    echo '| target | kind | host | GPUs | default | max time | description | reference |'; echo '|---|---|---|---|---|---|---|---|'
     for t in $(rs_targets); do
-      ( rs_load_target "$t"; [ "$T_KIND" = "$kind" ] || exit 1
-        ref=$(rs_ref "$root")
-        [ "$kind" = slurm ] && d="${T_DEFAULT_PARTITION:--} / ${T_DEFAULT_GPU_TYPE:--}" || d=-
-        echo "| $t | $T_HOST | ${T_GPUS:--} | $d | ${T_MAXTIME:--} | ${T_DESC:--}${T_XFER_HOST:+; files via \`$T_XFER_HOST\` (run-sync/run-pull only)} | $ref |" ) && rows=$((rows+1))
+      ( rs_load_target "$t"; [ "$T_KIND" = slurm ] && d="${T_DEFAULT_PARTITION:--} / ${T_DEFAULT_GPU_TYPE:--}" || d=-
+        echo "| $t | $T_KIND | $T_HOST | ${T_GPUS:--} | $d | ${T_MAXTIME:--} | ${T_DESC:--}${T_XFER_HOST:+; files via \`$T_XFER_HOST\` (run-sync/run-pull only)} | $(rs_ref "$root") |" ) && rows=$((rows+1))
     done
-    [ "$rows" = 0 ] && echo && echo "no $([ "$kind" = slurm ] && echo cluster || echo workstation) registered yet: register one with" \
-      "the user ($root/INSTALL.md, Steps 2-6: run-probe, then ~/.config/run-skills/targets/<name>/ from $root/targets/_template-$kind/) or install a target pack"
-    echo; if [ -f "$RS_HOME/skills/$skill/references/INDEX.md" ]; then sed -n '/^## Routing/,$p' "$RS_HOME/skills/$skill/references/INDEX.md"; fi
-    for ref in "$RS_PACKS_DIR"/*/routing/"$skill.md" "$RS_USER_DIR/routing/$skill.md"; do   # a pack linked twice: once
-      [ -f "$ref" ] || continue; real="$(cd "$(dirname "$ref")" && pwd -P)/$skill.md"
-      case "$seen" in *"|$real|"*) ;; *) seen="$seen$real|"; cat "$ref" ;; esac; done
+    [ "$rows" = 0 ] && echo && echo "no target registered yet: register one with the user ($root/INSTALL.md, Steps 2-6: run-probe, then" \
+      "~/.config/run-skills/targets/<name>/ from $root/targets/_template-slurm/ (cluster) or _template-nohup/ (workstation)) or install a target pack"
+    echo; [ ! -f "$RS_HOME/skills/remote-run/references/INDEX.md" ] || sed -n '/^## Routing/,$p' "$RS_HOME/skills/remote-run/references/INDEX.md"
+    for d in "$RS_PACKS_DIR"/*/routing "$RS_USER_DIR/routing"; do   # remote-run.md, else the legacy hpc-run.md + ws-run.md; a pack linked twice: once
+      [ -d "$d" ] || continue; real=$(cd "$d" && pwd -P); case "$seen" in *"|$real|"*) continue ;; esac; seen="$seen$real|"
+      [ -f "$d/remote-run.md" ] && cat "$d/remote-run.md" && continue
+      set --; for f in hpc-run ws-run; do [ ! -f "$d/$f.md" ] || set -- "$@" "$d/$f.md"; done; [ "$#" = 0 ] || rs_legacy_routing "$@"
+    done
   } > "$out"
+}
+rs_legacy_routing() {   # rs_legacy_routing FILE...: routing/{hpc-run,ws-run}.md applied inside one kind's skill: its rules (a line
+  # at column 0 + the indented lines under it) go under that kind's lead-in; a rule both files carry is cross-kind: once, unscoped
+  awk 'FNR == 1 { k = (FILENAME ~ /hpc-run\.md$/) ? 1 : 2; c = 0 }  !NF { c = 0; next }
+    c && /^[ \t]/ { r[k, n[k]] = r[k, n[k]] "\n" $0; next }  { r[k, ++n[k]] = $0; c = 1 }
+    END { for (i = 1; i <= n[1]; i++) for (j = 1; j <= n[2]; j++) { s = r[1, i]; if (s == r[2, j] && !(s in both)) { both[s] = 1; print s } }
+      h[1] = "- For `slurm` targets only (legacy routing/hpc-run.md):"; h[2] = "- For `nohup` targets only (legacy routing/ws-run.md):"
+      for (k = 1; k <= 2; k++) { o = 0; for (i = 1; i <= n[k]; i++) { s = r[k, i]; if (s in both) continue
+        if (!o++) print h[k]; gsub(/\n/, "\n  ", s); print "  " s } } }' "$@"
 }

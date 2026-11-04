@@ -93,7 +93,7 @@ has "$(cat "$T/rsync.log")" '^wsbox:projects/y/\./logs$' "nohup: <TAG>_REMOTE_DI
 
 echo "-- INDEX names the transfer host in the description cell, never in the host cell --"
 C() { ( . "$RS_HOME/lib/common.sh"; eval "$1" ) 2>&1; }
-RS_USER_DIR="$T/user-xfer" C "rs_gen_index slurm '$T/idx.md' /root" >/dev/null
-has "$(grep '^| fx-slurm |' "$T/idx.md")" '^| fx-slurm | fx | .*files via `profile-xfer` (run-sync/run-pull only) |' "INDEX row: host stays the ssh alias, description adds files via"
-C "rs_gen_index slurm '$T/idx0.md' /root" >/dev/null
+RS_USER_DIR="$T/user-xfer" C "rs_gen_index '$T/idx.md' /root" >/dev/null
+has "$(grep '^| fx-slurm |' "$T/idx.md")" '^| fx-slurm | slurm | fx | .*files via `profile-xfer` (run-sync/run-pull only) |' "INDEX row: host stays the ssh alias, description adds files via"
+C "rs_gen_index '$T/idx0.md' /root" >/dev/null
 hasnt "$(cat "$T/idx0.md")" 'files via' "no transfer host -> no 'files via'"

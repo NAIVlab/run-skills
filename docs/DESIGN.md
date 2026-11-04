@@ -22,13 +22,13 @@ Non-goals: multi-node jobs, non-NVIDIA hardware, a new configuration language, a
 ## Three layers
 
 ```text
-skills/<s>/SKILL.md + references/     what the agent reads (thin entry, index, procedure, conf keys, conventions)
+skills/remote-run/SKILL.md + refs/     what the agent reads (thin entry, index, a procedure per kind, conf keys, conventions)
 bin/ + lib/common.sh                   local commands run from the project root (sync, bootstrap, launch)
 remote/                                deployed next to each project and executed there (env, bootstrap, status,
                                        submit, job wrapper)
 ```
 
-The skills reach the harness through the first line of the installed `references/INDEX.md` (`root: <dir>`), so
+The skill reaches the harness through the first line of the installed `references/INDEX.md` (`root: <dir>`), so
 the skill text never hardcodes an install location. Remote scripts never source local code: everything they need
 is deployed into `<REMOTE_DIR>/.<target>/` (Slurm) or `.ws/` (workstations) by `run-sync`, together with the
 target's `profile.sh`, its `policy.sh` and any personal `policy.local.sh`.
@@ -107,17 +107,29 @@ Agents are expensive readers. `status.sh` is the single monitoring read: schedul
 workstation), harness markers, error/OOM/NaN hint counts and the last lines, all from byte-bounded windows
 (last 256 KiB for hints, last 64 MiB for markers), in about 2 KB. Hints are counts, not diagnoses; "0" over a
 partial window is reported as such. A checkpoint directory's newest entry is reported as *activity*, never as proof
-that a run resumed. The skills describe cadence as a policy — review closely when a run is young, restarting or
+that a run resumed. The skill describes cadence as a policy — review closely when a run is young, restarting or
 anomalous; widen the interval only on evidence — rather than as a timetable, and require the agent to say how it
 will wake up next instead of promising unattended monitoring.
 
 ## Installation
 
-`install.sh` copies the harness to `~/.agents/run-skills/` and installs **one** copy of each skill into
-`~/.agents/skills/` — read natively by Codex and pi — with symlinks from `~/.claude/skills/` for Claude Code. A
-second copy would be listed twice by agents that scan several roots. It generates each skill's INDEX from the
+`install.sh` copies the harness to `~/.agents/run-skills/` and installs **one** copy of the skill into
+`~/.agents/skills/` — read natively by Codex and pi — with a symlink from `~/.claude/skills/` for Claude Code. A
+second copy would be listed twice by agents that scan several roots. It generates the skill's INDEX from the
 discovered targets and prepends the targets' trigger words to the skill description (some agents select skills
-lexically; descriptions stay under 1024 characters and free of `<>`). The clone never receives generated files.
+lexically; the description stays under 1024 characters and free of `<>`). The clone never receives generated files.
+
+**One skill, both kinds.** There used to be two skills, `hpc-run` (Slurm) and `ws-run` (workstations). They shared
+their rails, conventions and project setup almost word for word, and a placement left open spans both kinds anyway
+(`run-avail` reads every target), so an agent needed both and had to route between them. `remote-run` keeps one INDEX
+with a `kind` column, one rail list (kind-specific rails labelled) and a procedure per kind; `rsk` is its read-only
+observation path. Since an agent lists every installed skill by its description, a leftover `hpc-run` next to
+`remote-run` would compete with it on stale text: `install.sh` removes the old copies it generated in the shared root
+(and links to them), moves everything else out of every root Claude Code, Codex and pi scan instead of deleting it
+(a copy elsewhere may carry the user's edits), and `rsk doctor` fails while one is still discoverable. Packs keep
+their `routing/hpc-run.md` / `ws-run.md` (members on older engines read only those names); the INDEX uses them when a
+pack has no `remote-run.md`, each rule under a lead-in naming its kind, since it applied inside that kind's skill only
+(a rule both files carry is cross-kind and appears once, unscoped).
 
 The engine ships as a uv tool (`remote-run`, command `rsk`): `uv tool install git+…` gives it an isolated env that no
 project venv, `VIRTUAL_ENV` or `PYTHONPATH` can shadow, and `rsk update` is one command for everything a member has
@@ -137,7 +149,7 @@ user's ssh hosts, probes the chosen ones, and asks only what a probe cannot know
 where projects live, which queues must never be hit by accident. Facts that can be measured are measured by
 `bin/run-probe`: one `BatchMode` ssh running read-only commands with bounded output, so every agent sees the same
 evidence, a password prompt can never hang it, and the selftest can run it against stubs. What cannot be measured is
-asked and marked as the user's word in `reference.md`. The rails mirror the skills': nothing is submitted, secrets
+asked and marked as the user's word in `reference.md`. The rails mirror the skill's: nothing is submitted, secrets
 never pass through the conversation (`run-probe wandb` reports whether a key is set and can import one from `~/.netrc`
 without printing it), and `~/.ssh/config` changes are shown before they are made. Existing projects get the same
 treatment from `project-setup.md`: their current launch scripts are the specification for the conf, and a copy
@@ -148,7 +160,7 @@ already on the server is checked for remote-only edits and a hand-built venv bef
 `selftest.sh` runs entirely offline. Phase A runs the generic suite against fixture targets in a scratch overlay,
 with stubs for `sbatch`, `sinfo`, `squeue`, `scontrol`, `ssh`, `uv` and `rsync` that dispatch on literal command
 strings. Phase B runs every real target's `tests.sh` (engine, packs, overlay) with the same helpers. Documentation
-is tested too: the committed INDEX stubs must equal the generator's output, the skills must keep their rails, and
+is tested too: the committed INDEX stub must equal the generator's output, the skill must keep every rail, and
 an optional list of forbidden words keeps private names out of the repo.
 
 ## Batch watching (`run-watch`)

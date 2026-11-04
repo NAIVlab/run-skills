@@ -140,6 +140,10 @@ class Slurm(Base):
         rc, text = self._logs("-T", "fx-slurm", "101")
         self.assertEqual(rc, USAGE)
         self.assertIn("not deployed", text)
+        # the procedure's rail: a sync pushes local code into the dir a running job reads, so never "sync first"
+        self.assertIn("rsk exec -T fx-slurm -- tail -c 20000 <log>", text)
+        self.assertIn("re-sync only with the user's OK", text)
+        self.assertNotIn("sync the project first", text)
 
     def test_logs_exit_codes_keep_one_meaning(self):
         (self.remote / ".fx-slurm").mkdir()

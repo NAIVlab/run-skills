@@ -1,6 +1,6 @@
 # run-skills as a uv tool: `uv tool install git+https://github.com/NAIVlab/run-skills` puts `rsk` on PATH.
 # The wheel carries the bash harness (bin lib remote targets skills ...) under remote_run/_harness; `rsk setup`
-# installs the skills and the harness copy from it. Standard library only: no runtime dependencies.
+# installs the remote-run skill and the harness copy from it. Standard library only: no runtime dependencies.
 [project]
 name = "remote-run"
 dynamic = ["version"]

@@ -2,7 +2,7 @@
 
 **Let your coding agent run experiments on Slurm clusters and GPU workstations — contained, confirmed, and watched.**
 
-run-skills is two agent skills (`hpc-run`, `ws-run`) plus a small bash harness. You say *"run this on mycluster
+run-skills is one agent skill, `remote-run`, plus a small bash harness and its `rsk` command. You say *"run this on mycluster
 with 2 GPUs for a day"*; the agent syncs your project, builds its environment on the remote side, shows you a
 one-line plan, and — after you say go — submits a correctly sized job and keeps an eye on it. Works with
 **Claude Code**, **OpenAI Codex** and **pi** from one installed copy.
@@ -71,7 +71,7 @@ Paste this into Claude Code, Codex or pi:
 > Install run-skills for me: clone https://github.com/NAIVlab/run-skills to `~/.local/share/run-skills` and follow
 > its `INSTALL.md`.
 
-[`INSTALL.md`](INSTALL.md) is a runbook written for the agent. It installs the skills, lists the hosts in your
+[`INSTALL.md`](INSTALL.md) is a runbook written for the agent. It installs the skill, lists the hosts in your
 `~/.ssh/config` and asks which are GPU machines, probes the ones you pick with read-only commands (GPUs, Slurm
 partitions and accounts, filesystems), asks what a probe cannot know (default partition, where projects live, queues
 you must never hit), writes the target files, connects your wandb key without ever printing it, and verifies the
@@ -87,10 +87,10 @@ uv tool install git+https://github.com/NAIVlab/run-skills    # the `rsk` command
 rsk setup
 ```
 
-`rsk setup` copies the harness to `~/.agents/run-skills/`, installs one copy of each skill into
-`~/.agents/skills/` (read directly by Codex and pi; `~/.claude/skills/` gets symlinks for Claude Code), scaffolds
-`~/.config/run-skills/`, checks your ssh aliases and runs the offline selftest. It never edits `~/.ssh/config` and
-never overwrites an existing wandb key.
+`rsk setup` copies the harness to `~/.agents/run-skills/`, installs one copy of the `remote-run` skill into
+`~/.agents/skills/` (read directly by Codex and pi; `~/.claude/skills/` gets a symlink for Claude Code), uninstalls the
+`hpc-run` / `ws-run` skills it replaced (from Claude Code, Codex and pi), scaffolds `~/.config/run-skills/`, checks your
+ssh aliases and runs the offline selftest. It never edits `~/.ssh/config` and never overwrites an existing wandb key.
 
 > **In a lab that already has a target pack?** Install the pack instead — it installs the engine for you
 > (see [Target packs](#target-packs)).
@@ -107,7 +107,7 @@ need (GPUs, partitions, time limits, accounts, filesystems — read-only). Edit 
 policy — every key is commented), for Slurm also `policy.sh` (partitions, GPU ranges, per-GPU cpu/mem, walltime caps), and
 `reference.md` — the one page the agent reads before using the target, so write down what a newcomer would need
 (partitions, quotas, quirks). Add a matching `Host` block to `~/.ssh/config` (see
-[`templates/ssh_config`](templates/ssh_config)), then re-run `rsk setup` so the target shows up in the skills.
+[`templates/ssh_config`](templates/ssh_config)), then re-run `rsk setup` so the target shows up in the skill.
 
 **3. Optional: your wandb key.** Put *your own* key ([wandb.ai/authorize](https://wandb.ai/authorize)) in
 `~/.config/run-skills/wandb_env`. Every sync pushes it next to the project (mode 600). With no key, runs simply go
@@ -123,8 +123,8 @@ for the remote directory — it never guesses it. Annotated examples:
 
 ## Bringing an existing project
 
-Open your agent in the project and say *"set up this project for mycluster"* (or just ask for a run). The skills'
-[`project-setup.md`](skills/hpc-run/references/project-setup.md) has it read how the project runs today —
+Open your agent in the project and say *"set up this project for mycluster"* (or just ask for a run). The skill's
+[`project-setup.md`](skills/remote-run/references/project-setup.md) has it read how the project runs today —
 `pyproject.toml` or `requirements.txt`, a conda env, your existing `sbatch` / `nohup` scripts, wandb, checkpointing —
 and translate that into `.hpc.conf` / `.ws.conf`: `#SBATCH` lines become `DEFAULT_*`, `ACCOUNT` and `SBATCH_EXTRA`,
 `module load` and exports become an `ENV_HOOK`, a conda env stays a conda env. If the project already lives on the
@@ -169,7 +169,7 @@ to by accident), `reference.local.md` is shown next to the pack's reference, `te
 ### Target packs
 
 A pack is a git repo — usually a private one, because cluster details are nobody else's business — holding
-`targets/<name>/` directories, optional routing hints for the agent (`routing/hpc-run.md`) and an installer.
+`targets/<name>/` directories, optional routing hints for the agent (`routing/remote-run.md`) and an installer.
 Lab members then need one line (`rsk update` keeps the engine and the pack clone current):
 
 ```bash
@@ -185,13 +185,13 @@ The project conf (`.hpc.conf` / `.ws.conf`, in the repo root) is sourced as shel
 CLI flag → `<TAG>_KEY` → `KEY` → default, where `<TAG>` is the target name uppercased without punctuation
 (`my-hpc` → `MYHPC_`), so one conf can serve several targets: `REMOTE_DIR=/project/me/x` plus
 `OTHERHPC_REMOTE_DIR=/scratch/me/x`. Every key, and which ones accept a tag:
-[hpc-run conf keys](skills/hpc-run/references/conf-keys.md), [ws-run conf keys](skills/ws-run/references/conf-keys.md).
+[conf keys](skills/remote-run/references/conf-keys.md) (both confs).
 Hooks cover the unusual cases: `ENV_HOOK` (sourced at the end of the environment), `BOOTSTRAP_HOOK` (replaces
 `uv sync`), `UV_SYNC_ARGS`, `SYNC_ALSO`, `EXTRA_EXCLUDES`; `ENV_KIND=none` for container-only payloads.
 
 ## Safety rails
 
-These are part of the skills' instructions and are enforced by the harness where code can enforce them:
+These are part of the skill's instructions and are enforced by the harness where code can enforce them:
 
 - Confirm before every submit or launch; never `scancel`/`kill` anything without an explicit OK.
 - Partition and QOS are `submit.sh`'s decision — no raw `sbatch`/`srun`, no `--partition` smuggled in via
@@ -205,28 +205,28 @@ These are part of the skills' instructions and are enforced by the harness where
 
 | path | what |
 |---|---|
-| `skills/` | the two skills: a thin `SKILL.md` each + `references/` (procedures, conf keys, project setup, experiment conventions) |
+| `skills/remote-run/` | the skill: a thin `SKILL.md` + `references/` (INDEX, a procedure per kind, conf keys, project setup, experiment conventions) |
 | `INSTALL.md` | the install runbook your agent follows |
 | `bin/` | local commands: `run-avail` (free GPUs everywhere), `run-sync`, `run-pull`, `run-bootstrap`, `run-launch`, `run-watch` (batch watch), `run-probe` |
 | `lib/common.sh` | local helpers: target discovery, conf precedence, conf linter, INDEX generation |
 | `remote/` | deployed next to each project: `env.sh`, `bootstrap.sh`, `status.sh`, `submit.sh`, `job.sbatch` |
 | `targets/` | `_template-slurm/`, `_template-nohup/` |
 | `templates/` | conf examples, `ssh_config`, `wandb_env`, and `pack/` (a target-pack skeleton) |
-| `codex/` | Codex UI metadata for the skills |
+| `codex/` | Codex UI metadata for the skill |
 | `tests/`, `selftest.sh` | the offline test suite |
 | `docs/` | [`DESIGN.md`](docs/DESIGN.md) (architecture and rationale), [`packs.md`](docs/packs.md) |
 
 ## Updating and uninstalling
 
 Update: `rsk update` (alias `upgrade`) upgrades rsk through uv, fast-forwards clean pack clones, then the new rsk re-runs
-`rsk setup`. `--check` only reports, `--to <tag|commit>` installs that version (to roll back); a later `rsk update`
-stays on it, `rsk update --to main` follows main again. `rsk doctor` checks the install offline. A change to
-`remote/` reaches a project at its next sync.
+`rsk setup`. `--check` only reports, `--to <tag|commit>` installs that version (to roll back; a later `rsk update` stays
+on it, `rsk update --to main` follows main again; a version from before `remote-run` brings back `hpc-run` / `ws-run`
+and leaves `~/.agents/skills/remote-run` and its `~/.claude/skills` link for you to remove). `rsk doctor` checks the
+install offline. A change to `remote/` reaches a project at its next sync.
 
-Uninstall: `uv tool uninstall remote-run`; remove `~/.agents/run-skills`, `~/.agents/skills/{hpc-run,ws-run}`, the symlinks
-`~/.claude/skills/{hpc-run,ws-run}` and `~/.claude/run-skills`, and the clone. `~/.config/run-skills` holds your
-targets, packs and wandb key — delete it only if you mean to. Nothing is installed on the remote side outside your
-project directories.
+Uninstall: `uv tool uninstall remote-run`; remove `~/.agents/run-skills`, `~/.agents/skills/remote-run`, the symlinks
+`~/.claude/skills/remote-run` and `~/.claude/run-skills`, and the clone. `~/.config/run-skills` holds your targets, packs
+and wandb key — delete it only if you mean to. Nothing is installed on the remote side outside your project directories.
 
 ## Contributing
 

@@ -52,9 +52,10 @@ command -v claude codex pi
   path line 2 printed (`<uv tool dir --bin>/rsk`), written out each time (shell variables do not survive between
   your commands). Putting that dir on PATH (`uv tool update-shell`) edits shell rc files: the user's call (rule 4).
 - `rsk` found (either line) → **update mode**: `rsk update` (upgrades rsk, fast-forwards clean pack clones, re-runs
-  setup), then Step 6's checks. Offer Steps 2–5 only as "Do you want to add another server?" — never re-ask what is
-  already registered, and skip the pack question below. `~/.agents/run-skills` without `rsk` = an install from a
-  clone: do Step 1 (same files, now updatable with `rsk update`), then the same.
+  setup, which also replaces the older `hpc-run` / `ws-run` skills with `remote-run`), then Step 6's checks. Offer
+  Steps 2–5 only as "Do you want to add another server?" — never re-ask what is already registered, and skip the pack
+  question below. `~/.agents/run-skills` without `rsk` = an install from a clone: do Step 1 (same files, now
+  updatable with `rsk update`), then the same.
 - One installed copy serves Claude Code, Codex and pi; nothing to choose.
 
 Ask: **"Does your lab or group have a run-skills target pack (a git repo describing your shared clusters)? If so,
@@ -74,7 +75,7 @@ With a pack `<url>`: `rsk pack list` shows the registered packs and their origin
 into `~/.config/run-skills/packs/`; `rsk update` keeps it current). Then, with or without a pack:
 
 ```bash
-rsk setup      # harness copy, skills, INDEX, overlay scaffold, ssh alias check, offline selftest
+rsk setup      # harness copy, the remote-run skill + INDEX, overlay scaffold, ssh alias check, offline selftest
 ```
 
 A private pack needs the user's git access (an ssh key on the git host); a clone failure is theirs to fix. Then
@@ -180,10 +181,10 @@ the file can later move into a pack), every unprobed fact marked "(user)". Menti
 
 ## Step 5 — Defaults and wandb
 
-- **"When a request names no server, which one should I use?"** → append a bullet to
-  `~/.config/run-skills/routing/hpc-run.md` (Slurm) or `routing/ws-run.md` (workstations), e.g.
-  `` - No target named and no DEFAULT_CLUSTER in the project's .hpc.conf → `<name>`. `` Choice rules the user states
-  ("big jobs on A, debugging on B") go there too, as bullets.
+- **"When a request names no server, which one should I use?"** → append a bullet to `~/.config/run-skills/routing/remote-run.md`,
+  e.g. `` - No target named and no DEFAULT_CLUSTER in the project's .hpc.conf → `<name>`. `` Choice rules the user states
+  ("big jobs on A, debugging on B") go there too, as bullets. An older `routing/hpc-run.md` (Slurm only) / `ws-run.md`
+  (workstations only) there is read only while `remote-run.md` is absent: move its bullets in, each kept to its kind.
 - **"Do you log to Weights & Biases?"** Run `bash ~/.agents/run-skills/bin/run-probe wandb` (it never prints the key).
   - `~/.netrc: has an api.wandb.ai entry` → ask *"Use that key for run-skills?"*, then
     `run-probe wandb --import-netrc`.
@@ -195,7 +196,7 @@ the file can later move into a pack), every unprobed fact marked "(user)". Menti
 ## Step 6 — Install and verify
 
 ```bash
-rsk setup && rsk doctor      # doctor: install, skills, packs, targets, ssh aliases — offline
+rsk setup && rsk doctor      # doctor: install, the skill, packs, targets, ssh aliases — offline
 ```
 
 `rsk` as in Step 0 ("Which rsk"). Installed without rsk (`$H` but no `rsk` at all, e.g. a pack's `install.sh` without
@@ -203,12 +204,12 @@ uv): re-run `bash ~/.local/share/run-skills/install.sh` or the pack's `install.s
 
 Check, and fix before reporting:
 
-- the `targets:` line names every registered target; each skill line says `INDEX: N target row(s)`;
+- the `targets:` line names every registered target; the skill line says `INDEX: N target row(s)`; doctor ends `== no failures ==`;
 - `== ssh aliases ==` says `all target aliases found.`;
 - `===== RESULT: N pass, 0 fail =====`;
 - per target: `ssh -o BatchMode=yes -o ConnectTimeout=15 <alias> true` exits 0.
 
-Skills are read when an agent session starts: the user needs a **new session** before they can use them.
+Skills are read when an agent session starts: the user needs a **new session** before they can use `remote-run`.
 
 ## Step 7 — Report
 
@@ -224,7 +225,7 @@ Then ask: **"Do you want me to set up existing projects now? Give me their paths
 ## Existing projects
 
 For each project the user names: work from its root directory and follow
-`~/.agents/skills/hpc-run/references/project-setup.md` (one file serves both skills). It reads how the project
+`~/.agents/skills/remote-run/references/project-setup.md` (both kinds). It reads how the project
 runs today (pyproject or requirements, conda, existing sbatch / nohup scripts, wandb, checkpoints), writes
 `.hpc.conf` / `.ws.conf`, checks any copy already on the server, shows a dry-run sync, and — after the user's OK — syncs and
 bootstraps. Those are the first writes on a server (a bootstrap may download uv and a Python into the project's env

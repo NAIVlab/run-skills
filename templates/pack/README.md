@@ -21,7 +21,7 @@ Or let your agent do it — paste into Claude Code, Codex or pi: *"Install run-s
 and follow its `INSTALL.md`."* It also sets up your ssh aliases (asking first) and the wandb key.
 
 Either way, this installs the run-skills engine (the `rsk` command), registers this pack, installs the
-`hpc-run` / `ws-run` skills and runs the offline selftest. Then:
+`remote-run` skill and runs the offline selftest. Then:
 
 1. **ssh**: append [`ssh_config`](ssh_config) to `~/.ssh/config`, replace `<user>`, and `ssh-copy-id <alias>` for
    each target. The installer's "ssh aliases" step tells you which ones are still missing.
