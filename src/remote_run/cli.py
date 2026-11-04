@@ -10,7 +10,7 @@
     rsk config [--template]         rsk's own settings (~/.config/run-skills/config.toml)
 
 Exit codes: 0 ok · 1 the remote command ran and failed (rsk exec / rsk logs print its code) · 2 usage/config/setup ·
-3 refused · 4 needs the user · 5 unknown/unreachable · 6 conflict.
+3 refused · 4 needs the user · 5 unknown/unreachable · 6 conflict · 141 stdout's reader left (`| head`).
 """
 
 from __future__ import annotations
@@ -371,7 +371,12 @@ def main(argv: list[str] | None = None) -> int:
         _isolate()
     args = build_parser().parse_args(argv)
     try:
-        return args.func(args)
+        rc = args.func(args)
+        sys.stdout.flush()        # a reader that went away surfaces here, not as a traceback at interpreter exit
+        return rc
+    except BrokenPipeError:       # `rsk status | head`: stdout's reader left before the end — say so the shell's way
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())   # the exit-time flush must not fail again
+        return 141
     except RskError as exc:
         print(f"rsk: {exc}", file=sys.stderr, flush=True)
         return exc.code
