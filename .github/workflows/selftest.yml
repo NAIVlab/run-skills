@@ -14,3 +14,13 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
       - name: Offline selftest (stubbed slurm/ssh/uv/rsync)
         run: RS_USER_DIR="$RUNNER_TEMP/rs-user" bash selftest.sh
+  package:
+    # the uv-tool life cycle (build, install from git, rsk setup, rsk update, rollback) in a scratch HOME
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install zsh (the packaged selftest parses profiles under zsh too)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
+      - name: Wheel, uv tool install, setup, update, rollback
+        run: bash tests/pkg-wheel.sh

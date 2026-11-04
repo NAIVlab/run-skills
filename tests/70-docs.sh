@@ -6,8 +6,8 @@ set -u
 . "$RS_HOME/tests/lib.sh"
 C() { ( . "$RS_HOME/lib/common.sh"; eval "$1" ) 2>&1; }
 
-if [ ! -d "$RS_HOME/skills" ]; then   # installed harness copy (no skills/ templates/ docs/): these are clone-only checks
-  echo "-- docs: skipped ($RS_HOME has no skills/ — run selftest from the git clone for the doc checks) --"; return 0 2>/dev/null || exit 0
+if [ ! -d "$RS_HOME/skills" ] || [ "${RS_PACKAGED:-0}" = 1 ]; then   # installed copy (rsk's wheel keeps no symlinks): clone-only
+  echo "-- docs: skipped ($RS_HOME is an installed copy — run selftest from the git clone for the doc checks) --"; return 0 2>/dev/null || exit 0
 fi
 echo "-- skills --"
 for s in hpc-run ws-run; do
@@ -71,6 +71,7 @@ PS=$(cat "$RS_HOME/skills/hpc-run/references/project-setup.md" 2>/dev/null)
 for f in skills/hpc-run/SKILL.md skills/ws-run/SKILL.md; do
   has "$(cat "$RS_HOME/$f")" 'references/project-setup.md' "$f: a project without a conf goes through project-setup.md"
   has "$(cat "$RS_HOME/$f")" 'INSTALL.md' "$f: registering a target points at INSTALL.md"
+  has "$(tr '\n' ' ' < "$RS_HOME/$f")" 'installed without rsk: re-run `bash ~/.local/share/run-skills/install.sh`' "$f: registering without rsk re-runs install.sh"
 done
 has "$PS" 'never guess' "project-setup: never guess the remote dir"; has "$PS" 'never create it' "project-setup: never create a conda env"
 has "$PS" 'run-sync -n' "project-setup: dry-run before the first sync"; has "$PS" 'Never launch it unasked' "project-setup: no launch without the user"
@@ -87,6 +88,19 @@ for c in 'run-probe hosts' 'run-probe <alias>' 'run-probe wandb' 'run-probe wand
 for c in 'run-probe hosts ' 'run-probe <alias> ' 'run-probe wandb \[--import-netrc\] '; do
   has "$(sed -n '2,8p' "$RS_HOME/bin/run-probe")" "$c" "run-probe header documents: $c"; done
 has "$(cat "$RS_HOME/install.sh")" '"$RS_HOME/INSTALL.md" "$DEST/"' "install.sh ships INSTALL.md next to the harness (skills point at \$ROOT/INSTALL.md)"
+# every harness path the runbook, skills and docs name ($H/…, $ROOT/…, ~/.agents/run-skills/…) is under a top-level entry
+# install.sh copies there: a later session has the harness copy, not necessarily a clone
+SHIP=$(sed -n '/^rsync -a --delete "$RS_HOME\/bin"/,/"$DEST\/"/p' "$RS_HOME/install.sh" | grep -o '"$RS_HOME/[^"]*"' | sed 's/^"$RS_HOME\///; s/"$//')
+miss=""; for p in $(cat "$RS_HOME/INSTALL.md" "$RS_HOME/README.md" "$RS_HOME"/docs/*.md "$RS_HOME"/skills/*/SKILL.md "$RS_HOME"/skills/*/references/*.md \
+  | grep -o -e '\$H/[A-Za-z0-9_./-]*' -e '\$ROOT/[A-Za-z0-9_./-]*' -e '~/\.agents/run-skills/[A-Za-z0-9_./-]*' | sort -u); do
+  r=${p#*run-skills/}; r=${r#\$H/}; r=${r#\$ROOT/}; [ -z "$r" ] || echo "$SHIP" | grep -qx "${r%%/*}" || miss="$miss $p"; done
+echo "$SHIP" | grep -qx bin && [ -z "$miss" ] && ok "every harness path the docs name is shipped by install.sh ($(echo $SHIP))" \
+  || bad "every harness path the docs name is shipped by install.sh ($(echo $SHIP)); missing:$miss"
+hasnt "$I" '\$E/' "INSTALL: no \$E/ paths (the engine clone is not guaranteed; \$H is)"
+has "$I" 'uv tool dir --bin' "INSTALL: rsk is found when uv's tool bin dir is off PATH"
+has "$I" 'Installed without rsk' "INSTALL Step 6: a setup without rsk re-runs install.sh"
+has "$I" '^- updating: `rsk update`' "INSTALL Step 7: updating is rsk update (re-running uv tool install is a no-op)"
+has "$(cat "$RS_HOME/README.md")" '`rsk update --to main` follows main' "README: --to pins, --to main follows main again"
 has "$(cat "$RS_HOME/skills/hpc-run/SKILL.md")" 'run-sync\|run-bootstrap' "hpc-run names the bin/ commands"
 has "$(cat "$RS_HOME/skills/ws-run/SKILL.md")" 'run-launch' "ws-run names run-launch"
 for f in skills/hpc-run/SKILL.md skills/ws-run/SKILL.md skills/hpc-run/references/procedure-slurm.md \
@@ -146,9 +160,11 @@ PFW="$RS_USER_DIR/forbidden-words"
 if [ -f "$PFW" ]; then
   PW=$(sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' "$PFW" | tr '\n' '|' | sed 's/|*$//')
   if [ -n "$PW" ]; then
-    SCAN=""; for x in bin lib remote targets skills templates tests docs codex .github selftest.sh install.sh README.md AGENTS.md INSTALL.md LICENSE; do
-      [ -e "$RS_HOME/$x" ] && SCAN="$SCAN $x"; done
-    FW=$(cd "$RS_HOME" && grep -rIli -E -e "$PW" -- $SCAN 2>/dev/null); RC=$?
+    if git -C "$RS_HOME" rev-parse --is-inside-work-tree >/dev/null 2>&1; then   # every tracked or new (not ignored) file
+      FW=$(cd "$RS_HOME" && git grep --untracked -Ili -E -e "$PW" 2>/dev/null); RC=$?
+    else
+      FW=$(cd "$RS_HOME" && grep -rIli -E -e "$PW" -- . 2>/dev/null); RC=$?
+    fi
     if [ "$RC" -ge 2 ]; then bad "no forbidden words in the repo (overlay list) — grep rejected a pattern in $PFW"
     elif [ -z "$FW" ]; then ok "no forbidden words in the repo (overlay list)"
     else bad "no forbidden words in the repo (overlay list)"; echo "$FW" | sed 's/^/    | /'; fi
@@ -170,7 +186,7 @@ budget() { [ -f "$RS_HOME/$1" ] || { bad "$1 exists"; return; }; local n; n=$(wc
   [ "$n" -le "$2" ] && ok "$1 within $2 lines ($n)" || bad "$1 within $2 lines ($n)"; }
 budget lib/common.sh 133; budget remote/env.sh 170; budget remote/bootstrap.sh 90; budget remote/submit.sh 190; budget remote/job.sbatch 65   # common +3: rs_ref, rs_deploy_profile
 budget remote/status.sh 175   # generous on purpose: every lookup has an explicit failure branch; compressing them hides bugs
-budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 240; budget AGENTS.md 165; budget INSTALL.md 230
+budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 240; budget AGENTS.md 175; budget INSTALL.md 232 # AGENTS +10: rsk; INSTALL +2: which rsk, setup without rsk
 budget skills/hpc-run/SKILL.md 62; budget skills/ws-run/SKILL.md 62; budget bin/run-watch 700   # SKILL +2: a summary is not the reference
 budget skills/hpc-run/references/experiment-conventions.md 135;   # +4: the run-watch exception (§3, §6, §7); +1: a USR1 death is FAILED
 budget skills/hpc-run/references/project-setup.md 100

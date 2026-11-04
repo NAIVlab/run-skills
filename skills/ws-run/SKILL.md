@@ -17,7 +17,8 @@ summarized, re-read the reference (every path in the row; the harness re-prints 
 each plan unless its text is verbatim in context; the plan ends `ref: <path>`.
 If INDEX says no workstation is registered yet (or the user wants another one), register it with the user: Steps 2–6
 of `$ROOT/INSTALL.md` (read-only discovery with `$ROOT/bin/run-probe`, then `~/.config/run-skills/targets/<alias>/`
-from `$ROOT/targets/_template-nohup/`, then `install.sh`) — or install the user's lab target pack.
+from `$ROOT/targets/_template-nohup/`, then `rsk setup`; installed without rsk: re-run
+`bash ~/.local/share/run-skills/install.sh` or the pack's `install.sh`) — or `rsk pack add` the user's lab target pack.
 (For a Slurm cluster use the **hpc-run** skill instead.) A project runs on a workstation when its repo root has a
 `.ws.conf`; if it is missing (or the user asks to set the project up), follow `references/project-setup.md` — it asks
 for `WS_REMOTE_DIR`; never guess it.

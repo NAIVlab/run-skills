@@ -27,7 +27,7 @@ my-lab-pack/
 └── hpc.conf.example        # optional: a project conf with your group's directory layout
 ```
 
-Start from the skeleton: `cp -R ~/.local/share/run-skills/templates/pack my-lab-pack`, then copy
+Start from the skeleton: `cp -R ~/.agents/run-skills/templates/pack my-lab-pack` (or from any clone), then copy
 `targets/_template-slurm` or `targets/_template-nohup` for each target. The comments in the templates document
 every key; [`../AGENTS.md`](../AGENTS.md) documents the `policy.sh` API (`t_partition`, `t_policy`).
 
@@ -69,21 +69,21 @@ pack's `routing/<skill>.md` is appended to it verbatim, so write Markdown bullet
 2. In the pack's README, give members the one-liner:
 
    ```bash
-   git clone git@github.com:<org>/<pack>.git ~/.config/run-skills/packs/<pack> \
-     && bash ~/.config/run-skills/packs/<pack>/install.sh
+   uv tool install git+https://github.com/NAIVlab/run-skills && rsk pack add git@github.com:<org>/<pack>.git && rsk setup
    ```
 
-   A clone elsewhere works too — `install.sh` symlinks it into `~/.config/run-skills/packs/`. Members who prefer
+   `rsk pack add` clones into `~/.config/run-skills/packs/<pack>` (a local directory is linked instead). The pack's
+   own `install.sh` still works too: it symlinks the pack and installs the engine from a clone. Members who prefer
    to let their agent do it can paste: *"Install run-skills for me with our target pack `<url>`: clone
    https://github.com/NAIVlab/run-skills to `~/.local/share/run-skills` and follow its `INSTALL.md`."* The runbook
    installs the pack, fills in the pack's `ssh_config` placeholders with the member's username, and probes the
    targets read-only.
-3. Updates: `git -C ~/.config/run-skills/packs/<pack> pull && bash ~/.config/run-skills/packs/<pack>/install.sh`
-   pulls the pack, then pulls the engine and reinstalls. Profile and policy edits apply at the next sync; changes to
-   names, descriptions or routing need the reinstall to reach the skills' INDEX.
+3. Updates: `rsk update` fast-forwards every clean pack clone, upgrades rsk and re-runs `rsk setup` (a pack linked
+   to a working tree is the owner's to pull; then `rsk setup`). Profile and policy edits apply at the next sync;
+   changes to names, descriptions or routing need the setup to reach the skills' INDEX.
 
-Installer knobs (environment variables): `RS_ENGINE_URL` (engine repo, e.g. your fork), `RS_ENGINE_DIR` (its
-clone, default `~/.local/share/run-skills`), `RS_PACKS_DIR` (default `~/.config/run-skills/packs`).
+The pack's `install.sh` knobs (environment variables): `RS_ENGINE_URL` (engine repo, e.g. your fork), `RS_ENGINE_DIR`
+(its clone, default `~/.local/share/run-skills`), `RS_PACKS_DIR` (default `~/.config/run-skills/packs`, which rsk reads too).
 
 ## Precedence and personal tweaks
 

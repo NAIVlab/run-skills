@@ -56,6 +56,7 @@ for d in "$RS_HOME"/targets/*/ "$RS_PACKS_DIR_REAL"/*/targets/*/ "$RS_USER_DIR_R
     run_section "B: ${f#"$HOME"/}" env RS_USER_DIR="$RS_USER_DIR_REAL" RS_PACKS_DIR="$RS_PACKS_DIR_REAL" bash -c '. "$RS_HOME/tests/lib.sh"; . "$1"' _ "$f"
   done
 done
-P=$(grep -c '^  PASS: ' "$R"); F=$(grep -c '^  FAIL: ' "$R")
-echo; echo "===== RESULT: $P pass, $F fail ====="
+P=$(grep -c '^  PASS: ' "$R"); F=$(grep -c '^  FAIL: ' "$R"); S=$(grep -c '^  SKIP: ' "$R")
+echo; [ "$S" = 0 ] || echo "$S section(s) skipped — see the SKIP lines"
+echo "===== RESULT: $P pass, $F fail ====="
 exit "$F"
