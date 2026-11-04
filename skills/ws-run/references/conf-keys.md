@@ -30,7 +30,7 @@ copy (`run-sync`, `run-pull`) goes there, the ssh commands stay on the host. Lik
 init, GPU facts, storage policy) come from the box's `profile.sh` in
 `~/.config/run-skills/targets/<t>/` (start from `$ROOT/targets/_template-nohup/`) or an installed target pack.
 
-Minimal example (`templates/ws.conf.example` in the clone has the annotated version):
+Minimal example (`$ROOT/templates/ws.conf.example` has the annotated version):
 ```
 ENV_KIND=uv
 RUN="python train.py --config configs/base.yaml --device cuda:0"

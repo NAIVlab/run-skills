@@ -23,32 +23,38 @@ https://github.com/NAIVlab/run-skills to `~/.local/share/run-skills` and follow 
    mode 600), then append. The only edit to an existing block is replacing a `<user>`-style placeholder with the
    user's value. Never reorder or delete anything. Afterwards `ssh -G <alias>` must show the intended `hostname` and
    `user` — an earlier `Host *` block wins over later ones, so fix any conflict with the user. Never edit shell rc files.
-5. **Site facts go to the user's overlay**, `~/.config/run-skills/` — never into the clone
-   (`~/.local/share/run-skills`), a commit, or a public issue.
+5. **Site facts go to the user's overlay**, `~/.config/run-skills/` — never into the clone, the installed tool
+   (`uv tool dir`), a commit, or a public issue.
 6. **Do not invent facts.** A value comes from a probe, from the user, or from site documentation the user points
    you to. Mark what the user told you as such in `reference.md`; write `TODO(ask)` rather than guess.
 7. **Ask in small batches** — at most four questions per message, each with your suggested default, so "defaults"
    is a complete answer. Use your runtime's question UI when it has one.
-8. **Sandboxed runtime?** Cloning, ssh and writing to `~/.agents`, `~/.claude`, `~/.config/run-skills` and
-   `~/.local/share/run-skills` need network and home-directory access. Ask the user to grant it for this install, or
-   hand them the command to run in their own terminal.
+8. **Sandboxed runtime?** Cloning, ssh, `uv tool install` and writing to `~/.agents`, `~/.claude`, `~/.config/run-skills`,
+   `~/.local/share/uv` and `~/.local/bin` need network and home-directory access. Ask the user to grant it for this
+   install, or hand them the command to run in their own terminal.
 
 Commands here avoid globs that may match nothing (zsh aborts on those); keep it that way when you adapt them.
-`$E` below is the engine clone, `~/.local/share/run-skills`; `$H` is the installed harness, `~/.agents/run-skills`.
+`$H` below is the installed harness, `~/.agents/run-skills` (written by `rsk setup`).
 
 ## Step 0 — Look around
 
 ```bash
-uname -s; command -v git rsync ssh; bash --version | head -1
+uname -s; command -v git rsync ssh uv rsk; bash --version | head -1
+ls "$(uv tool dir --bin 2>/dev/null)/rsk" 2>/dev/null    # rsk installed by uv, even when uv's tool bin dir is off PATH
 ls -d ~/.local/share/run-skills ~/.agents/run-skills 2>/dev/null; ls ~/.config/run-skills/targets ~/.config/run-skills/packs 2>/dev/null
 command -v claude codex pi
 ```
 
 - `git`, `rsync` or `ssh` missing → tell the user how to install it (`brew install rsync`, `sudo apt install rsync`)
-  and stop.
-- `~/.agents/run-skills` exists → **update mode**: `git pull --ff-only` the engine and every installed pack
-  (`git -C ~/.config/run-skills/packs/<entry> pull --ff-only`), then run Step 6. Offer Steps 2–5 only as "Do you
-  want to add another server?" — never re-ask what is already registered, and skip the pack question below.
+  and stop. `uv` missing → offer its installer (`curl -LsSf https://astral.sh/uv/install.sh | sh`, docs.astral.sh/uv);
+  run it only after their OK, then open a new shell or write `~/.local/bin/uv` wherever this file says `uv`.
+- **Which `rsk`**: wherever this file says `rsk`, run it from PATH if `command -v rsk` finds it, else by the full
+  path line 2 printed (`<uv tool dir --bin>/rsk`), written out each time (shell variables do not survive between
+  your commands). Putting that dir on PATH (`uv tool update-shell`) edits shell rc files: the user's call (rule 4).
+- `rsk` found (either line) → **update mode**: `rsk update` (upgrades rsk, fast-forwards clean pack clones, re-runs
+  setup), then Step 6's checks. Offer Steps 2–5 only as "Do you want to add another server?" — never re-ask what is
+  already registered, and skip the pack question below. `~/.agents/run-skills` without `rsk` = an install from a
+  clone: do Step 1 (same files, now updatable with `rsk update`), then the same.
 - One installed copy serves Claude Code, Codex and pi; nothing to choose.
 
 Ask: **"Does your lab or group have a run-skills target pack (a git repo describing your shared clusters)? If so,
@@ -56,23 +62,19 @@ its git URL."** Default: no.
 
 ## Step 1 — Install the engine
 
-Without a pack:
+The engine is the uv tool `remote-run` (command `rsk`, in its own uv-managed env; nothing touches the user's Python):
 
 ```bash
-[ -d ~/.local/share/run-skills/.git ] || git clone https://github.com/NAIVlab/run-skills.git ~/.local/share/run-skills
-git -C ~/.local/share/run-skills pull --ff-only
-bash ~/.local/share/run-skills/install.sh
+uv tool install git+https://github.com/NAIVlab/run-skills    # "already installed" → rsk update instead
+command -v rsk || echo "$(uv tool dir --bin)/rsk"            # the `rsk` to run below (Step 0, "Which rsk")
 ```
 
-With a pack `<url>`: first check whether it is already installed — for each entry of
-`~/.config/run-skills/packs`, `git -C ~/.config/run-skills/packs/<entry> remote get-url origin`; a match means
-`<pack>` = that entry (reuse it; never clone a second copy — its routing would be listed twice). Otherwise
-`<pack>` = the repo name (without `.git`):
+With a pack `<url>`: `rsk pack list` shows the registered packs and their origins; a match means it is installed
+(reuse it; never add a second copy — its routing would be listed twice). Otherwise `rsk pack add <url>` (clones it
+into `~/.config/run-skills/packs/`; `rsk update` keeps it current). Then, with or without a pack:
 
 ```bash
-[ -d ~/.config/run-skills/packs/<pack>/.git ] || git clone <url> ~/.config/run-skills/packs/<pack>
-git -C ~/.config/run-skills/packs/<pack> pull --ff-only
-bash ~/.config/run-skills/packs/<pack>/install.sh      # clones/updates the engine, then runs its install.sh
+rsk setup      # harness copy, skills, INDEX, overlay scaffold, ssh alias check, offline selftest
 ```
 
 A private pack needs the user's git access (an ssh key on the git host); a clone failure is theirs to fix. Then
@@ -95,7 +97,7 @@ then ask:
 
 - **"Which of these are GPU machines you want to run experiments on?"** (multi-select).
 - **"Is any server missing from this list?"** For each: hostname, username, jump host if any. Draft a block from
-  `$E/templates/ssh_config` (keep the `ControlMaster` lines: they let one interactive 2FA login serve all later
+  `$H/templates/ssh_config` (keep the `ControlMaster` lines: they let one interactive 2FA login serve all later
   calls; set `IdentityFile` to the user's actual key — see "Keys" below — or drop it) and apply rule 4.
 - A pack target flagged by the installer: take the block from the pack's `ssh_config`; a `placeholder user` row:
   the block is already there. Either way ask for the user's username on that site and apply rule 4.
@@ -128,13 +130,13 @@ never a member's identity, so **ask who the user is there** — the facts its RE
 (else: username, the account their runs bill to, where their projects live), suggesting the probe's `default
 account:` / `associations` and `exists:` lines. Write the answers, marked "(user)", to
 `~/.config/run-skills/targets/<name>/reference.local.md` — an overlay directory *without* `profile.sh`, which also
-holds any personal rule (`$E/docs/packs.md`, "Precedence and personal tweaks"). Never put them into the pack.
+holds any personal rule (`$H/docs/packs.md`, "Precedence and personal tweaks"). Never put them into the pack.
 Otherwise the target name is the alias, lowercase letters, digits and hyphens (it becomes the conf tag: `my-hpc` →
 `MYHPC_`, and the deploy dir `.<name>/` in every project). Reserved, because the dir would collide: `ws`, `venv`, `cache`, `config`, `local`, `git`,
 `claude`, `codex`, `agents`; names starting with `_` are ignored (templates).
 
 ```bash
-cp -R ~/.local/share/run-skills/targets/_template-slurm ~/.config/run-skills/targets/<name>   # or _template-nohup
+cp -R ~/.agents/run-skills/targets/_template-slurm ~/.config/run-skills/targets/<name>   # or _template-nohup
 ```
 
 Fill `profile.sh` from the probe (every key is commented in the template):
@@ -193,8 +195,11 @@ the file can later move into a pack), every unprobed fact marked "(user)". Menti
 ## Step 6 — Install and verify
 
 ```bash
-bash ~/.local/share/run-skills/install.sh     # or: bash ~/.config/run-skills/packs/<pack>/install.sh
+rsk setup && rsk doctor      # doctor: install, skills, packs, targets, ssh aliases — offline
 ```
+
+`rsk` as in Step 0 ("Which rsk"). Installed without rsk (`$H` but no `rsk` at all, e.g. a pack's `install.sh` without
+uv): re-run `bash ~/.local/share/run-skills/install.sh` or the pack's `install.sh` instead (there is no doctor).
 
 Check, and fix before reporting:
 
@@ -211,7 +216,7 @@ One table: target · kind · ssh alias · GPUs · default partition · status (r
 
 - what the user still has to do (`ssh-copy-id`, the wandb key, a new session);
 - where their setup lives: `~/.config/run-skills/{targets,routing,wandb_env}`;
-- updating: re-run the Step 1 commands;
+- updating: `rsk update` (engine, pack clones, then setup);
 - next: in a project, *"set up this project for `<target>`"*, or simply *"run train.py on `<target>`, 1 GPU"*.
 
 Then ask: **"Do you want me to set up existing projects now? Give me their paths."**

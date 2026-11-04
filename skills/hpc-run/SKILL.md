@@ -17,9 +17,10 @@ A summary of a file is not the file: once your context was summarized, re-read t
 harness re-prints them as `reference:` / `ref=`) before each plan unless its text is verbatim in context; the plan ends `ref: <path>`.
 If INDEX says no cluster is registered yet (or the user wants another one), register it with the user: Steps 2–6 of
 `$ROOT/INSTALL.md` (read-only discovery with `$ROOT/bin/run-probe`, then `~/.config/run-skills/targets/<name>/` from
-`$ROOT/targets/_template-slurm/`, then `install.sh`) — or install the user's lab target pack. A project runs on a
-target when its repo root has a `.hpc.conf`; if it is missing (or the user asks to set the project up), follow
-`references/project-setup.md` — it asks for `REMOTE_DIR`; never guess it.
+`$ROOT/targets/_template-slurm/`, then `rsk setup`; installed without rsk: re-run `bash ~/.local/share/run-skills/install.sh`
+or the pack's `install.sh`) — or `rsk pack add` the user's lab target pack. A project runs on a target when its repo
+root has a `.hpc.conf`; if it is missing (or the user asks to set the project up), follow `references/project-setup.md`
+— it asks for `REMOTE_DIR`; never guess it.
 
 ## 2. Commands (cwd = the project root; `<t>` = target name, `<host>` = its host column)
 ```

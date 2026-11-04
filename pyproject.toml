@@ -1,0 +1,45 @@
+# run-skills as a uv tool: `uv tool install git+https://github.com/NAIVlab/run-skills` puts `rsk` on PATH.
+# The wheel carries the bash harness (bin lib remote targets skills ...) under remote_run/_harness; `rsk setup`
+# installs the skills and the harness copy from it. Standard library only: no runtime dependencies.
+[project]
+name = "remote-run"
+dynamic = ["version"]
+description = "Run, watch and manage experiments on Slurm clusters and GPU workstations from a coding agent"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+rsk = "remote_run.cli:main"
+
+[project.urls]
+Repository = "https://github.com/NAIVlab/run-skills"
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/remote_run/__init__.py"
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/.github", "/.claude", "/dist"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/remote_run"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"bin" = "remote_run/_harness/bin"
+"lib" = "remote_run/_harness/lib"
+"remote" = "remote_run/_harness/remote"
+"targets" = "remote_run/_harness/targets"
+"skills" = "remote_run/_harness/skills"
+"codex" = "remote_run/_harness/codex"
+"templates" = "remote_run/_harness/templates"
+"tests" = "remote_run/_harness/tests"
+"docs" = "remote_run/_harness/docs"
+"selftest.sh" = "remote_run/_harness/selftest.sh"
+"install.sh" = "remote_run/_harness/install.sh"
+"INSTALL.md" = "remote_run/_harness/INSTALL.md"

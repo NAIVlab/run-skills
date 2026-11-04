@@ -1,0 +1,8 @@
+# build and tool output (never committed: the repo holds sources only)
+__pycache__/
+*.pyc
+/dist/
+/build/
+*.egg-info/
+/.venv/
+/uv.lock

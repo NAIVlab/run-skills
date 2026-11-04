@@ -35,7 +35,7 @@ Not a conf key: the data-transfer node (`T_XFER_HOST`) is a site fact and lives 
 copy (`run-sync`, `run-pull`) goes there, the ssh commands stay on the host. Likewise, `T_*` values come from the target's `profile.sh` (the user's `~/.config/run-skills/targets/<t>/`,
 or an installed target pack's `targets/<t>/`).
 
-Minimal example (`templates/hpc.conf.example` in the clone has the annotated version):
+Minimal example (`$ROOT/templates/hpc.conf.example` has the annotated version):
 ```
 REMOTE_DIR=/project/<group>/<user>/<project>
 ENV_KIND=uv

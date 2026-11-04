@@ -11,22 +11,23 @@ Codex or pi can run your projects there with one sentence:
 ## Install (one command)
 
 ```bash
-git clone git@github.com:<org>/<pack-name>.git ~/.config/run-skills/packs/<pack-name> \
-  && bash ~/.config/run-skills/packs/<pack-name>/install.sh
+uv tool install git+https://github.com/NAIVlab/run-skills && rsk pack add git@github.com:<org>/<pack-name>.git && rsk setup
 ```
+
+(Needs [uv](https://docs.astral.sh/uv/). Without it: clone this pack and run its `install.sh`.)
 
 Or let your agent do it — paste into Claude Code, Codex or pi: *"Install run-skills for me with our target pack
 `git@github.com:<org>/<pack-name>.git`: clone https://github.com/NAIVlab/run-skills to `~/.local/share/run-skills`
 and follow its `INSTALL.md`."* It also sets up your ssh aliases (asking first) and the wandb key.
 
-Either way, this installs (or updates) the run-skills engine in `~/.local/share/run-skills`, registers this pack, installs the
+Either way, this installs the run-skills engine (the `rsk` command), registers this pack, installs the
 `hpc-run` / `ws-run` skills and runs the offline selftest. Then:
 
 1. **ssh**: append [`ssh_config`](ssh_config) to `~/.ssh/config`, replace `<user>`, and `ssh-copy-id <alias>` for
    each target. The installer's "ssh aliases" step tells you which ones are still missing.
 2. **wandb** (optional): put your own API key in `~/.config/run-skills/wandb_env`.
 
-**Update:** `git -C ~/.config/run-skills/packs/<pack-name> pull && bash ~/.config/run-skills/packs/<pack-name>/install.sh`
+**Update:** `rsk update` (the engine and this pack's clone; installed with `install.sh`: re-run it after a `git pull`)
 
 ## Use
 
@@ -51,5 +52,5 @@ their own overlay, `~/.config/run-skills/targets/<name>/reference.local.md`:
 ## Maintaining this pack
 
 Edit `targets/<name>/` (profile, policy, reference, tests) and `routing/`. Check with
-`bash ~/.local/share/run-skills/selftest.sh` — it runs every pack target's `tests.sh` — then push. Guide:
+`rsk setup` (its selftest runs every pack target's `tests.sh`) — then push. Guide:
 [run-skills docs/packs.md](https://github.com/NAIVlab/run-skills/blob/main/docs/packs.md).

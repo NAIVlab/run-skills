@@ -54,7 +54,7 @@ guard rails built in, and gives the agent a short, per-site reference instead of
 
 | where | needs |
 |---|---|
-| your machine | Linux or macOS (bash 3.2 is fine), `git`, `rsync`, `ssh`; Claude Code, Codex (0.149+) or pi |
+| your machine | Linux or macOS (bash 3.2 is fine), `git`, `rsync`, `ssh`, [`uv`](https://docs.astral.sh/uv/); Claude Code, Codex (0.149+) or pi |
 | every target | Linux with bash, key-based ssh through an alias in `~/.ssh/config`, NVIDIA GPUs |
 | Slurm targets | `sbatch`/`squeue`/`sinfo`/`sacct` on the login node |
 | your project | a Python repo with a `pyproject.toml` (uv), or an existing conda env on the target |
@@ -80,14 +80,14 @@ In a lab with a [target pack](#target-packs), give it the pack's URL when it ask
 
 ### Or by hand
 
-**1. Install** (re-run the same command later to update):
+**1. Install** (later, `rsk update` updates everything):
 
 ```bash
-git clone https://github.com/NAIVlab/run-skills.git ~/.local/share/run-skills
-bash ~/.local/share/run-skills/install.sh
+uv tool install git+https://github.com/NAIVlab/run-skills    # the `rsk` command, in its own uv-managed env
+rsk setup
 ```
 
-The installer copies the harness to `~/.agents/run-skills/`, installs one copy of each skill into
+`rsk setup` copies the harness to `~/.agents/run-skills/`, installs one copy of each skill into
 `~/.agents/skills/` (read directly by Codex and pi; `~/.claude/skills/` gets symlinks for Claude Code), scaffolds
 `~/.config/run-skills/`, checks your ssh aliases and runs the offline selftest. It never edits `~/.ssh/config` and
 never overwrites an existing wandb key.
@@ -98,8 +98,8 @@ never overwrites an existing wandb key.
 **2. Register a target.** Copy a template into your private overlay and fill it in:
 
 ```bash
-cp -R ~/.local/share/run-skills/targets/_template-nohup ~/.config/run-skills/targets/mybox      # a GPU workstation
-cp -R ~/.local/share/run-skills/targets/_template-slurm ~/.config/run-skills/targets/mycluster  # a Slurm cluster
+cp -R ~/.agents/run-skills/targets/_template-nohup ~/.config/run-skills/targets/mybox      # a GPU workstation
+cp -R ~/.agents/run-skills/targets/_template-slurm ~/.config/run-skills/targets/mycluster  # a Slurm cluster
 ```
 
 The directory name is the target name. `bash ~/.agents/run-skills/bin/run-probe <alias>` prints the facts you
@@ -107,7 +107,7 @@ need (GPUs, partitions, time limits, accounts, filesystems — read-only). Edit 
 policy — every key is commented), for Slurm also `policy.sh` (partitions, GPU ranges, per-GPU cpu/mem, walltime caps), and
 `reference.md` — the one page the agent reads before using the target, so write down what a newcomer would need
 (partitions, quotas, quirks). Add a matching `Host` block to `~/.ssh/config` (see
-[`templates/ssh_config`](templates/ssh_config)), then re-run `install.sh` so the target shows up in the skills.
+[`templates/ssh_config`](templates/ssh_config)), then re-run `rsk setup` so the target shows up in the skills.
 
 **3. Optional: your wandb key.** Put *your own* key ([wandb.ai/authorize](https://wandb.ai/authorize)) in
 `~/.config/run-skills/wandb_env`. Every sync pushes it next to the project (mode 600). With no key, runs simply go
@@ -170,14 +170,13 @@ to by accident), `reference.local.md` is shown next to the pack's reference, `te
 
 A pack is a git repo — usually a private one, because cluster details are nobody else's business — holding
 `targets/<name>/` directories, optional routing hints for the agent (`routing/hpc-run.md`) and an installer.
-Lab members then need exactly one command:
+Lab members then need one line (`rsk update` keeps the engine and the pack clone current):
 
 ```bash
-git clone git@github.com:<your-org>/<your-pack>.git ~/.config/run-skills/packs/<your-pack> \
-  && bash ~/.config/run-skills/packs/<your-pack>/install.sh
+uv tool install git+https://github.com/NAIVlab/run-skills && rsk pack add git@github.com:<your-org>/<your-pack>.git && rsk setup
 ```
 
-The pack's installer clones or updates this engine and runs its `install.sh`. Start from
+A pack's own `install.sh` still works (it clones this engine and runs its `install.sh`). Start from
 [`templates/pack/`](templates/pack/); the full guide is [`docs/packs.md`](docs/packs.md).
 
 ## Configuration in one paragraph
@@ -219,10 +218,12 @@ These are part of the skills' instructions and are enforced by the harness where
 
 ## Updating and uninstalling
 
-Update: `git -C ~/.local/share/run-skills pull && bash ~/.local/share/run-skills/install.sh` (or re-run your
-pack's `install.sh`). A change to `remote/` reaches a project at its next sync.
+Update: `rsk update` (alias `upgrade`) upgrades rsk through uv, fast-forwards clean pack clones, then the new rsk re-runs
+`rsk setup`. `--check` only reports, `--to <tag|commit>` installs that version (to roll back); a later `rsk update`
+stays on it, `rsk update --to main` follows main again. `rsk doctor` checks the install offline. A change to
+`remote/` reaches a project at its next sync.
 
-Uninstall: remove `~/.agents/run-skills`, `~/.agents/skills/{hpc-run,ws-run}`, the symlinks
+Uninstall: `uv tool uninstall remote-run`; remove `~/.agents/run-skills`, `~/.agents/skills/{hpc-run,ws-run}`, the symlinks
 `~/.claude/skills/{hpc-run,ws-run}` and `~/.claude/run-skills`, and the clone. `~/.config/run-skills` holds your
 targets, packs and wandb key — delete it only if you mean to. Nothing is installed on the remote side outside your
 project directories.
@@ -230,7 +231,7 @@ project directories.
 ## Contributing
 
 Issues and pull requests are welcome. The loop is: edit the clone → `bash selftest.sh` (prints
-`RESULT: N pass, M fail`, exit code = failures) → `bash install.sh` → re-sync a project. Contributor and agent
+`RESULT: N pass, M fail`, exit code = failures) → `rsk setup` (from `uv tool install --editable .`) → re-sync a project. Contributor and agent
 guidance — constraints, portability rules, the test-helper contract — is in [`AGENTS.md`](AGENTS.md); design
 rationale is in [`docs/DESIGN.md`](docs/DESIGN.md). Site-specific targets belong in packs, not in this repo.
 

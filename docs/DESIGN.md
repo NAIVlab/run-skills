@@ -119,6 +119,16 @@ second copy would be listed twice by agents that scan several roots. It generate
 discovered targets and prepends the targets' trigger words to the skill description (some agents select skills
 lexically; descriptions stay under 1024 characters and free of `<>`). The clone never receives generated files.
 
+The engine ships as a uv tool (`remote-run`, command `rsk`): `uv tool install git+…` gives it an isolated env that no
+project venv, `VIRTUAL_ENV` or `PYTHONPATH` can shadow, and `rsk update` is one command for everything a member has
+— it upgrades the tool through uv, fast-forwards clean pack clones, and has the *new* rsk re-run `rsk setup` (which
+runs the same `install.sh`, from the wheel's copy of the harness, and its selftest against the member's packs). uv is
+used at install and update time only; `rsk` never calls it to run. The user's dir `~/.config/run-skills/` (overlay,
+packs, wandb key, `config.toml` for rsk's own settings — never a site fact) lives outside the tool env, so an update
+never touches it. A remote deploy changes only at the project's next sync. `rsk status` finds a project's jobs by
+place (Slurm WorkDir, `logs/*.pid`), not from memory: a context summary or a new session cannot lose them, and a
+target that does not answer is reported as unobservable, never as idle.
+
 ## Onboarding is a conversation
 
 Installing is easy; *describing a site* is the hard part, and it is the agent that will later depend on that
