@@ -10,8 +10,8 @@
 # nohup: busy GPU never grant-covered, approved card -> --gpu-busy-ok, cancel TERM/KILL; the watch lease. The P3 review
 # findings (H1 H2 H3 M1 M3 M4 M5 M6 M7 L2 L3 L4 L5), the round-3 decisions (D1 D3 D5 D6 D8 D9 D10; C-stale-API,
 # F-unknown, grants#1/3/4, H1-owner/msg, G-space), the round-4 ones (R4-1 R4-2 R4-4 R4-6 R4-8 R4-15) and the round-5 ones
-# (R5-1 R5-4 R5-5 R5-8 R5-9), the round-6 ones (R6-1 R6-4 R6-5 R6-7 R6-8 R6-9) and the round-7 ones (R7-1 R7-2 R7-5 R7-6
-# R7-7), each end to end.
+# (R5-1 R5-4 R5-5 R5-8 R5-9), the round-6 ones (R6-1 R6-4 R6-5 R6-7 R6-8 R6-9), the round-7 ones (R7-1 R7-2 R7-5 R7-6
+# R7-7) and the round-8 ones (R8-1 R8-2 R8-3), each end to end.
 # Run by selftest.sh with RS_HOME set:  bash tests/62-rsk-launch.sh
 set -u
 . "$RS_HOME/tests/lib.sh"
@@ -222,7 +222,7 @@ O=$(rsk launch --relaunch exp--smoke--b--scratch--s0); RC=$?
 has "$O" 'action relaunch not in launch' "...a launch-only grant does not cover a relaunch"; has "$O" '^  payload    python t.py$' "...same payload"
 
 echo "-- cancel: the user's words, identity (name + WorkDir + user) in one ssh, then scancel --"
-: > "$T/scancel.log"; O=$(rsk cancel exp--smoke--base--scratch--s0 --approve "cancel the smoke"); RC=$?
+: > "$T/scancel.log"; O=$(rsk cancel exp--smoke--base--scratch--s0 --approve "cancel the smoke exp--smoke--base--scratch--s0"); RC=$?
 [ "$RC" = 0 ] && has "$(cat "$T/scancel.log")" '^101$' "cancel RUN --approve -> scancel 101" || { bad "cancel (rc=$RC)"; printf '%s\n' "$O" | sed 's/^/    | /'; }
 has "$O" '^approval ap-.*cancel of job(s) 101' "...recorded as a cancel approval naming the job"
 has "$(att exp--smoke--base--scratch--s0 a01)" '^CANCELLING' "...ledger: CANCELLING (until status sees the end)"
@@ -237,7 +237,7 @@ O=$(rsk cancel --job 778 -T fx-slurm --approve "cancel job 778"); RC=$?
 O=$(rsk cancel exp--ablate--sa--scratch--s0); RC=$?
 [ "$RC" = 4 ] && has "$O" '^needs user: approval — cancel job' "the agent's own cancel without cancel_own -> exit 4" || bad "cancel without words (rc=$RC)"
 rsk grant deny --quote "leave the sb ablation alone" --name 'exp--ablate--sb*' --action cancel >/dev/null
-O=$(rsk cancel exp--ablate--sb--scratch--s0 --approve "cancel sb"); RC=$?
+O=$(rsk cancel exp--ablate--sb--scratch--s0 --approve "cancel exp--ablate--sb--scratch--s0"); RC=$?
 [ "$RC" = 3 ] && has "$O" 'leave the sb ablation alone' "a deny on cancel wins over the user's words -> exit 3" || bad "deny on cancel (rc=$RC)"
 rsk grant add --quote "you may stop your own smoke runs" -T fx-slurm --action cancel_own --max-live none --max-launches none --expires 2099-12-31 >/dev/null
 O=$(rsk cancel exp--smoke--w--scratch--s0); RC=$?
@@ -322,7 +322,7 @@ echo "-- review L2: the answer cut after the identity check passed: the cancel a
 R=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\n' "$R" > "$R/.hpc.conf"; CWD=$R
 O=$(rsk launch -T fx-slurm -n exp--smoke--k--a01 -g 1 -- python t.py); O=$(rsk launch --plan "$(pid_of "$O")" --approve "yes")
 mv "$T/bin/ssh" "$T/ssh.real"; printf '#!/usr/bin/env bash\n"%s/ssh.real" "$@" > "%s/full.out"; sed "/@@scancel/,\\$d" "%s/full.out"; exit 255\n' "$T" "$T" "$T" > "$T/bin/ssh"; chmod +x "$T/bin/ssh"
-: > "$T/scancel.log"; O=$(rsk cancel exp--smoke--k --approve "cancel it"); RC=$?; mv "$T/ssh.real" "$T/bin/ssh"
+: > "$T/scancel.log"; O=$(rsk cancel exp--smoke--k --approve "cancel exp--smoke--k"); RC=$?; mv "$T/ssh.real" "$T/bin/ssh"
 [ "$RC" = 5 ] && has "$O" 'the cancel may have been sent' "L2: cut after '@@c J ok' -> exit 5, 'may have been sent'" || bad "L2 (rc=$RC)"
 [ -s "$T/scancel.log" ] && has "$(rsk grant list)" 'jobs used 1/1' "...scancel ran and the approval stays used (1/1)" || bad "L2 approval kept"
 CWD=$P
@@ -526,10 +526,13 @@ sed 's/T_HOST=fx;/T_HOST=fx2;/' "$U6/targets/fx-slurm/profile.sh" > "$U6/targets
     || { bad "R6-1 unnamed (rc=$RC)"; printf '%s\n' "$O" | grep -E 'covered|denied|submitted|prior' | sed 's/^/    | /'; } )
 cp "$T/r.conf" "$R/.hpc.conf"
 
-echo "-- round 7 R7-2: a partition the profile does not list is recorded with a NOTE (T_PARTITIONS: display only); R6-9 + R7-6: grant list and status flag a stored deny naming an unknown target; R6-7 --"
+echo "-- round 7 R7-2 + round 8 R8-3: a partition the profile does not list is exit 2 unless --unlisted-partition, then recorded with a NOTE (T_PARTITIONS: display only); R6-9 + R7-6: grant list and status flag a stored deny naming an unknown target; R6-7 --"
 R6=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\n' "$R6" > "$R6/.hpc.conf"; CWD=$R6
-O=$(rsk grant deny --quote "never use the forbidden queue" -T fx-slurm --partition forbiden); RC=$?; DF=$(printf '%s\n' "$O" | sed -n 's/^\(d-[^ ]*\)  deny .*/\1/p')
-[ "$RC" = 0 ] && has "$O" "NOTE: partition forbiden is not in the profile's display list (T_PARTITIONS of fx-slurm: gpu, forbidden) — recorded as given" "R7-2: a partition the profile does not list -> recorded (exit 0), a NOTE says so — never refused" || bad "R7-2 (rc=$RC)"
+O=$(rsk grant deny --quote "never use the forbidden queue" -T fx-slurm --partition forbiden); RC=$?
+[ "$RC" = 2 ] && has "$O" "partition forbiden is not in the profile's display list (T_PARTITIONS of fx-slurm: gpu, forbidden) — nothing recorded" "R8-3: a partition the profile does not list -> exit 2 naming it (a typo would never match: was recorded, inert)" || bad "R8-3 refusal (rc=$RC)"
+has "$O" 'record it again with --unlisted-partition' "...it says how to record a real partition the display list omits"; hasnt "$(rsk grant list)" 'never use the forbidden queue' "...nothing recorded"
+O=$(rsk grant deny --quote "never use the forbidden queue" -T fx-slurm --partition forbiden --unlisted-partition); RC=$?; DF=$(printf '%s\n' "$O" | sed -n 's/^\(d-[^ ]*\)  deny .*/\1/p')
+[ "$RC" = 0 ] && has "$O" "NOTE: partition forbiden is not in the profile's display list (T_PARTITIONS of fx-slurm: gpu, forbidden) — recorded as given" "R8-3 / R7-2: with --unlisted-partition -> recorded (exit 0), a NOTE says so" || bad "R7-2 (rc=$RC)"
 hasnt "$O" 'unknown partition' "...never 'unknown partition'"; has "$(rsk grant list)" 'never use the forbidden queue' "...recorded"
 has "$(rsk grant list)" "NOTE: partition forbiden is not in the profile's display list" "...grant list repeats the NOTE"
 hasnt "$(rsk grant list)" 'WARNING: .*partition' "...never 'never matches' for a partition (policy.sh decides what exists)"
@@ -571,8 +574,13 @@ printf '%s\n' 't_partition() { case "$1" in gpu|debug) P_GPUS=1-4 P_CPU_PER_GPU=
 ( export RS_USER_DIR=$U7
   D7=$(mk_proj fx-dbg 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\n' "$D7" > "$D7/.hpc.conf"; CWD=$D7
   rsk grant add --quote "run the sweep on fx-dbg" -T fx-dbg --action launch --max-live 4 --max-launches 10 --expires 2099-12-31 >/dev/null
+  O=$(rsk grant deny --quote "never use the debug partition, it is for the admins" -T fx-dbg --partition dbug); RC=$?
+  [ "$RC" = 2 ] && has "$O" "partition dbug is not in the profile's display list (T_PARTITIONS of fx-dbg: gpu) — nothing recorded" "R8-3: a misspelt partition (dbug) -> exit 2 (was: recorded with the same NOTE as a real one, never matching)" || bad "R8-3 typo (rc=$RC)"
+  hasnt "$(rsk grant list)" 'it is for the admins' "...nothing recorded"
   O=$(rsk grant deny --quote "never use the debug partition, it is for the admins" -T fx-dbg --partition debug); RC=$?
-  [ "$RC" = 0 ] && has "$O" "NOTE: partition debug is not in the profile's display list (T_PARTITIONS of fx-dbg: gpu)" "R7-2: the policy's debug partition, not in T_PARTITIONS: the deny is recorded (was: exit 2, lost)" || bad "R7-2 authority deny (rc=$RC)"
+  [ "$RC" = 2 ] && has "$O" 'record it again with --unlisted-partition' "R8-3: a real partition the display list omits needs --unlisted-partition too (rsk cannot tell it from a typo)" || bad "R8-3 unlisted (rc=$RC)"
+  O=$(rsk grant deny --quote "never use the debug partition, it is for the admins" -T fx-dbg --partition debug --unlisted-partition); RC=$?
+  [ "$RC" = 0 ] && has "$O" "NOTE: partition debug is not in the profile's display list (T_PARTITIONS of fx-dbg: gpu)" "R7-2 / R8-3: the policy's debug partition with --unlisted-partition: the deny is recorded" || bad "R7-2 authority deny (rc=$RC)"
   : > "$T/sbatch.log"; O=$(rsk launch -T fx-dbg -n s1 -p debug -g 1 -t 30 -- python train.py); RC=$?
   [ "$RC" = 3 ] && has "$O" 'never use the debug partition' "R7-2: -p debug under the standing grant -> the deny wins (exit 3)" || { bad "R7-2 enforced (rc=$RC)"; printf '%s\n' "$O" | grep -E 'covered|denied|submitted|partition' | sed 's/^/    | /'; }
   has "$O" '^  partition  debug$' "...(the target's policy accepts debug: the plan names it)"; nosub "...nothing submitted"
@@ -601,6 +609,68 @@ W2=$(rsk watch n.tsv --once | grep -o 'n\.tsv: line 2 holds 0x00, .*both refuse 
 printf '#@ run-watch v1\r\n#@ allow launch\r\nc1 fx-slurm - -p gpu -g 1 -- python a.py\r\n' > "$R7/c.tsv"
 O=$(rsk watch c.tsv --once); RC=$?
 [ "$RC" = 2 ] && has "$O" 'c.tsv: line 1 holds 0x0d' "R7-7: a CRLF table too (a CR is a control character)" || bad "R7-7 CRLF (rc=$RC)"
+CWD=$P
+
+echo "-- round 8 R8-1: a comma list written with spaces is split and stripped; whitespace inside an item or an empty item is exit 2 --"
+R8=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\n' "$R8" > "$R8/.hpc.conf"; CWD=$R8
+rsk grant add --quote "run the sw sweep on fx-slurm; you may cancel your own sweep jobs" -T fx-slurm --action launch,cancel_own --max-live none --max-launches none --expires none >/dev/null
+O=$(rsk launch -T fx-slurm -n sw1 -p gpu -g 1 -t 1:00:00 -- python t.py); S1=$(jid "$O")
+O=$(rsk launch -T fx-slurm -n sw2 -p gpu -g 1 -t 1:00:00 -- python t.py); S2=$(jid "$O")
+[ -n "$S1" ] && [ -n "$S2" ] && ok "R8-1 setup: sw1 (job $S1) and sw2 (job $S2) under the grant" || bad "R8-1 setup ('$S1' '$S2')"
+O=$(rsk grant deny --quote "never cancel jobs $S1 or $S2" -T fx-slurm --job "$S1 $S2" --action cancel --action cancel_own); RC=$?
+[ "$RC" = 2 ] && has "$O" "item '$S1 $S2' holds whitespace" "R8-1: --job '$S1 $S2' -> exit 2 naming the item (was: one entry that never matched)" || bad "R8-1 inner space (rc=$RC)"
+O=$(rsk grant deny --quote "never cancel jobs $S1 or $S2" -T fx-slurm --job "$S1," --action cancel); RC=$?
+[ "$RC" = 2 ] && has "$O" "an empty item" "R8-1: --job '$S1,' -> exit 2 (an empty item)" || bad "R8-1 empty item (rc=$RC)"
+hasnt "$(rsk grant list)" "never cancel jobs" "...nothing recorded by either"
+O=$(rsk grant deny --quote "never cancel jobs $S1 or $S2" -T fx-slurm --job "$S1, $S2" --action ' cancel, cancel_own'); RC=$?
+[ "$RC" = 0 ] && has "$O" "DENY cancel, cancel_own: targets fx-slurm; jobs $S1, $S2\$" "R8-1: --job '$S1, $S2' -> the two job ids, stripped (was: '$S1', ' $S2')" || bad "R8-1 jobs (rc=$RC)"
+: > "$T/scancel.log"; O=$(rsk cancel sw2); RC=$?
+[ "$RC" = 3 ] && has "$O" "never cancel jobs $S1 or $S2" "R8-1: the agent's cancel_own of sw2 (job $S2) -> denied, exit 3 (was: cancelled)" || bad "R8-1 cancel (rc=$RC)"
+[ ! -s "$T/scancel.log" ] && ok "...scancel never called" || bad "...scancel called"
+O=$(rsk grant deny --quote "never launch b1 or b2" -T fx-slurm --name 'b1, b2' --action launch); RC=$?
+[ "$RC" = 0 ] && has "$O" 'names b1, b2$' "R8-1: --name 'b1, b2' -> b1 and b2" || bad "R8-1 names (rc=$RC)"
+: > "$T/sbatch.log"; O=$(rsk launch -T fx-slurm -n b2 -p gpu -g 1 -t 1:00:00 -- python t.py); RC=$?
+[ "$RC" = 3 ] && has "$O" 'never launch b1 or b2' "R8-1: rsk launch -n b2 under the grant -> denied, exit 3 (was: submitted)" || bad "R8-1 launch b2 (rc=$RC)"
+nosub "...nothing submitted"
+printf '#@ run-watch v1\n#@ allow launch\nb2 fx-slurm - -p gpu -g 1 -t 1:00:00 -- python b.py\n' > "$R8/b.tsv"; cp "$R8/b.tsv" "$T/b.before"
+O=$(rsk watch b.tsv --approve "run b2 under the watch"); RC=$?
+[ "$RC" = 3 ] && cmp -s "$R8/b.tsv" "$T/b.before" && has "$O" 'never launch b1 or b2' "R8-1: ...and rsk watch --approve of a row b2 -> exit 3, no '#@ ok'" || bad "R8-1 watch (rc=$RC)"
+O=$(rsk grant deny --quote "never b 3" -T fx-slurm --name 'b 3' --action launch); RC=$?
+[ "$RC" = 2 ] && has "$O" "item 'b 3' holds whitespace" "R8-1: --name 'b 3' -> exit 2" || bad "R8-1 name with a space (rc=$RC)"
+O=$(rsk grant deny --quote "never the gt-a or gt-b GPUs" -T fx-slurm --gpu-type 'gt-a gt-b' --action launch); RC=$?
+[ "$RC" = 2 ] && has "$O" "item 'gt-a gt-b' holds whitespace" "R8-1: --gpu-type 'gt-a gt-b' -> exit 2" || bad "R8-1 gpu type (rc=$RC)"
+O=$(rsk grant deny --quote "never the forbidden or gpu partitions" -T ' fx-slurm' --partition 'forbidden, gpu' --action launch); RC=$?; DP=$(printf '%s\n' "$O" | sed -n 's/^\(d-[^ ]*\)  deny .*/\1/p')
+[ "$RC" = 0 ] && hasnt "$O" 'NOTE' "R8-1: -T ' fx-slurm' --partition 'forbidden, gpu' -> fx-slurm, two listed partitions (no NOTE: was ' gpu', unlisted)" || bad "R8-1 partitions (rc=$RC)"
+: > "$T/sbatch.log"; O=$(rsk launch -T fx-slurm -n c1 -p gpu -g 1 -t 1:00:00 -- python t.py); RC=$?
+[ "$RC" = 3 ] && has "$O" 'never the forbidden or gpu partitions' "R8-1: -p gpu under the grant -> denied, exit 3 (was: submitted)" || bad "R8-1 partition launch (rc=$RC)"
+nosub "...nothing submitted"
+rsk grant revoke "$DP" --quote "the gpu partition is fine again" >/dev/null || bad "revoke $DP"
+GD=$(pyl 'print(L.Ledger(sys.argv[2]).dir)' "$R8")
+pyl 'import json; p = sys.argv[2] + "/grants.json"; d = json.load(open(p)); r = next(x for x in d["records"] if x["kind"] == "deny" and "jobs" in x["scope"]); r["scope"]["jobs"] = ["999", " 998"]; json.dump(d, open(p, "w"))' "$GD"
+rm -f "$GD/grants.json.prev"
+has "$(rsk grant list)" "INVALID — taken as a deny: matches EVERYTHING .*scope.jobs: ' 998': whitespace in a scope item" "R8-1: a stored deny item with whitespace (a hand edit) -> invalid, a deny matching everything (fail closed)"
+: > "$T/sbatch.log"; O=$(rsk launch -T fx-slurm -n d1 -p gpu -g 1 -t 1:00:00 -- python t.py); RC=$?
+[ "$RC" = 3 ] && has "$O" 'a damaged record that may be a deny matches everything' "R8-1: ...a launch the grant covers -> exit 3 (fail closed)" || { bad "R8-1 fail closed (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
+nosub "...nothing submitted"
+CWD=$P
+
+echo "-- round 8 R8-2: rsk cancel --approve: the user's words name what is cancelled (job id / pid, run id or name), else exit 4 --"
+R82=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\n' "$R82" > "$R82/.hpc.conf"; CWD=$R82
+rsk grant add --quote "run the sw sweep on fx-slurm" -T fx-slurm --action launch --max-live none --max-launches none --expires none >/dev/null
+O=$(rsk launch -T fx-slurm -n sw1 -p gpu -g 1 -t 1:00:00 -- python t.py); S1=$(jid "$O")
+O=$(rsk launch -T fx-slurm -n sw2 -p gpu -g 1 -t 1:00:00 -- python t.py); S2=$(jid "$O")
+[ -n "$S1" ] && [ -n "$S2" ] && ok "R8-2 setup: sw1 (job $S1) and sw2 (job $S2), both live" || bad "R8-2 setup ('$S1' '$S2')"
+: > "$T/scancel.log"; O=$(rsk cancel --job "$S2" -T fx-slurm --approve "cancel job $S1, it diverged"); RC=$?
+[ "$RC" = 4 ] && has "$O" "^needs user: the words do not name $S2 — " "R8-2: --job $S2 with words naming job $S1 -> exit 4 (was: an approval for $S2, cancelled)" || { bad "R8-2 job (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
+O=$(rsk cancel sw2 --approve "cancel sw1, it diverged"); RC=$?
+[ "$RC" = 4 ] && has "$O" "^needs user: the words do not name sw2 — " "R8-2: rsk cancel sw2 with words naming sw1 -> exit 4" || bad "R8-2 run (rc=$RC)"
+O=$(rsk cancel sw2 --approve "cancel sw10 and job 1$S2"); RC=$?
+[ "$RC" = 4 ] && ok "R8-2: sw10 / 1$S2 do not name sw2 / $S2 (whole tokens only) -> exit 4" || bad "R8-2 tokens (rc=$RC)"
+hasnt "$(rsk grant list)" 'approval' "...no approval recorded by any of them"; [ ! -s "$T/scancel.log" ] && ok "...scancel never called" || bad "...scancel called"
+O=$(rsk cancel sw2 --approve "cancel job $S2."); RC=$?
+[ "$RC" = 0 ] && has "$(cat "$T/scancel.log")" "^$S2\$" "R8-2: words naming job $S2 -> cancelled" || bad "R8-2 named job (rc=$RC)"
+: > "$T/scancel.log"; O=$(rsk cancel --job "$S1" -T fx-slurm --approve "stop sw1, it diverged"); RC=$?
+[ "$RC" = 0 ] && has "$(cat "$T/scancel.log")" "^$S1\$" "R8-2: --job $S1 with words naming its run sw1 -> cancelled" || bad "R8-2 named run (rc=$RC)"
 CWD=$P
 
 echo "-- watch: the lease (one watcher per project) --"
@@ -641,7 +711,9 @@ O=$(rsk cancel busy1 --approve "stop busy1" --grace 5); RC=$?
 has "$(att busy1 a01)" '^CANCELLED' "...ledger: CANCELLED"
 O=$(rsk launch -T ws-box -d 3 -N stub1 -- "sh -c 'trap \"\" TERM; sleep 60'"); RC=$?
 [ "$RC" = 0 ] || bad "a TERM-immune run launches (rc=$RC)"
-O=$(rsk cancel stub1 --approve "stop it" --grace 2); RC=$?
+O=$(rsk cancel stub1 --approve "stop busy1" --grace 2); RC=$?
+[ "$RC" = 4 ] && has "$O" '^needs user: the words do not name stub1 — ' "R8-2 (nohup): words naming another run -> exit 4, nothing signalled" || bad "R8-2 nohup (rc=$RC)"
+O=$(rsk cancel stub1 --approve "stop stub1" --grace 2); RC=$?
 [ "$RC" = 0 ] && has "$O" 'then KILL after the grace' "a run that ignores TERM -> KILL after the grace" || { bad "KILL fallback (rc=$RC)"; printf '%s\n' "$O" | sed 's/^/    | /'; }
 
 echo "-- H1-owner / H1-msg: an approved busy landing binds who is on it; another occupant since -> exit 6, named --"

@@ -462,6 +462,54 @@ class Ledgered(Base):
         self.assertIn("is not in the profile's display list", notes[listed["id"]][0])   # list --json does)
         self.assertEqual(notes[typo["id"]], [])
 
+    def test_r8_7_status_never_crashes_on_a_damaged_grants_record(self):
+        """NF7-status-json-damaged / NF7-status-json-invalid-record: `rsk status --json` called describe(),
+        scope_problems() and scope_notes() on every record, valid or not — a hand-damaged one (scope.targets: 5,
+        [5, "fx-slurm"], partitions: 7, scope: "x", a bare string) crashed the whole JSON view (TypeError, exit 1).
+        Text and --json now list an invalid record as invalid with the validation message and whether it fails closed,
+        as `rsk grant list --json` does; a grant made right after such a deny is still flagged."""
+        G.add(self.led, G.new_deny("never use preempt on fx-slurm", {"targets": ["fx-slurm"], "partitions": ["gpu"]}))
+        f = self.led.dir / "grants.json"
+        doc = json.loads(f.read_text())
+        good = doc["records"][0]
+        damaged = [{**good, "id": f"d-20261105-00000{i}", "scope": sc} for i, sc in enumerate((
+            {"targets": 5}, {"partitions": 7}, {"targets": [5, "fx-slurm"], "partitions": [None, "gpu"]}, "notadict",
+            {"names": [" b2"]}, {"targets": "fx-slurm"}))]
+        damaged += [{**good, "id": "d-20261105-00000a", "actions": "launch"},
+                    {**good, "id": "d-20261105-00000b", "revoked": "yes"}, "junk", 5, None]
+        doc["records"] = damaged + doc["records"]
+        f.write_text(json.dumps(doc))
+        (self.led.dir / "grants.json.prev").unlink(missing_ok=True)
+        G.add(self.led, G.new_grant("ok, gpu then", {"partitions": ["gpu"]}, ["launch"], max_live=1, max_launches=None,
+                                    expires="2099-12-31"))
+        self.target("fx-listed", "T_KIND=slurm; T_HOST=fxhost; T_PARTITIONS='gpu,paid'\n")
+        rc, text = run("status", "-C", str(self.proj), "-T", "fx-slurm")
+        self.assertEqual(rc, OK, text)
+        self.assertNotIn("Traceback", text)
+        block = text.split("== grants ==", 1)[1]
+        self.assertEqual(block.count("INVALID"), len(damaged), block)
+        rc, out = run("status", "-C", str(self.proj), "-T", "fx-slurm", "--json")
+        self.assertEqual(rc, OK, out)
+        doc = json.loads(out)
+        bad = [g for g in doc["grants"] if "invalid" in g]
+        self.assertEqual(len(bad), len(damaged))
+        self.assertTrue(all(g["invalid"] and g["fail_closed"] for g in bad), bad)
+        self.assertEqual([g["record"] for g in bad], damaged)
+        self.assertTrue(any("whitespace in a scope item" in g["invalid"] for g in bad))
+        fine = [g for g in doc["grants"] if "invalid" not in g]
+        self.assertEqual(sorted(g["kind"] for g in fine), ["deny", "grant"])
+        self.assertTrue(all("covers" in g and "scope_notes" in g for g in fine))
+        self.assertTrue(any("created" in n and "after deny d-20261105-00000" in n for n in doc["needs_user"]),
+                        doc["needs_user"])                      # a damaged deny matches everything: flagged too
+        for argv in (("grant", "list", "--json"), ("grant", "list", "--all"), ("grant", "recount")):   # (and the
+            rc, out = run(*argv, "-C", str(self.proj))                         # writers around it: never a traceback)
+            self.assertEqual(rc, OK, (argv, out))
+        self.assertEqual(json.loads((self.led.dir / "grants.json").read_text())["records"][:len(damaged)], damaged)
+        self.assertEqual(G.scope_notes({"kind": "deny", "scope": {"partitions": 7, "targets": 5}}, G.harness_targets()),
+                         [])
+        self.assertEqual(G.scope_problems({"kind": "deny", "scope": {"targets": 5}}, G.harness_targets()), ([], False))
+
+
 @unittest.skipUnless(sys.platform.startswith("linux"), "the nohup probe uses GNU stat and procps (the targets' Linux)")
 class LedgeredNohup(Base):
     def test_rc_ends_a_ledger_run(self):

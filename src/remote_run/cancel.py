@@ -4,7 +4,10 @@
     rsk cancel --job J -T T [--approve "the user's words"] [-C DIR] [--grace S] [--deadline S]
 
 What may be stopped (the user's policy, §U of the P3 contract):
-  - the user said it ("cancel job 123"): --approve "their words" records a cancel approval naming exactly those job(s),
+  - the user said it ("cancel job 123"): the words must name what is cancelled as a whole word — for --job J the job
+    id J (Slurm) / the pid (nohup), or the run's id or job name; for RUN the run id or name, or every job id cancelled
+    — else exit 4 `needs user: the words do not name <J|RUN>`, nothing recorded or cancelled (R8-2: "cancel job 101"
+    never approves 102). Then --approve "their words" records a cancel approval naming exactly those job(s),
     each bound to the identity it was asked for (Slurm: target, job id, run name, WorkDir; nohup: target, pid, start,
     boot_id), for 1 h — acted on once the identity check passes, and used up by that first cancel whatever its
     outcome (never given back: a later cancel of the same id needs the user's words again);
@@ -249,9 +252,40 @@ def ident(place: harness.Place, i: Item) -> str:
     return grants.cancel_ident("nohup", place.target, i.job, i.start, i.boot_id)
 
 
-def authorize(led: L.Ledger, place: harness.Place, items: list[Item], words: str | None) -> dict[str, dict]:
+_WORD = re.compile(r"[A-Za-z0-9_]")     # continues a token; '.' / '-' do too when one of [A-Za-z0-9_.-] follows
+
+
+def _goes_on(c: str, next_c: str) -> bool:
+    """C (the character next to a match; NEXT_C the one beyond it) makes the match part of a longer token."""
+    return bool(c) and bool(_WORD.match(c) or (c in ".-" and next_c and (_WORD.match(next_c) or next_c in ".-")))
+
+
+def named(words: str, tok: str) -> bool:
+    """R8-2: TOK (a job id, a pid, a run id or name) appears in WORDS as a whole token — not inside a longer id or
+    name: no letter, digit or '_' next to it, and no '.' / '-' that goes on into one ('101' is not named by '1101',
+    '101_2' or 'sw1' by 'sw10', 'exp--sw1', 'sw1-b'; 'cancel job 101.' and '(sw1)' name them)."""
+    for m in re.finditer(re.escape(tok), words) if tok else ():
+        a, b = m.start(), m.end()
+        if not _goes_on(words[a - 1:a], words[a - 2:a - 1] if a >= 2 else "") \
+                and not _goes_on(words[b:b + 1], words[b + 1:b + 2]):
+            return True
+    return False
+
+
+def unnamed(items: list[Item], words: str) -> list[Item]:
+    """R8-2: the items the user's WORDS do not name — an item is named by its job id (Slurm) / pid (nohup), its run id
+    or its attempt's name (the job name) as a whole token (named()). `rsk cancel RUN`: the run id names every item of
+    it; else each job id. A good-faith slip ("cancel job 101" approving 102, "cancel sw1" approving sw2) is caught
+    here; words naming nothing at all ("cancel it") name nothing either."""
+    return [i for i in items if not (named(words, i.job) or (i.run and named(words, i.run))
+                                     or (i.name and named(words, i.name)))]
+
+
+def authorize(led: L.Ledger, place: harness.Place, items: list[Item], words: str | None,
+              asked: str = "") -> dict[str, dict]:
     """{job: the record that covers its cancel}; a deny → exit 3; with WORDS the user's request is recorded first,
-    bound to each item's identity. Every use is counted here, before the ssh."""
+    bound to each item's identity — only when the words name what is cancelled (R8-2: unnamed(); else exit 4 `needs
+    user: the words do not name ASKED`, nothing recorded or cancelled). Every use is counted here, before the ssh."""
     target, kind = place.target, place.kind
 
     def ask(i: Item, st: L.Ledger | L.LedgerState) -> grants.Decision:
@@ -263,6 +297,14 @@ def authorize(led: L.Ledger, place: harness.Place, items: list[Item], words: str
             if d.denied:
                 raise RskError(f"cancel of {i.job} is denied by {d.record['id']}: \"{d.record['quote']}\" — nothing "
                                "cancelled", REFUSED)
+        miss = unnamed(items, words) if words is not None else []
+        if miss:
+            unit = "job" if kind == "slurm" else "pid"
+            what = "; ".join(f"{unit} {i.job}" + (f" = run {i.run} ({i.name})" if i.run else "") for i in miss)
+            out(f"needs user: the words do not name {asked or ', '.join(i.job for i in miss)} — \"{words}\" names "
+                f"none of: {what} on {target}; nothing recorded or cancelled")
+            raise RskError(f"the user's words must name what is cancelled — the {unit} id, the run id or its name "
+                           f"(a whole word): ask the user which one they mean, then --approve their words", NEEDS_USER)
         if words is not None:
             ap = grants.add(led, grants.new_cancel_approval(words, target, [i.job for i in items],
                                                             idents=[ident(place, i) for i in items]))
@@ -356,7 +398,7 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     if bad:
         raise RskError(f"{', '.join(bad)}: {'a Slurm job id' if place.kind == 'slurm' else 'a pid (the run wrapper)'}",
                        USAGE)
-    cover = authorize(led, place, items, words)
+    cover = authorize(led, place, items, words, args.run or args.job)
     deadline = args.deadline + (args.grace + 5 if place.kind == "nohup" else 0)
     timed_out = False
     try:
@@ -523,7 +565,8 @@ def add_parser(sub) -> None:
     p.add_argument("--job", default="", metavar="J", help="Slurm job id, or the nohup run's pid")
     p.add_argument("-T", "--target", default="")
     p.add_argument("-C", dest="dir", default=None, help="project root (default: the current directory)")
-    p.add_argument("--approve", default=None, metavar="WORDS", help="the user's words asking for this cancel")
+    p.add_argument("--approve", default=None, metavar="WORDS",
+                   help="the user's words asking for this cancel — naming it: the job id / pid, the run id or name")
     p.add_argument("--grace", type=int, default=30, help="nohup: seconds between TERM and KILL (default 30)")
     p.add_argument("--deadline", type=float, default=60.0)
     p.set_defaults(func=cmd_cancel)

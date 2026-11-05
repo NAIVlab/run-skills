@@ -135,7 +135,7 @@ class Slurm(Base):
                                (f"101|exp--a01|{ME}|/elsewhere/proj|RUNNING|", CONFLICT, "workdir=/elsewhere/proj"),
                                (f"101|exp--a01|someone|{self.remote}|RUNNING|", REFUSED, "belongs to someone")):
             self.queue(row)
-            rc, text = self.cancel("exp", "--approve", "cancel it")
+            rc, text = self.cancel("exp", "--approve", "cancel exp")
             self.assertEqual(rc, code, text)
             self.assertIn(why, text)
         self.assertEqual(self.scancelled(), "")
@@ -151,7 +151,7 @@ class Slurm(Base):
         self.assertEqual(rc, CONFLICT, text)          # not in the ledger, not in the queue: a wrong id?
         self.assertIn("a wrong id?", text)
         self.launched("exp--a01", "101")
-        rc, text = self.cancel("exp", "--approve", "cancel it")
+        rc, text = self.cancel("exp", "--approve", "cancel exp")
         self.assertEqual(rc, OK, text)                # ledgered and gone: it ended, nothing to do
         self.assertIn("nothing to cancel", text)
         self.assertEqual(self.scancelled(), "")
@@ -161,7 +161,7 @@ class Slurm(Base):
         link.symlink_to(self.remote)
         self.launched("a|b--a01", "101")
         self.queue(f"101|a|b--a01|{ME}|{link}|PENDING|")
-        rc, text = self.cancel("a|b", "--approve", "cancel it")
+        rc, text = self.cancel("a|b", "--approve", "cancel a|b")
         self.assertEqual(rc, OK, text)
         self.assertEqual(self.scancelled(), "101\n")
 
@@ -169,11 +169,11 @@ class Slurm(Base):
         self.launched("exp--a01", "101")
         self.queue(f"101|exp--a01|{ME}|{self.remote}|RUNNING|")
         os.environ["SC_RC"] = "1"
-        rc, text = self.cancel("exp", "--approve", "cancel it")
+        rc, text = self.cancel("exp", "--approve", "cancel exp")
         self.assertEqual(rc, UNKNOWN, text)           # R5-5: a non-zero scancel proves nothing (it was FAILED before)
         os.environ.pop("SC_RC")
         os.environ["SQ_FAIL"] = "1"                   # squeue fails there: @@fail before any identity, ssh ends
-        rc, text = self.cancel("exp", "--approve", "cancel it")
+        rc, text = self.cancel("exp", "--approve", "cancel exp")
         self.assertEqual(rc, UNKNOWN, text)
         self.assertIn("nothing was cancelled", text)
         self.assertTrue(all(len(ap["used"]) == 1 for ap in self.approvals()))   # D6: used up whatever the outcome
@@ -361,7 +361,7 @@ class Slurm(Base):
     def test_r1_7_an_ended_job_is_recorded_now(self):
         self.launched("exp--a01", "101")
         self.queue(f"101|exp--a01|{ME}|{self.remote}|COMPLETED|")
-        rc, text = self.cancel("exp", "--approve", "cancel it")
+        rc, text = self.cancel("exp", "--approve", "cancel exp")
         self.assertEqual(rc, OK, text)
         self.assertIn("nothing to cancel: job 101 (exp a01) is ended (COMPLETED); ledger: exp a01 ended COMPLETED", text)
         att = self.led.read_run("exp").data["attempts"]["a01"]
@@ -370,7 +370,7 @@ class Slurm(Base):
     def test_a_deny_on_cancel_wins_over_the_users_words(self):
         G.add(self.led, G.new_deny("never cancel exp", {"names": ["exp*"]}, ["cancel"]))
         self.launched("exp--a01", "101")
-        rc, text = self.cancel("exp", "--approve", "cancel it")
+        rc, text = self.cancel("exp", "--approve", "cancel exp")
         self.assertEqual(rc, REFUSED, text)
         self.assertEqual(self.approvals(), [])
         self.assertFalse((self.stub / "ssh.log").exists())
@@ -380,7 +380,7 @@ class Slurm(Base):
         self.led.record_attempt(name="exp--a01", target="fx", kind="slurm", nonce="n2", submit="submitted", job="102",
                                 attempt="a01")
         self.queue(f"101|exp--a01|{ME}|{self.remote}|RUNNING|", f"102|exp--a01|{ME}|{self.remote}|PENDING|")
-        rc, text = self.cancel("exp", "--approve", "stop the chain")
+        rc, text = self.cancel("exp", "--approve", "stop the exp chain")
         self.assertEqual(rc, OK, text)
         self.assertEqual(self.scancelled(), "101 102\n")
         self.assertEqual(self.approvals()[0]["scope"]["jobs"], ["101", "102"])
@@ -425,10 +425,64 @@ class Slurm(Base):
         G.add(self.led, G.new_deny("never cancel exp", {"names": ["exp*"]}, ["cancel"]))
         (self.led.dir / "grants.json").write_text('{"version": 1, "records": [')
         (self.led.dir / "grants.json.prev").unlink(missing_ok=True)
-        rc, text = self.cancel("exp", "--approve", "cancel it")
+        rc, text = self.cancel("exp", "--approve", "cancel exp")
         self.assertEqual(rc, CONFLICT, text)
         self.assertIn("grants unreadable", text)
         self.assertFalse((self.stub / "ssh.log").exists())
+
+    def test_r8_2_the_users_words_must_name_what_is_cancelled(self):
+        """NF7-cancel-words-id: `rsk cancel --job 102 --approve "cancel job 101, it diverged"` recorded an approval for
+        102 and cancelled it (the identity check only proves the job is this user's, in this project). The words must
+        name what is cancelled as a whole word — the job id, the run id or its job name; RUN: the run id / name or
+        every job id — else exit 4 `needs user: the words do not name <J|RUN>`, nothing recorded, no ssh."""
+        self.launched("sw1--a01", "101")
+        self.launched("sw2--a01", "102", nonce="n2")
+        self.queue(f"101|sw1--a01|{ME}|{self.remote}|RUNNING|", f"102|sw2--a01|{ME}|{self.remote}|RUNNING|")
+        for argv, asked in ((("--job", "102", "-T", "fx", "--approve", "cancel job 101, it diverged"), "102"),
+                            (("sw2", "--approve", "cancel sw1, it diverged"), "sw2"),
+                            (("sw2", "--approve", "cancel it"), "sw2"),
+                            (("sw2", "--approve", "cancel sw20 and job 1102"), "sw2"),     # whole tokens only
+                            (("sw2", "--approve", "cancel exp--sw2 and 102_3"), "sw2"),
+                            (("--job", "102", "-T", "fx", "--approve", "cancel sw2--a011"), "102")):
+            rc, text = self.cancel(*argv)
+            self.assertEqual(rc, NEEDS_USER, (argv, text))
+            self.assertIn(f"needs user: the words do not name {asked} — ", text)
+            self.assertIn("nothing recorded or cancelled", text)
+        self.assertEqual(self.approvals(), [])
+        self.assertFalse((self.stub / "ssh.log").exists())
+        for argv, job in ((("sw2", "--approve", "cancel job 102."), "102"),                  # the job id
+                          (("--job", "101", "-T", "fx", "--approve", "stop sw1, it diverged"), "101")):   # its run id
+            rc, text = self.cancel(*argv)
+            self.assertEqual(rc, OK, (argv, text))
+            self.assertIn(f"cancelled: job {job}", text)
+        self.assertEqual(self.scancelled(), "102\n101\n")
+        self.launched("sw3--a01", "103", nonce="n3")
+        self.queue(f"103|sw3--a01|{ME}|{self.remote}|RUNNING|")
+        rc, text = self.cancel("--job", "103", "-T", "fx", "--approve", "please kill (sw3--a01)")   # its job name
+        self.assertEqual(rc, OK, text)
+        rc, text = self.cancel("--job", "777", "-T", "fx", "--approve", "cancel sw1")    # unknown to the ledger: its id
+        self.assertEqual(rc, NEEDS_USER, text)
+        self.assertIn("needs user: the words do not name 777", text)
+
+    def test_r8_2_a_chain_needs_its_run_or_every_job_and_cancel_own_is_unchanged(self):
+        self.launched("exp--a01", "101")
+        self.led.record_attempt(name="exp--a01", target="fx", kind="slurm", nonce="n2", submit="submitted", job="102",
+                                attempt="a01")
+        self.queue(f"101|exp--a01|{ME}|{self.remote}|RUNNING|", f"102|exp--a01|{ME}|{self.remote}|PENDING|")
+        rc, text = self.cancel("exp", "--approve", "cancel job 101")
+        self.assertEqual(rc, NEEDS_USER, text)                    # 102 is cancelled too: the words name only 101
+        self.assertIn("needs user: the words do not name exp — ", text)
+        self.assertIn("job 102 = run exp (exp--a01)", text)
+        self.assertNotIn("job 101 = run", text)
+        self.assertEqual(self.approvals(), [])
+        rc, text = self.cancel("exp", "--approve", "cancel jobs 101 and 102")
+        self.assertEqual(rc, OK, text)
+        self.assertEqual(self.scancelled(), "101 102\n")
+        G.add(self.led, G.new_grant("stop your own runs when they go nowhere", {"targets": ["fx"]}, ["cancel_own"],
+                                    max_live=None, max_launches=None, expires=None))
+        self.launched("own--a01", "105", nonce="n5")
+        self.queue(f"105|own--a01|{ME}|{self.remote}|RUNNING|")
+        self.assertEqual(self.cancel("own")[0], OK)              # no words: the cancel_own path as before
 
     def test_usage(self):
         self.launched("exp--a01", "", submit="unknown")
@@ -437,6 +491,19 @@ class Slurm(Base):
             rc, text = self.cancel(*argv)
             self.assertEqual(rc, code, (argv, text))
         self.assertFalse((self.stub / "ssh.log").exists())
+
+
+class Named(unittest.TestCase):
+    def test_r8_2_named_takes_whole_tokens_only_the_docs_examples(self):
+        """The whole-token rule exactly as SKILL.md §3, procedure-slurm / -nohup and DESIGN state it: a token inside a
+        longer one (letters, digits, '_' next to it, or a '.' / '-' that goes on into one) does not name it; trailing
+        punctuation does."""
+        for words, tok in (("cancel 1101", "101"), ("cancel 101_2", "101"), ("cancel sw10", "sw1"),
+                           ("cancel exp--sw1", "sw1"), ("cancel sw1-b", "sw1"), ("cancel it", "sw1"), ("", "101")):
+            self.assertFalse(C.named(words, tok), (words, tok))
+        for words, tok in (("cancel job 101.", "101"), ("please kill (sw1)", "sw1"), ("101", "101"),
+                           ("stop sw1, it diverged", "sw1"), ("cancel job 101 and 102", "102"), ("sw1-", "sw1")):
+            self.assertTrue(C.named(words, tok), (words, tok))
 
 
 def pstart(pid: int) -> str:
@@ -484,6 +551,21 @@ class Nohup(Base):
         self.assertEqual(p.wait(timeout=5), -15)
         att = self.led.read_run("r").data["attempts"]["a01"]
         self.assertEqual((L.attempt_state(att), att["result"]["state"]), ("CANCELLED", "CANCELLED"))
+
+    def test_r8_2_nohup_words_name_the_pid_or_the_run(self):
+        p = self.spawn()
+        rc, text = self.cancel("r", "--approve", "stop q", "--grace", "1")
+        self.assertEqual(rc, NEEDS_USER, text)
+        self.assertIn("needs user: the words do not name r — ", text)
+        rc, text = self.cancel("--job", str(p.pid), "-T", "ws", "--approve", f"kill pid {p.pid + 1}", "--grace", "1")
+        self.assertEqual(rc, NEEDS_USER, text)
+        self.assertIn(f"needs user: the words do not name {p.pid}", text)
+        time.sleep(0.2)
+        self.assertIsNone(p.poll(), "never signalled")
+        self.assertEqual(self.approvals(), [])
+        rc, text = self.cancel("--job", str(p.pid), "-T", "ws", "--approve", f"kill pid {p.pid}", "--grace", "5")
+        self.assertEqual(rc, OK, text)
+        self.assertEqual(p.wait(timeout=5), -15)
 
     def test_a_run_ignoring_term_is_killed_after_the_grace(self):
         p = self.spawn("trap '' TERM; sleep 30")

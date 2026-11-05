@@ -965,6 +965,58 @@ class Round7(unittest.TestCase):
         self.assertEqual(G.run_globs(["x--a02", "x--a0*", "y--a*"]), ["x", "y"])   # once each
 
 
+class Round8(unittest.TestCase):
+    """R8-1 on grants.py: list arguments split on commas and stripped; whitespace inside an item (or an empty item) is
+    exit 2; a STORED list item with whitespace makes the record invalid (an invalid deny matches everything)."""
+
+    def test_r8_1_split_strips_comma_items_and_refuses_empty_or_spaced_ones(self):
+        """NF7-split-space / NF7-deny-list-whitespace: _split kept ' b2' (from 'b1, b2') and '101 102' as entries that
+        never match: the user's deny was not enforced."""
+        self.assertEqual(G._split(["b1, b2", " b3 "], "--name"), ["b1", "b2", "b3"])
+        self.assertEqual(G._split([" 101 ,102"], "--job"), ["101", "102"])
+        self.assertEqual(G._split([], "--name"), [])
+        for v, why in (("101 102", "item '101 102' holds whitespace"), ("a,,b", "an empty item"),
+                       ("a,", "an empty item"), ("", "an empty item"), (" , ", "an empty item"),
+                       ("exp\ta", "holds whitespace"), ("a\u00a0b", "holds whitespace")):
+            with self.assertRaises(RskError) as c:
+                G._split(["ok", v], "--name")
+            self.assertEqual(c.exception.code, USAGE, v)
+            self.assertIn(why, str(c.exception))
+            self.assertIn("--name", str(c.exception))
+            self.assertIn("nothing recorded", str(c.exception))
+
+    def test_r8_1_a_stored_item_with_whitespace_is_invalid_and_a_deny_then_matches_everything(self):
+        base = {"id": "d-20261105-bbbbbb", "kind": "deny", "quote": "never cancel jobs 101 or 102", "created_at": L.now(),
+                "created_via": "import", "source": "a note", "actions": ["cancel", "cancel_own"], "limits": {},
+                "used": [], "revoked": None}
+        g = grant({"targets": ["fx"]}, actions=("launch", "cancel_own"))
+        for key, items in (("jobs", ["101", " 102"]), ("jobs", ["101 102"]), ("names", ["b1", " b2"]),
+                           ("names", ["b2 "]), ("partitions", ["cpu", " preempt"]), ("gpu_types", ["a100 h100"]),
+                           ("targets", [" fx"]), ("classes", ["smoke "])):
+            rec = {**base, "scope": {key: items}}
+            if key != "jobs":
+                rec["actions"] = ["launch"]
+            why = G.valid(rec)
+            self.assertIn("whitespace in a scope item", why, (key, items))
+            self.assertTrue(G.fail_closed(rec), (key, items))
+            if key == "jobs":
+                d = G.check(state(g, rec), "cancel", job="102", run="sw2",
+                            plan={"target": "fx", "kind": "slurm", "name": "sw2--a01", "warnings": "0"})
+            else:
+                d = G.check(state(g, rec), "launch", plan=plan(target="fx", name="b2"))
+            self.assertTrue(d.denied, (key, items, d.reasons))           # fail closed: it was "covered" before
+            self.assertIn("matches everything", " ".join(d.reasons))
+        ok = {**base, "scope": {"jobs": ["101", "102"]}}
+        self.assertEqual(G.valid(ok), "")
+        bad_grant = grant({"names": ["b1"]})
+        bad_grant["scope"]["names"] = [" b1"]
+        self.assertFalse(G.check(state(bad_grant), "launch", plan=plan(name="b1")).covered)   # a grant: covers nothing
+        self.assertEqual(G.fail_closed(bad_grant), "")
+        ap = G.new_cancel_approval("cancel job 101", "fx", ["101"],               # a cancel identity holds the WorkDir:
+                                   idents=[ident("fx", "101", "exp--a01", "/r/my proj")])   # a space there is fine
+        self.assertEqual(G.valid(ap), "")
+
+
 class Store(ScratchHome):
     def setUp(self) -> None:
         super().setUp()
@@ -1196,13 +1248,14 @@ class Store(ScratchHome):
     def test_r7_2_a_partition_the_profile_does_not_list_is_recorded_with_a_note(self):
         """N6-partition-authority / NF6-tpartitions-not-authority: R6-5 refused `rsk grant deny -T fx-dbg --partition
         debug` (exit 2 'unknown partition') because fx-dbg's T_PARTITIONS lists only gpu — but T_PARTITIONS is a display
-        list and policy.sh accepts debug: the user's deny was lost and a standing grant then covered `-p debug`. A
-        partition is never refused now (grant, deny, import): one the profile does not list is recorded, and a NOTE
-        says it is not in the profile's display list. The recorded deny matches a plan on that partition."""
+        list and policy.sh accepts debug: the user's deny was lost and a standing grant then covered `-p debug`. Since
+        R8-3 such a partition is recorded with --unlisted-partition (import: "unlisted_ok": true), and a NOTE says it is
+        not in the profile's display list; without it, exit 2 (test_r8_3_…). The recorded deny matches a plan on that
+        partition. No check where a scoped Slurm target lists no T_PARTITIONS, or on a workstation: the NOTE only."""
         self.fxp()
         self.fxdbg()
         deny = ("grant", "deny", "-C", str(self.proj), "--quote", "never use the debug partition, it is for the admins")
-        rc, text = run(*deny, "-T", "fx-dbg", "--partition", "debug")
+        rc, text = run(*deny, "-T", "fx-dbg", "--partition", "debug", "--unlisted-partition")
         self.assertEqual(rc, OK, text)
         self.assertNotIn("unknown partition", text)
         self.assertIn("NOTE: partition debug is not in the profile's display list (T_PARTITIONS of fx-dbg: gpu) — "
@@ -1215,8 +1268,8 @@ class Store(ScratchHome):
         self.assertTrue(G.check(state(g, d), "launch", plan=plan(target="fx-dbg", partition="gpu")).covered)
         add = ("grant", "add", "-C", str(self.proj), "--quote", "run the sweep on fxp, charges are fine", "--action",
                "launch", "--max-live", "1", "--max-launches", "1", "--expires", "none")
-        for argv, note in (((*add, "-T", "fxp", "--partition", "gpu,piad"), "partition piad is not in the profile's "
-                            "display list (T_PARTITIONS of fxp: gpu, paid)"),
+        for argv, note in (((*add, "-T", "fxp", "--partition", "gpu,piad", "--unlisted-partition"), "partition piad is "
+                            "not in the profile's display list (T_PARTITIONS of fxp: gpu, paid)"),
                            ((*deny, "-T", "ws", "--partition", "paid"), "(ws: a workstation has no partitions — no "
                             "launch there names one)"),
                            ((*deny, "--partition", "piad"), "fx: none")):
@@ -1229,11 +1282,13 @@ class Store(ScratchHome):
         self.assertNotIn("NOTE", text)
         f = self.home / "auth.json"
         rec = {"kind": "deny", "quote": "never the debug partition", "source": "a note",
-               "scope": {"targets": ["fx-dbg"], "partitions": ["debug"]}, "actions": ["launch"], "limits": {}}
+               "scope": {"targets": ["fx-dbg"], "partitions": ["debug"]}, "actions": ["launch"], "limits": {},
+               "unlisted_ok": True}
         f.write_text(json.dumps([rec]))
         rc, text = run("grant", "import", str(f), "-C", str(self.proj))
         self.assertEqual(rc, OK, text)
         self.assertIn("NOTE: partition debug (scope.partitions of #0 in", text)
+        self.assertNotIn("unlisted_ok", self.led.state().grants[-1])          # the file's flag, never stored
         rc, text = run(*deny, "-T", "fxp", "--gpu-type", "gt-zz")
         self.assertEqual(rc, OK, text)
         self.assertIn("NOTE: GPU type gt-zz is not checked", text)
@@ -1301,6 +1356,115 @@ class Store(ScratchHome):
         body = "\n".join(G.lines(self.led.state(), known=G.harness_targets()))
         self.assertIn(f"WARNING: {typo['id']} (deny): target fx-slrum", body)
         self.assertIn("NOTE: partition piad", body)
+
+    def test_r8_1_rsk_grant_lists_split_on_commas_stripped_whitespace_inside_is_exit_2(self):
+        """NF7-split-space / NF7-deny-list-whitespace: `--job '101, 102'` stored ' 102' and `--job '101 102'` one entry,
+        neither matching job 102 — a cancel_own grant then cancelled what the user forbade; the same for --name,
+        --partition, --gpu-type. Every list argument of add / deny is now split on commas and stripped (the deny matches),
+        an item with whitespace inside or an empty item is exit 2 naming it, and import refuses a spaced item."""
+        self.fxp()
+        deny = ("grant", "deny", "-C", str(self.proj), "--quote", "never cancel jobs 101 or 102")
+        rc, text = run(*deny, "--job", "101, 102", "--action", "cancel, cancel_own")
+        self.assertEqual(rc, OK, text)
+        self.assertIn("DENY cancel, cancel_own: jobs 101, 102", text)
+        d = self.led.state().grants[-1]
+        self.assertEqual((d["scope"]["jobs"], d["actions"]), (["101", "102"], ["cancel", "cancel_own"]))
+        self.assertIsNotNone(G.deny_match({"target": "fx", "kind": "slurm", "name": "sw2", "warnings": "0"},
+                                          ("cancel",), state(d), job="102")[0])
+        n = len(self.led.state().grants)
+        for argv, why in (((*deny, "--job", "101 102", "--action", "cancel"), "--job '101 102': item '101 102' holds "
+                           "whitespace"),
+                          ((*deny, "--job", "101,", "--action", "cancel"), "--job '101,': an empty item"),
+                          ((*deny, "--job", "j101", "--action", "cancel"), "--job j101: a Slurm job id"),
+                          ((*deny, "--name", "b1 b2"), "--name 'b1 b2': item 'b1 b2' holds whitespace"),
+                          ((*deny, "--name", "b1,,b2"), "an empty item"),
+                          ((*deny, "--gpu-type", "a100 h100"), "--gpu-type 'a100 h100'"),
+                          ((*deny, "--partition", "gpu paid", "-T", "fxp"), "--partition 'gpu paid'"),
+                          ((*deny, "-T", "fx ws"), "-T 'fx ws'"),
+                          ((*deny, "--class", "smoke train"), "--class 'smoke train'"),
+                          ((*deny, "--action", "launch relaunch"), "--action 'launch relaunch'"),
+                          ((*deny, "--run", "a b"), "--run 'a b'"),
+                          (("grant", "add", "-C", str(self.proj), "--quote", "q", "--action", "launch", "--name", "a b",
+                            "--max-live", "1", "--max-launches", "1", "--expires", "none"), "--name 'a b'")):
+            rc, text = run(*argv)
+            self.assertEqual(rc, USAGE, (argv, text))
+            self.assertIn(why, text)
+        self.assertEqual(len(self.led.state().grants), n)                 # nothing recorded by any of them
+        rc, text = run(*deny, "--name", "b1, b2", "--gpu-type", " gt-a ,gt-b", "-T", " fxp", "--class", "smoke, train",
+                       "--partition", "gpu, paid", "--action", "launch")
+        self.assertEqual(rc, OK, text)
+        sc = self.led.state().grants[-1]["scope"]
+        self.assertEqual((sc["names"], sc["gpu_types"], sc["targets"], sc["classes"], sc["partitions"]),
+                         (["b1", "b2"], ["gt-a", "gt-b"], ["fxp"], ["smoke", "train"], ["gpu", "paid"]))
+        self.assertNotIn("NOTE: partition", text)                        # (was: ' paid', not in the display list)
+        d = self.led.state().grants[-1]
+        self.assertTrue(G.deny_match(plan(target="fxp", name="exp--smoke--b2", partition="paid"), ("launch",),
+                                     state(d))[0] is None)               # (names b1, b2: exp--smoke--b2 is neither)
+        self.assertIsNotNone(G.deny_match(plan(target="fxp", name="b2", partition="paid", gres="gpu:gt-b:1"),
+                                          ("launch",), state(d))[0])
+        f = self.home / "auth.json"
+        rec = {"kind": "deny", "quote": "never b", "source": "a note", "scope": {"names": [" b"]}, "actions": ["launch"],
+               "limits": {}}
+        f.write_text(json.dumps([rec]))
+        rc, text = run("grant", "import", str(f), "-C", str(self.proj))
+        self.assertEqual(rc, USAGE, text)
+        self.assertIn("scope.names: ' b': whitespace in a scope item", text)
+        self.assertEqual(len(self.led.state().grants), n + 1)
+
+    def test_r8_3_a_partition_the_display_list_lacks_is_exit_2_unless_unlisted_partition(self):
+        """NF7-deny-partition-typo: R7-2 recorded `rsk grant deny -T fx-dbg --partition dbug` (a typo for debug) with
+        the same NOTE as a real unlisted partition, and the deny never matched: the grant covered `-p debug`. Now a
+        partition no scoped target's T_PARTITIONS lists is exit 2 naming it — the caller confirms a real one with
+        --unlisted-partition (import: "unlisted_ok": true) and it is recorded with the NOTE. A scoped Slurm target
+        without T_PARTITIONS, or a workstation: no check."""
+        self.fxp()
+        self.fxdbg()
+        deny = ("grant", "deny", "-C", str(self.proj), "--quote", "never use the debug partition, it is for the admins")
+        add = ("grant", "add", "-C", str(self.proj), "--quote", "run the sweep on fxp", "--action", "launch",
+               "--max-live", "1", "--max-launches", "1", "--expires", "none")
+        for argv, bad, lists in (((*deny, "-T", "fx-dbg", "--partition", "dbug"), "dbug", "fx-dbg: gpu"),
+                                 ((*deny, "-T", "fx-dbg", "--partition", "debug"), "debug", "fx-dbg: gpu"),
+                                 ((*add, "-T", "fxp", "--partition", "gpu,piad"), "piad", "fxp: gpu, paid"),
+                                 ((*deny, "-T", "fxp,fx-dbg", "--partition", "debug"), "debug",
+                                  "fx-dbg: gpu; fxp: gpu, paid"),
+                                 ((*deny, "-T", "fxp,ws", "--partition", "gpu,piad"), "piad", "fxp: gpu, paid")):
+            rc, text = run(*argv)
+            self.assertEqual(rc, USAGE, (argv, text))
+            self.assertIn(f"partition {bad} is not in the profile's display list (T_PARTITIONS of {lists}) — nothing "
+                          "recorded", text)
+            self.assertIn("record it again with --unlisted-partition", text)
+        self.assertEqual(self.led.state().grants, [])
+        rc, text = run(*deny, "-T", "fx-dbg", "--partition", "debug", "--unlisted-partition")
+        self.assertEqual(rc, OK, text)
+        self.assertIn("NOTE: partition debug is not in the profile's display list (T_PARTITIONS of fx-dbg: gpu)", text)
+        d = self.led.state().grants[-1]
+        g = grant({"targets": ["fx-dbg"]})
+        self.assertTrue(G.check(state(g, d), "launch", plan=plan(target="fx-dbg", partition="debug")).denied)
+        for argv in ((*deny, "-T", "fx-dbg", "--partition", "gpu"),          # listed
+                     (*deny, "--partition", "dbug"),                         # fx (in scope) lists none: no check
+                     (*deny, "-T", "fx,fx-dbg", "--partition", "dbug"),
+                     (*deny, "-T", "ws", "--partition", "dbug")):            # a workstation: no T_PARTITIONS
+            rc, text = run(*argv)
+            self.assertEqual(rc, OK, (argv, text))
+        f = self.home / "auth.json"
+        rec = {"kind": "deny", "quote": "never the debug partition", "source": "a note",
+               "scope": {"targets": ["fx-dbg"], "partitions": ["dbug"]}, "actions": ["launch"], "limits": {}}
+        n = len(self.led.state().grants)
+        f.write_text(json.dumps([{**rec, "scope": {"targets": ["fx-dbg"], "partitions": ["gpu"]}}, rec]))
+        rc, text = run("grant", "import", str(f), "-C", str(self.proj))
+        self.assertEqual(rc, USAGE, text)
+        self.assertIn("partition dbug (scope.partitions of #1 in", text)
+        self.assertIn('record it again with "unlisted_ok": true in record #1', text)
+        self.assertEqual(len(self.led.state().grants), n)                     # all or nothing
+        f.write_text(json.dumps([{**rec, "unlisted_ok": "yes"}]))
+        rc, text = run("grant", "import", str(f), "-C", str(self.proj))
+        self.assertEqual(rc, USAGE, text)
+        self.assertIn("unlisted_ok must be true or false", text)
+        f.write_text(json.dumps([{**rec, "unlisted_ok": True}]))
+        rc, text = run("grant", "import", str(f), "-C", str(self.proj))
+        self.assertEqual(rc, OK, text)
+        self.assertIn("NOTE: partition dbug (scope.partitions of #0 in", text)
+        self.assertEqual(len(self.led.state().grants), n + 1)
 
     def test_r7_1_rsk_grant_deny_with_an_attempt_name_says_it_stands_for_the_run(self):
         """N6-deny-attempt-name: the deny is recorded as given (a NOTE says the attempt's name stands for its run, and

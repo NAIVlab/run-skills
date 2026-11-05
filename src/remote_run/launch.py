@@ -700,7 +700,8 @@ _CFG_SPLIT = re.compile(r"(?:(?<=:[0-9a-f]{64})|(?<=:unreadable)),")
 
 def _cfgs(v: object) -> str:
     """launch_cfg (nohup, bound — R7-5) = '<path>:<sha256>[,…]': every launcher config / hostfile launch.sh read for its
-    launcher checks (accelerate's config, deepspeed's /job/hostfile), sorted; '<path>:unreadable' for one it could not
+    launcher checks (accelerate's config, deepspeed's /job/hostfile, and — R8-5 — each file deepspeed's -H / --hostfile
+    names), sorted; '<path>:unreadable' for one it could not
     read; '' = none. Shown as '<path> (sha256 <12 hex>)' each; anything else as printed. Bound: a file changed after the
     card is the target's exit 6 (`changed: launch_cfg`)."""
     d = _dec(v)

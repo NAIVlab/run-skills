@@ -156,18 +156,25 @@ and a RUN that sets or unsets `HF_HOME` (any mention but a read, `$HF_HOME`: its
 here). A relative `--config_file` after a `cd`, `pushd`, `--chdir` or `env -C` in RUN is not read from the project
 dir: `with a config it cannot read here (--config_file X: relative, after a cd in RUN)` (an absolute one is read
 wherever RUN goes). Without `--config_file` (and `--gpu_ids`) the config accelerate reads is unknown when the conf sets
-`ENV_HOOK` (env.sh sources it after setting `HF_HOME`, and it may set anything), when the conf names `HF_HOME` or
+`ENV_HOOK` (env.sh sources it after setting `HF_HOME`, and it may set anything), when `ENV_KIND=conda` (env.sh runs
+`conda activate` after setting `HF_HOME`, and it applies the env's own variables — `conda env config vars`, its
+`activate.d` scripts —, which may set `HF_HOME` / `ACCELERATE_…`: `tests/61` 'R8-4'), when the conf names `HF_HOME` or
 `ACCELERATE_…` outside a comment line and not as an expansion (`$HF_HOME` is a read), when RUN names `ACCELERATE_…`, or
 when `.ws.conf` does not source or cannot be read here: `with no --config_file: the config accelerate reads is unknown
-(ENV_HOOK '<hook>' may move it | .ws.conf names <NAME>, which may move it | RUN names <NAME>, which may move it | .ws.conf
-did not source here | .ws.conf could not be read here) — … : give it --config_file FILE (read here, bound in the plan)
-and drop any GPU flags and settings, or name the GPUs it will use to the user` (the project's own default config is
-still read, and bound, beside it). `deepspeed` without `--hostfile`/`-H` warns when `/job/hostfile` exists (its runner's
-default hostfile: read without the flag, it ignores `CUDA_VISIBLE_DEVICES`). Every config and hostfile read here is bound
-in the plan (`launch_cfg`, below). A container does not get the landing at all: `docker` / `podman` / `nerdctl` /
-`nvidia-docker` with `--gpus` (any value, even `device=$CUDA_VISIBLE_DEVICES`), `--runtime` (any value), `--device
-nvidia.com/…` or `/dev/nvidia…` (or a value from an expansion), `--privileged` or a bare `-e`/`--env
-NVIDIA_VISIBLE_DEVICES`; `nvidia-docker run` always; `apptainer` / `singularity` with `--cleanenv`/`-e` or
+(ENV_HOOK '<hook>' may move it | ENV_KIND=conda: conda activate '<env>' applies the env's own variables (HF_HOME /
+ACCELERATE_… among them), which may move it | .ws.conf names <NAME>, which may move it | RUN names <NAME>, which may
+move it | .ws.conf did not source here | .ws.conf could not be read here) — … : give it --config_file FILE (read here,
+bound in the plan) and drop any GPU flags and settings, or name the GPUs it will use to the user` (the project's own
+default config is still read, and bound, beside it). `deepspeed` without `--hostfile`/`-H` warns when `/job/hostfile`
+exists (its runner's default hostfile: read without the flag, it ignores `CUDA_VISIBLE_DEVICES`). A hostfile named by
+deepspeed's `-H FILE` / `--hostfile FILE` (`-HFILE`, `-H=FILE`, `--hostfile=FILE`, an argparse prefix such as `--hostf`;
+every one given) is read too, as `--config_file` is: an absolute path as given, `~/…` under `$HOME`, a relative one from
+the project dir; `<file>:unreadable` after a cd in RUN, through an expansion or `~user`, over 64 KiB, missing, or for a
+flag with no value (`'':unreadable`); its `-H`/`--hostfile` WARNING above is unchanged (`tests/61` 'R8-5'). Every config
+and hostfile read here is bound in the plan (`launch_cfg`, below). A container does not get the landing at all: `docker`
+/ `podman` / `nerdctl` / `nvidia-docker` with `--gpus` (any value, even `device=$CUDA_VISIBLE_DEVICES`), `--runtime`
+(any value), `--device nvidia.com/…` or `/dev/nvidia…` (or a value from an expansion), `--privileged` or a bare
+`-e`/`--env NVIDIA_VISIBLE_DEVICES`; `nvidia-docker run` always; `apptainer` / `singularity` with `--cleanenv`/`-e` or
 `--containall`/`-C` (short clusters such as `-ce` too; without them they pass the landing in). launch.sh never refuses
 any of these: it prints a counted WARNING, one per launcher in RUN's text (every word after it counts, the script's own
 too) — `WARNING: RUN runs <launcher> with <flags> — such a launcher may ignore CUDA_VISIBLE_DEVICES and pick GPUs itself
@@ -189,8 +196,12 @@ from an installed copy by `tests/vgate/launchers.sh`, and the container facts ar
 were set when it was created); compose — `docker|podman|nerdctl compose`, `docker-compose`, `podman-compose` — `run` /
 `up` / `exec` / `start` / `restart`; `kubectl exec|run|debug|apply|create` (a pod, on a node and GPUs the cluster picks);
 `tmux` `new-session` / `new` / `new-window` / `neww` / `split-window` / `splitw` / `send-keys` / `send` / `respawn-*` /
-`run-shell` / `if-shell` / `display-popup` / `pipe-pane` and their prefixes (a session made while a tmux server runs
-gets the server's environment, not the client's); `screen` with a short-option cluster holding `d`, `D`, `m`, `R` or `X`
+`run-shell` / `if-shell` / `display-popup` / `pipe-pane`, under any name tmux runs them by — an alias (`splitp`,
+`split-pane`, `respawnp`, `popup`, `pipep` …) or a unique prefix tmux accepts (`split`, `spl`, `sp`, `run-`, `ru`, `i`,
+`if-`, `pi`; `new-` and `resp` too: a word at least as long as the shortest prefix only these commands share, while
+`s`, `r`, `p`, `ne`, `res`, `display-p` or `send-`, which tmux finds ambiguous with a command not listed here and
+refuses, do not warn) (a session made while a tmux server runs gets the server's environment, not the client's);
+`screen` with a short-option cluster holding `d`, `D`, `m`, `R` or `X`
 (`-dm`, `-d -m`, `-dmS`, `-S … -X`); `setpriv --reset-env` (or a prefix of it from `--res`); `sudo` unless `-E`,
 `--preserve-env`, or `--preserve-env=` naming both `CUDA_VISIBLE_DEVICES` and `CUDA_DEVICE_ORDER` (sudoers' `env_reset`;
 the harness's ids are `PCI_BUS_ID`-ordered, so both; `-i` / `--login` always warns, and an abbreviation such as
@@ -203,13 +214,18 @@ RUN's text, so it can fire on a word that is only an argument (`rsync -e ssh`, a
 fail closed, the card shows why. The spellings are `tests/61` 'R7-3'; the facts are read on a box by
 `tests/vgate/envdrop.sh` (`ssh <alias> 'bash -s' < tests/vgate/envdrop.sh`, with `systemd-run` only when named: `'bash
 -s tmux screen setpriv systemd-run'` starts one transient `--user` unit; it prints `tmux_server_env=`,
-`tmux_first_env=`, `tmux_session=`, `screen_dm_env=`, `screen_session=`, `setpriv_reset_env=`, `setpriv_reset_prefix=`,
-`systemd_run_env=`) and `containers.sh`'s `<rt>_exec_env=` — both only with the user's OK. Honest limits — launch.sh
-sees none of these: a GPU value or launcher flags that only an expansion or a script supplies; launcher settings in
-files it does not read (docker `--env-file`, compose files, deepspeed's `.deepspeed_env`); a docker daemon whose default
-runtime is nvidia (an image's own `NVIDIA_VISIBLE_DEVICES` then hands the container GPUs with no flag at all:
-`containers.sh` prints `docker_default_runtime=`); tools that replace the environment beyond the list above (`su -`,
-`runuser -l`, `pkexec`, at / cron, a script that itself calls tmux) and a sudoers `env_delete` (not read).
+`tmux_first_env=`, `tmux_session=`, a second tmux line `tmux_split_prefix_env=` `tmux_prefix=` `tmux_alias=` (each word
+asked of a running server with an invalid flag, `-~`, so tmux names the command it resolved and runs nothing; `tests/88`
+checks launch.sh's prefix table against this machine's tmux), `screen_dm_env=`, `screen_session=`, `setpriv_reset_env=`,
+`setpriv_reset_prefix=`, `systemd_run_env=`) and `containers.sh`'s `<rt>_exec_env=` — both only with the user's OK.
+Honest limits — launch.sh sees none of these: a GPU value or launcher flags that only an expansion or a script supplies;
+launcher settings in files it does not read (docker `--env-file`, compose files, deepspeed's `.deepspeed_env`); a docker
+daemon whose default runtime is nvidia (an image's own `NVIDIA_VISIBLE_DEVICES` then hands the container GPUs with no
+flag at all: `containers.sh` prints `docker_default_runtime=`); tools that replace the environment beyond the list above
+(`su -`, `runuser -l`, `pkexec`, at / cron, a script that itself calls tmux) and a sudoers `env_delete` (not read);
+tools not on the list at all (`byobu`, `lxc` / `incus exec`, `ray job submit`, `mpirun` / `mpiexec` `--host`, `su -l`,
+`pixi run --clean-env`, `run0`); tmux commands it runs from a user `command-alias`, a `-f` config, `source-file` or
+`set-hook`; and a `.wandb_env` that sets `HF_HOME` (env.sh sources it after `HF_HOME`; launch.sh does not read it).
 rsk's protocol (api=3: the line `# rs-api=3` inside the deployed `.ws/launch.sh`; with any `--rs-` word, run-launch's one
 ssh checks that line first and, on an older `launch.sh`, exits 2 `does not speak rs-api=3`, nothing run — rsk: `needs:
 sync`): every call, in every mode, reads the conf as env.sh resolves it (`profile.sh`, then `.ws.conf`, in a child
@@ -223,7 +239,7 @@ would refuse; it creates nothing outside `.rs/` (env.sh itself mkdirs the projec
 launch). It then prints ONE `@@plan v1` … `@@end` block and starts nothing (bound: `name gpus_req exclude nice
 launch_cfg busy_ok payload env_kind env_hook venv_dir uv_sync_args env_name` — `launch_cfg` = `<file>:<sha256>` of every
 launcher config and hostfile the checks above read (accelerate's `--config_file` or default config; deepspeed's
-`/job/hostfile` when no `-H`/`--hostfile` is given), sorted and deduplicated, `<file>:unreadable` for one it could not
+`-H`/`--hostfile` file(s), else `/job/hostfile`), sorted and deduplicated, `<file>:unreadable` for one it could not
 read (missing, over 64 KiB, named by an expansion or `~user`, relative after a cd), empty when none, `%q`-quoted only
 when not plain; `busy_ok` = `<id>:<uuid>:<user>` of each busy GPU the landing accepts with `--gpu-busy-ok`
 (sorted by id; empty, or `unknown`), `env_hook` = `<ENV_HOOK>:<sha256 of the file>`; `info_gpus=` `info_uuids=`
@@ -294,6 +310,11 @@ checked against the one receipt whose start and boot id match that process now (
 `--grace` (30 s) and KILLs what is left; `<log>.rc` is read back. It acts on the user's words naming that run — an
 approval bound to its identity (target, pid, start, boot id), for 1 h, used up by its first cancel whatever came of it
 — or, for your own judgment that it should stop, on a `cancel_own` grant (runs rsk launched only); else exit 4: ask.
+The `--approve` words must name what is stopped, as a whole word: the pid (`--job <pid>`) or the run's id or name
+(`rsk cancel <run>`: the run, or its pid); a token inside a longer one does not count (`sw1` is not named by `sw10`),
+and "stop it" names nothing: exit 4 `needs user: the words do not name <pid|run> — "<words>" names none of: pid P = run
+<run> (<name>) on <t>; nothing recorded or cancelled`, no approval, no ssh — ask which run they mean (a check against a
+slip, not proof of consent; a `cancel_own` grant is unchanged).
 A `cancel_own` grant's cancels count against its `max_launches`; a deny of plans (`rsk grant deny --run <hash>`, one that
 covers cancels) matches every cancel of a run the ledger has no plan for. An answer cut off after the cancel started, or none at all (a timeout,
 ssh's own 255, a signal), says `the cancel may have been sent: rsk status` (exit 5; a use is kept) — and so does ssh's
