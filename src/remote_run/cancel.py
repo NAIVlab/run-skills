@@ -8,21 +8,26 @@ What may be stopped (the user's policy, §U of the P3 contract):
     each bound to the identity it was asked for (Slurm: target, job id, run name, WorkDir; nohup: target, pid, start,
     boot_id), for 1 h — acted on once the identity check passes, and used up by that first cancel whatever its
     outcome (never given back: a later cancel of the same id needs the user's words again);
-  - the agent's own judgment: only a run rsk launched for this project (a ledger attempt with a plan, never an
-    adopted one) under a standing grant with cancel_own in scope, each cancel counted against its max_launches;
-    anything else is the user's call → exit 4;
+  - the agent's own judgment: only a live run rsk launched for this project (a ledger attempt with a plan, never an
+    adopted one, never one the ledger shows ended) under a standing grant with cancel_own in scope, each cancel
+    counted against its max_launches; anything else is the user's call → exit 4;
   - a deny always wins (exit 3, its quote); someone else's job or process: never (exit 3), whatever was approved.
 Identity, then the action, in ONE ssh (nothing is cancelled that this same read did not check):
   slurm  J is in `squeue -u $USER` with this user, the ledger's job name (an unledgered job: its own record's), and
          WorkDir = the project's remote dir (logical or physical) → `scancel J`. A job not in that list is not
          cancelled: another user's (exit 3, from `squeue -j J`), or ended / a wrong id.
-  nohup  J = the run's pid: its receipt (.rs/attempts/<nonce>/receipt, else the one naming pid=J, else the ledger's
-         adopted triple) has pid J, gate go, the box's boot_id and /proc/J's start time, the owner is $USER and it
-         leads its process group → `kill -TERM -- -<pgid>`, up to --grace seconds (30) for the group to go, then
-         `kill -KILL -- -<pgid>`; the run's <log>.rc is read back.
+  nohup  J = the run's pid: its receipt (the ledger's own .rs/attempts/<nonce>/receipt — never another receipt naming
+         pid=J —, else the ledger's adopted triple; a job the ledger does not know: the ONE receipt naming pid=J whose
+         start and boot_id are J's now, several = exit 6) has pid J, gate go, a start and boot_id that are the
+         ledger's (a mismatch: exit 6, nothing signalled), the box's boot_id and /proc/J's start time, the owner is
+         $USER and it leads its process group → `kill -TERM -- -<pgid>`, up to --grace seconds (30) for the group to
+         go, then `kill -KILL -- -<pgid>`; the run's <log>.rc is read back. `--job J` of a run the ledger shows ended
+         is checked against THAT run's identity (a pid reused since is "ended", nothing signalled).
 Recorded: the approval (if any), the use (a cancel_own grant's is given back only when the answer proves nothing
-was signalled — an @@fail, `none`, or no identity that passed; an answer cut off after it started, a timeout's partial
-output included, counts as "may have been sent"; an approval's never), the observation (Slurm: CANCELLING until rsk
+was signalled — an @@fail, `none`, or no identity that passed, or an ssh that ended with the remote's own status (or
+never started) before it said @@start; an answer cut off after it started, a timeout's partial output included, and no
+@@start from an ssh that did not end that way (a timeout, ssh's own exit 255 — the connection may have died after the
+body ran —, a signal) count as "may have been sent": exit 5, the use kept; an approval's never), the observation (Slurm: CANCELLING until rsk
 status sees the end; nohup: CANCELLED with its rc) and an audit line. A ledgered run that already ended — Slurm: ended
 in squeue; nohup: its pid gone, reused by another process (start differs), or the box rebooted (boot_id differs) — is
 exit 0 "nothing to cancel … ended", its end recorded in the ledger now (REBOOT for a changed boot_id).
@@ -82,14 +87,24 @@ NOHUP_SH = r'''rs_kill() {   # rs_kill PID NONCE START BOOT ... : identity of ea
   groups=""; logs=""
   while [ "$#" -ge 4 ]; do p=$1; n=$2; es=$3; eb=$4; shift 4
     case "$p" in ""|0*|*[!0-9]*) echo "@@c $p badpid"; continue ;; esac
-    r=""; case "$n" in ""|*[!A-Za-z0-9._-]*) ;; *) [ ! -f ".rs/attempts/$n/receipt" ] || r=.rs/attempts/$n/receipt ;; esac
-    [ -n "$r" ] || r=$(LC_ALL=C grep -l -a -x -F -e "pid=$p" .rs/attempts/*/receipt 2>/dev/null | head -n 1)
+    case "$n" in *[!A-Za-z0-9._-]*) echo "@@c $p badnonce"; continue ;; esac
+    r=""
+    if [ -n "$n" ]; then   # the ledger's own attempt: ITS receipt or nothing — never another run's naming the same pid
+      [ ! -f ".rs/attempts/$n/receipt" ] || r=.rs/attempts/$n/receipt
+    else                   # no nonce known: the one receipt naming pid=P whose start and boot are this process's now
+      cur=$(pst "$p") || { echo "@@c $p gone"; continue; }; k=0
+      for f in $(LC_ALL=C grep -l -a -x -F -e "pid=$p" .rs/attempts/*/receipt 2>/dev/null); do
+        [ "$(kv start "$f")" = "${cur%% *}" ] && [ "$(kv boot_id "$f")" = "$boot" ] || continue; r=$f; k=$((k + 1)); done
+      [ "$k" -le 1 ] || { echo "@@c $p ambiguous receipts=$k"; continue; }
+    fi
     if [ -n "$r" ]; then d=${r%/receipt}; g=$(readlink "$d/gate" 2>/dev/null)
       rp=$(kv pid "$r"); rg=$(kv pgid "$r"); rs=$(kv start "$r"); rb=$(kv boot_id "$r"); rl=$(kv log "$r")
       echo "@@r $p receipt=${d##*/} pid=$rp pgid=$rg start=$rs boot_id=$rb gate=$g log=$rl"
       [ "$rp" = "$p" ] || { echo "@@c $p receipt-pid=$rp"; continue; }
       [ "$g" = go ] || { echo "@@c $p notstarted"; continue; }
+      [ -n "$rs" ] && [ -n "$rb" ] || { echo "@@c $p noidentity receipt"; continue; }   # start + boot_id: always both
       [ -z "$es" ] || [ "$es" = "$rs" ] || { echo "@@c $p ledger-start=$es"; continue; }
+      [ -z "$eb" ] || [ "$eb" = "$rb" ] || { echo "@@c $p ledger-boot=$eb"; continue; }
     elif [ -n "$es" ] && [ -n "$eb" ]; then rs=$es; rb=$eb; rg=$p; rl=""; echo "@@r $p ledger start=$rs boot_id=$rb"
     else echo "@@c $p noidentity"; continue; fi
     [ "$rb" = "$boot" ] || { echo "@@c $p gone boot"; continue; }
@@ -126,6 +141,7 @@ class Item:
     boot_id: str = ""
     log: str = ""
     own: bool = False            # a ledger attempt rsk launched with a plan (cancel_own may cover it)
+    ended: bool = False          # the ledger shows this submission ended already (its end is never rewritten here)
 
 
 def items_of_run(led: L.Ledger, run: str, target: str, job: str) -> tuple[str, list[Item]]:
@@ -167,18 +183,27 @@ def items_of_run(led: L.Ledger, run: str, target: str, job: str) -> tuple[str, l
 
 
 def item_of_job(led: L.Ledger, target: str, job: str, kind: str) -> Item:
-    if kind == "slurm":
-        hit = led.find_job(target, job)
-    else:
-        hit = led._find(target, lambda s: str((s.get("proc") or {}).get("pid", "")) == job)
-    if not hit:
+    """The ledger's submission of JOB (Slurm id / nohup pid) on TARGET: a live one first; else the last one that
+    ended — with ITS identity (nonce, start, boot_id: the target then checks the process against that run's receipt,
+    so a pid the box has since given to another process is never taken for it) and own=False (cancel_own never covers
+    an attempt the ledger shows ended). Not in the ledger: Item(job)."""
+    def hit(s: dict) -> bool:
+        return (s.get("job") == job) if kind == "slurm" else str((s.get("proc") or {}).get("pid", "")) == job
+    ended: list[tuple[str, str, dict, dict]] = []
+    for run, got in sorted(led.runs().items()):
+        for aid, att in sorted(((got.data or {}).get("attempts") or {}).items()):
+            if att.get("target") != target or not any(hit(s) for s in att.get("submissions") or []):
+                continue
+            live = items_of_run(led, run, target, job)[1]
+            if live:
+                return live[0]
+            ended += [(run, aid, att, s) for s in att.get("submissions") or [] if hit(s)]
+    if not ended:
         return Item(job)
-    run, aid = hit
-    live = items_of_run(led, run, target, job)[1]
-    if live:
-        return live[0]
-    att = led.read_run(run).data["attempts"][aid]    # recorded as ended: the target says whether it still runs
-    return Item(job, run, aid, name=str(att.get("name", "")))
+    run, aid, att, s = max(ended, key=lambda x: L.epoch(x[3].get("at")))   # recorded as ended: the target says
+    p = s.get("proc") or {}                                                # whether it still runs
+    return Item(job, run, aid, str(s.get("nonce", "")), str(att.get("name", "")), str(p.get("start", "")),
+                str(p.get("boot_id", "")), str(p.get("log", "")), own=False, ended=True)
 
 
 def ident(place: harness.Place, i: Item) -> str:
@@ -215,8 +240,9 @@ def authorize(led: L.Ledger, place: harness.Place, items: list[Item], words: str
                 what = f"run {i.run} ({i.name})" if i.run else "a job the ledger does not know"
                 out(f"needs user: approval — cancel {'job' if kind == 'slurm' else 'pid'} {i.job} on {target}, {what}")
                 raise RskError(f"cancelling {i.job} is the user's call (no cancel approval names it, and "
-                               f"{'no cancel_own grant covers this run' if i.own else 'it is not a run rsk launched'})",
-                               NEEDS_USER)
+                               + ("no cancel_own grant covers this run" if i.own else
+                                  "it is not a live run rsk launched: adopted, or the ledger shows it ended" if i.run else
+                                  "it is not a run rsk launched") + ")", NEEDS_USER)
             cover[i.job] = d.record
         for i in items:
             grants.use(led, cover[i.job]["id"], f"cancel-{i.job}-{secrets.token_hex(4)}", "cancel", job=i.job)
@@ -295,17 +321,19 @@ def cmd_cancel(args: argparse.Namespace) -> int:
                        USAGE)
     cover = authorize(led, place, items, words)
     deadline = args.deadline + (args.grace + 5 if place.kind == "nohup" else 0)
+    timed_out = False
     try:
         done = observe.run(place, body(place, items, args.grace), deadline)
         text, rc, err = done.stdout, done.returncode, done.stderr
     except subprocess.TimeoutExpired as exc:   # what arrived before the deadline still counts (an `@@c J ok`)
-        text, rc, err = _text(exc.stdout), None, f"no answer within {deadline:.0f} s"
+        text, rc, err, timed_out = _text(exc.stdout), None, f"no answer within {deadline:.0f} s", True
     except OSError as exc:
         text, rc, err = "", None, f"ssh: {exc}"
     facts, verdict, extra = parse(text)
     if "end" not in facts or "fail" in facts:
         why = facts.get("fail") or (f"ssh exited {rc}: {err.strip()[:200]}" if rc else err or "the answer was cut off")
-        if not sent_maybe(facts, verdict, items):
+        cut = timed_out or (rc is not None and not 0 <= rc < 255)   # not the remote's own status: output may be lost
+        if not sent_maybe(facts, verdict, items, cut):
             for i in items:
                 refund(led, cover[i.job], i.job, "nothing was signalled")
             sent = False
@@ -313,8 +341,11 @@ def cmd_cancel(args: argparse.Namespace) -> int:
             sent = True
         led.audit("cancel", target=place.target, jobs=[i.job for i in items], outcome="unobservable", why=why[:200],
                   sent="maybe" if sent else "no")
-        raise RskError(f"[{place.target}] {why} — {'the cancel may have been sent: rsk status' if sent else 'nothing was cancelled'}",
-                       UNKNOWN)
+        silent = sent and "start" not in facts       # no answer at all (timeout, 255, signal): the body may have run
+        raise RskError(f"[{place.target}] {why} — "
+                       + ("the cancel may have been sent: rsk status (no answer at all: the job may have been cancelled; "
+                          "the use is kept)" if silent else
+                          "the cancel may have been sent: rsk status" if sent else "nothing was cancelled"), UNKNOWN)
     worst = OK
     for i in items:
         v = verdict.get(i.job, "missing")
@@ -358,7 +389,8 @@ def cmd_cancel(args: argparse.Namespace) -> int:
             end = ended(place, i, v)
             out(f"nothing to cancel: {what} is {end['said']}" + ("" if i.run else
                 " — and the ledger never had it: a wrong id?")
-                + (f"; ledger: {i.run} {i.attempt} ended {end['state']}" if i.run and end["recorded"] and
+                + (f"; ledger: {i.run} {i.attempt} had ended already" if i.run and i.ended else
+                   f"; ledger: {i.run} {i.attempt} ended {end['state']}" if i.run and end["recorded"] and
                    _record_end(led, i, end) else ""))
             code = OK if i.run else CONFLICT
         else:
@@ -378,11 +410,15 @@ def _text(b: bytes | str | None) -> str:
     return b.decode("utf-8", "replace") if isinstance(b, bytes) else b
 
 
-def sent_maybe(facts: dict, verdict: dict[str, str], items: list[Item]) -> bool:
+def sent_maybe(facts: dict, verdict: dict[str, str], items: list[Item], cut: bool = False) -> bool:
     """For an answer without @@end (cut off, timed out) or with @@fail: may a scancel / TERM have gone out? Only proof
-    says no — no @@start (the remote never began), @@fail (it stopped before any identity), `@@scancel none` /
-    `@@kill none`, or every item's identity verdict arrived and none passed. Anything else after @@start: maybe."""
-    if "start" not in facts or "fail" in facts:
+    says no — no @@start from an ssh that ended with the remote's own status or never started (CUT False: all it
+    printed arrived, so the remote never began; CUT = a timeout, ssh's own 255 or a signal is no proof — the body may
+    have run there while nothing came back), @@fail (it stopped before any identity), `@@scancel none` / `@@kill
+    none`, or every item's identity verdict arrived and none passed. Anything else after @@start: maybe."""
+    if "start" not in facts:
+        return cut
+    if "fail" in facts:
         return False
     if facts.get("scancel") == "none" or facts.get("kill") == "none":
         return False

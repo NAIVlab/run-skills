@@ -20,7 +20,9 @@ Writes (write_json): temp file -> fsync -> the current file, if it parses, hard-
   prev     the file is missing or corrupt and <file>.prev parsed: data = .prev (a write may be lost) — every budget
            (launch counts, live runs) is UNKNOWN from then on: grants.json records it in "budgets_unknown" (with the
            ids of the records it affects), a run record in "recovered", and grants.check() covers nothing those
-           affect until `rsk grant recount` (which rebuilds `used` from audit.jsonl); records made later are fine;
+           affect until `rsk grant recount` (which rebuilds `used` from audit.jsonl, and the records and revocations
+           the lost write held); records made later are fine; a deny the audit shows made (and not revoked) but the
+           recovered file lacks counts meanwhile (state(); also while grants.json is missing);
   missing  neither exists (data None); corrupt  neither parses (data None): writers refuse (exit 6), never guess.
 
 API (every mutator takes the lock itself; hold `with led.locked():` around a check-then-act sequence):
@@ -36,7 +38,9 @@ API (every mutator takes the lock itself; hold `with led.locked():` around a che
                      -> (run, attempt)        a new submission. plan = the parsed @@plan block (its bound fields
                                               and bound_hash go to request). The attempt key is ATTEMPT, else the
                                               name's --aNN (same name + target = the same attempt: a chain segment,
-                                              a watch resubmit), else the next free one. The same nonce again = no-op
+                                              a watch resubmit — never another PLAN_ID's: a plan named after an
+                                              older attempt is a new one), else the next free one. The same nonce
+                                              again = no-op
   led.set_submission(run, attempt, nonce, **fields)   e.g. submit='submitted', job='123' (SUBMIT_UNKNOWN -> known)
   led.find_nonce(nonce) -> (run, attempt) | None      led.find_job(target, job) / led.find_log(target, log)
   led.observe(run, attempt, key, state, source, at=None, detail='', end=None)
@@ -55,7 +59,8 @@ API (every mutator takes the lock itself; hold `with led.locked():` around a che
   led.refresh_lease(until) -> bool            this process's lease, `until` moved forward (rsk watch, each minute)
   led.release_lease() -> bool                 only this process's lease
   led.state(now=None) -> LedgerState          what grants.check()/covers() read: .grants .runs .budgets_unknown
-                                              (why, '' = known) .affected(record) -> bool
+                                              (why, '' = known) .affected(record) -> bool .grants_unreadable (why
+                                              grants.json and its .prev could not be read: grants.unreadable())
 
 RUN record (runs/<run>.json):
   {"version": 1, "run": str, "created_at": iso, "recovered": null | {"at", "why"},
@@ -176,6 +181,7 @@ class LedgerState:
     unknown_since: float = 0.0         # records created at or before this are affected (a run record was recovered)
     unknown_ids: frozenset = frozenset()   # records affected by a recovered grants.json (made later ones are not)
     now: float | None = None
+    grants_unreadable: str = ""        # grants.json and its .prev unreadable: no deny can be ruled out (grants.unreadable)
 
     def affected(self, rec: dict) -> bool:
         return bool(self.budgets_unknown) and (rec.get("id") in self.unknown_ids
@@ -458,8 +464,11 @@ class Ledger:
             aid = attempt or attempt_of(name)
             if attempt and attempt not in atts:
                 raise RskError(f"run {run} has no attempt {attempt}", USAGE)
-            if not aid or (not attempt and aid in atts and (atts[aid].get("name"), atts[aid].get("target"))
-                           != (name, target)):
+            if not aid or (not attempt and aid in atts and (
+                    (atts[aid].get("name"), atts[aid].get("target")) != (name, target)
+                    # another plan's submission never joins an attempt (its request: plan, grant, class) — a plan named
+                    # after an older attempt (<run>--a01 again) is a new attempt; a retry of the same plan joins its own
+                    or (plan_id and str((atts[aid].get("request") or {}).get("plan") or "") != plan_id))):
                 aid = next_attempt(atts)
             att = atts.get(aid)
             if att is None:
@@ -664,6 +673,28 @@ class Ledger:
                 bad += 1
         return out, bad
 
+    def audit_grants(self) -> tuple[dict[str, dict], dict[str, dict]]:
+        """audit.jsonl's view of grants.json (each grant_<kind> line is written before the file): (id -> every record
+        it saw made, rebuilt from that line: id kind quote created_at created_via source scope actions limits, used []
+        revoked None; id -> its last revocation {at, quote}) — what a grants.json read from .prev may have lost."""
+        recs, _bad = self.read_audit()
+        made: dict[str, dict] = {}
+        gone: dict[str, dict] = {}
+        for a in recs:
+            ev, rid = str(a.get("event", "")), a.get("id")
+            if not isinstance(rid, str) or not rid:
+                continue
+            kind = ev.removeprefix("grant_")
+            if ev.startswith("grant_") and kind in ("approval", "grant", "deny"):
+                made.setdefault(rid, {"id": rid, "kind": kind, "quote": a.get("quote", ""),
+                                      "created_at": a.get("at", ""), "created_via": a.get("created_via", ""),
+                                      "source": a.get("source", ""), "scope": a.get("scope") or {},
+                                      "actions": a.get("actions") or [], "limits": a.get("limits") or {}, "used": [],
+                                      "revoked": None})
+            elif ev == "grant_revoke":
+                gone[rid] = {"at": a.get("at", ""), "quote": a.get("quote", "")}
+        return made, gone
+
     # ---- watch lease
     def lease(self) -> Loaded:
         return read_json(self.dir / "watch.lease")
@@ -718,6 +749,17 @@ class Ledger:
         if bu:
             why.append(str(bu.get("why", "grants.json was recovered")))
             ids |= set(bu.get("ids") or [])
+        # the write .prev lacks (or a grants.json moved aside) may have held a deny: audit.jsonl, written first, still
+        # shows it, and it counts until `rsk grant recount` puts it back into grants.json (fail closed)
+        lost = ""
+        if g.recovered or bu or g.source == "missing":
+            try:
+                made, gone = self.audit_grants()
+            except OSError as exc:
+                lost = f"grants.json was recovered or is missing, and audit.jsonl cannot be read ({exc})"
+            else:
+                have = {r.get("id") for r in recs if isinstance(r, dict) and isinstance(r.get("id"), str)}
+                recs += [r for i, r in made.items() if r["kind"] == "deny" and i not in have and i not in gone]
         runs: dict[str, dict] = {}
         for name, got in self.runs().items():
             if got.data:
@@ -730,11 +772,12 @@ class Ledger:
                 why.append(f"run {name}: {got.why}")
                 since = time.time()
         return LedgerState(grants=recs, runs=runs, budgets_unknown="; ".join(dict.fromkeys(why)),
-                           unknown_since=since, unknown_ids=frozenset(ids), now=at)
+                           unknown_since=since, unknown_ids=frozenset(ids), now=at,
+                           grants_unreadable=g.why if g.source == "corrupt" else lost)
 
 
 BOUND_KEYS = frozenset("partition gres cpus mem time account name extra payload env_kind env_name wandb_mode chain "
-                       "gpus_req exclude nice busy_ok env_hook venv_dir uv_sync_args conf_extra".split())
+                       "gpus_req exclude nice busy_ok env_hook venv_dir uv_sync_args conf_extra flags".split())
 
 
 def next_attempt(atts: dict) -> str:

@@ -6,7 +6,9 @@
 # exist), an OLD parser given --rs-attempt, conf isolation (a conf's sbatch() / printf() / PATH never reach the submit; it
 # sees the profile's T_*), nested submissions, the duplicate guard (exit 6, symlinked WorkDirs), the SBATCH_EXTRA lint, the
 # --comment merge, policy code (its own EXIT trap, fd 3) kept in the submit's subshell, and api=3: the --rs-mode plan block
-# (keys, bound fields, bound_hash, -y gates acknowledged), --rs-expect, --rs-chain, old parsers given them.  bash tests/52-attempt.sh
+# (keys, bound fields — flags= the policy flags too — bound_hash, -y gates acknowledged), --rs-expect, --rs-chain, old parsers
+# given them; the FORCE=0 probes of t_policy and t_partition, a silent gate's output in warnings_id, a lint that reads
+# SBATCH_EXTRA as the scan does (an option's value is never an option).  bash tests/52-attempt.sh
 set -u
 . "$RS_HOME/tests/lib.sh"
 subo() { local p=$1; shift; : > "$T/sbatch.log"; PATH="$T/bin:$PATH" bash "$p/.fx-slurm/submit.sh" "$@" 2>&1; }
@@ -234,6 +236,13 @@ rc_is 1 "$RC" "a refused submit with a lint-worthy SBATCH_EXTRA"; hasnt "$O" 'li
 printf 'REMOTE_DIR=/x\nACCOUNT=acct\nSBATCH_EXTRA="--account=other"\n' > "$L/.hpc.conf"
 has "$(subo "$L" -- echo hi)" "repeats --account, .*ACCOUNT's --account=acct comes earlier" "ACCOUNT + SBATCH_EXTRA --account: repeat named"
 printf 'REMOTE_DIR=/x\nSBATCH_EXTRA="--account=other"\n' > "$L/.hpc.conf"; hasnt "$(subo "$L" -- echo hi)" 'lint' "SBATCH_EXTRA --account alone: allowlisted, no lint"
+# R4-9: the lint reads SBATCH_EXTRA as the scan (and sbatch's getopt, tests/vgate comment_value=) does: -t1 is --comment's value
+printf 'REMOTE_DIR=/x\nSBATCH_EXTRA="--time=23:00:00 --comment -t1"\n' > "$L/.hpc.conf"; O=$(subo "$L" -- echo hi); rc_is 0 $? "R4-9: SBATCH_EXTRA --time=23:00:00 --comment -t1 submits (both times within MaxTime)" "$O"
+has "$O" "repeats --time, .*SBATCH_EXTRA's '--time=23:00:00' (the harness's --time=1-00:00:00 comes earlier) wins" "R4-9: the lint names --time=23:00:00 as the time sbatch keeps"
+hasnt "$O" "lint.*'-t1'" "R4-9: ...never the comment's value -t1 (getopt gives it to --comment)"; hasnt "$O" "lint.*repeats -t," "...no 'repeats -t' line at all"
+printf 'REMOTE_DIR=/x\nSBATCH_EXTRA="--comment -c --exclude n1 -c 4"\n' > "$L/.hpc.conf"; O=$(subo "$L" -- echo hi)
+[ "$(printf '%s\n' "$O" | grep -c 'lint.*repeats -c,')" = 1 ] && ok "R4-9: '--comment -c': that -c is a value (no lint); the later '-c 4' is linted once" || { bad "R4-9: value -c not linted"; printf '%s\n' "$O" | grep lint | sed 's/^/    | /'; }
+hasnt "$O" "lint.*'n1'" "R4-9: --exclude n1: n1 is --exclude's value"
 printf 'REMOTE_DIR=/x\nSBATCH_EXTRA="--exclude=n1 --comment"\n' > "$L/.hpc.conf"
 O=$(subo "$L" -- echo hi); rc_is 2 $? "a dangling value flag is refused (sbatch would take the harness's --partition as its value)" "$O"
 has "$O" "^ERROR: SBATCH_EXTRA ends with a dangling '--comment'" "...and named"; nosub "...nothing submitted"
@@ -302,7 +311,7 @@ PP=$(mk_proj fx-slurm "$PC"); printf 'path=/l\ncommit=0123abc\ndirty=2\n' > "$PP
 PA=(-g 2 -t 2:00:00 -m 64G -c 4 -n pj -- python t.py --msg "a b")
 O=$(subo "$PP" --rs-attempt pl1 --rs-mode plan "${PA[@]}"); RC=$?; A=$PP/.rs/attempts/pl1; B=$(blk "$O")
 rc_is 0 "$RC" "plan mode" "$O"; nosub "...sbatch never runs"
-[ "$(printf '%s\n' "$B" | sed 's/=.*//' | tr '\n' ' ')" = "@@plan v1 api kind target partition gres cpus mem time account name extra payload env_kind env_name wandb_mode env_hook venv_dir uv_sync_args conf_extra chain info_avail info_conf_sha256 info_profile_sha256 info_policy_sha256 info_policy_local_sha256 info_source_commit info_source_dirty warnings warnings_avail warnings_id bound_hash @@end " ] \
+[ "$(printf '%s\n' "$B" | sed 's/=.*//' | tr '\n' ' ')" = "@@plan v1 api kind target partition gres cpus mem time account name extra payload env_kind env_name wandb_mode env_hook venv_dir uv_sync_args conf_extra flags chain info_avail info_conf_sha256 info_profile_sha256 info_policy_sha256 info_policy_local_sha256 info_source_commit info_source_dirty warnings warnings_avail warnings_id bound_hash @@end " ] \
   && ok "ONE block, exactly these keys in this order" || { bad "plan block keys"; printf '%s\n' "$B" | sed 's/^/    | /'; }
 [ "$(printf '%s\n' "$O" | grep -c '^@@plan v1$')" = 1 ] && ok "...printed once, on stdout" || bad "...printed once"
 has "$(PATH="$T/bin:$PATH" bash "$PP/.fx-slurm/submit.sh" --rs-mode plan "${PA[@]}" 2>/dev/null)" '^@@end$' "...(stdout alone carries it)"
@@ -315,7 +324,8 @@ has "$B" '^info_avail=free:4/max_node:4/gpu_type:any$' "info_avail (envelope)"
 has "$B" "^info_conf_sha256=$(sha < "$PP/.hpc.conf")\$" "info_conf_sha256 = the conf's"; has "$B" "^info_profile_sha256=$(sha < "$PP/.fx-slurm/profile.sh")\$" "info_profile_sha256"
 has "$B" "^info_policy_sha256=$(sha < "$PP/.fx-slurm/policy.sh")\$" "info_policy_sha256"; has "$B" '^info_policy_local_sha256=none$' "info_policy_local_sha256=none (no overlay)"
 has "$B" '^info_source_commit=0123abc$' "info_source_commit (.run-source)"; has "$B" '^info_source_dirty=2$' "info_source_dirty"; has "$B" '^warnings=0$' "warnings=0"
-has "$B" '^conf_extra=--mail-type=END[\\]*,FAIL --exclude=n1$' "bound: conf_extra = the conf's SBATCH_EXTRA words alone, %q each (just before chain=)"
+has "$B" '^conf_extra=--mail-type=END[\\]*,FAIL --exclude=n1$' "bound: conf_extra = the conf's SBATCH_EXTRA words alone, %q each (just before flags=)"
+has "$B" '^flags=$' "bound: flags= (no policy flag given: empty, just before chain=)"
 has "$B" '^warnings_avail=0$' "warnings_avail=0"; has "$B" "^warnings_id=$(printf '' | sha)\$" "warnings_id = the digest of no warning at all (sha256 of nothing)"
 H1=$(bh "$O"); [ "${#H1}" = 64 ] && [ "$(bnd "$O" | sha)" = "$H1" ] && ok "bound_hash = sha256 of the lines kind= … chain= (each + newline)" || bad "bound_hash = sha256 of the bound lines"
 has "$(cat "$A/result")" '^stage=plan rc=0 verdict=planned at=' "journal: stage=plan rc=0 verdict=planned"
@@ -332,6 +342,18 @@ for c in 'ACCOUNT=other' 'ENV_KIND=uv' 'FXSLURM_ENV_NAME=t2' 'WANDB_MODE=online'
   [ -n "$(bh "$O")" ] && [ "$(bh "$O")" != "$(bh "$O2")" ] && ok "bound: the conf's $c" || bad "bound: the conf's $c"; done
 O=$(subo "$PP" --rs-mode plan --gpu-user-asked "${PA[@]}"); has "$(blk "$O")" '^extra=--comment=acked --mail-type=END[\\]*,FAIL --exclude=n1$' "the policy's SB_ARGS words are in extra too (t_policy runs before SBATCH_EXTRA is added)"
 has "$(blk "$O")" '^conf_extra=--mail-type=END[\\]*,FAIL --exclude=n1$' "...never in conf_extra (the conf's words alone)"
+has "$(blk "$O")" '^flags=--gpu-user-asked$' "R4-6: the policy flag itself is bound (flags=, %q list)"
+O=$(subo "$PP" --rs-mode plan --whole-node "${PA[@]}"); B=$(blk "$O")   # a flag this policy ignores: extra unchanged, the flag bound
+has "$B" '^extra=--mail-type=END[\\]*,FAIL --exclude=n1$' "R4-6: a policy flag the policy ignores leaves extra as it was"
+has "$B" '^flags=--whole-node$' "...but is bound: flags=--whole-node"; [ -n "$(bh "$O")" ] && [ "$(bh "$O")" != "$H1" ] && ok "...so it changes the hash (a policy may turn it into any sbatch option)" || bad "R4-6: an ignored policy flag changes the hash"
+[ "$(printf '%s\n' "$B" | sed -n '/^conf_extra=/{n;p;}' | cut -d= -f1)" = flags ] && [ "$(printf '%s\n' "$B" | sed -n '/^flags=/{n;p;}' | cut -d= -f1)" = chain ] \
+  && ok "...flags= sits between conf_extra= and chain= (the last bound key)" || bad "R4-6: flags= position"
+O=$(subo "$PP" --rs-mode plan --b-flag "--note=a b" --a-flag "${PA[@]}"); has "$(blk "$O")" '^flags=--b-flag --note=a\\ b --a-flag$' "...in the order given, each word %q-quoted"
+H3=$(bh "$O"); O=$(subo "$PP" --rs-mode plan --a-flag "--note=a b" --b-flag "${PA[@]}"); [ "$(bh "$O")" != "$H3" ] && ok "...and that order is bound" || bad "R4-6: flag order bound"
+O=$(subo "$PP" --rs-attempt fl1 --rs-mode plan --whole-node "${PA[@]}"); HW=$(bh "$O")
+O=$(subo "$PP" --rs-expect "$HW" "${PA[@]}"); rc_is 6 $? "R4-6: an approved card with --whole-node, submitted without it: exit 6" "$O"; nosub "...nothing submitted"
+has "$O" '^changed: flags$' "...changed: flags"
+O=$(subo "$PP" --rs-expect "$HW" --whole-node "${PA[@]}"); rc_is 0 $? "...with it: submits" "$O"
 wid() { printf '%s\n' "$1" | sed -n 's/^warnings_id=//p'; }   # the block's warnings_id
 wdig() { printf '%s\n' "$@" | sed -E 's/[0-9]+/#/g' | LC_ALL=C sort -u | sha; }   # the digest of these WARNING: lines (digits masked)
 
@@ -418,6 +440,95 @@ rm -f "$P2/.quiet-gate"
 cp -R "$RS_USER_DIR" "$T/user-p3"; printf 't_policy() { [ "$FORCE" = 1 ] || { echo "REFUSED: needs -y" >&2; exit 3; }; return 0; }\n' > "$T/user-p3/targets/fx-slurm/policy.local.sh"
 P3=$(RS_USER_DIR=$T/user-p3 mk_proj fx-slurm 'REMOTE_DIR=/x'); O=$(subo "$P3" --rs-mode plan -- echo hi); RC=$?
 rc_is 3 "$RC" "a policy that refuses (3) without -y: the plan ends with 3 (-y never lifts a refusal)" "$O"; hasnt "$O" '^@@plan' "...no block"
+echo "-- R4-11: a -y gate in t_partition (P2 idiom, silent under FORCE=1) is probed too: on the card and in its digest --"
+cp -R "$RS_USER_DIR" "$T/user-pg"; cat > "$T/user-pg/targets/fx-slurm/policy.local.sh" <<'EOP'
+eval "$(declare -f t_partition | sed '1s/^t_partition/t_partition_shipped/')"
+t_partition() { case "$1" in
+  paid) P_GPUS=1-4 P_CPU_PER_GPU=8 P_MEM_PER_GPU=40; echo "t_partition sees PLAN=$PLAN FORCE=$FORCE" >&2
+        if [ -f "$PROJ/.charge" ] && [ "$FORCE" -ne 1 ]; then echo "WARNING: partition 'paid' bills the group account. Re-run -y to accept the charge." >&2; exit 1; fi ;;
+  *) t_partition_shipped "$1" ;; esac; }
+eval "$(declare -f t_policy | sed '1s/^t_policy/t_policy_shipped/')"
+t_policy() { if [ -f "$PROJ/.maint" ] && [ "$FORCE" -ne 1 ]; then echo "WARNING: maintenance window: the job may be requeued once. Re-run -y." >&2; exit 1; fi; t_policy_shipped; }
+EOP
+PQ=$(RS_USER_DIR=$T/user-pg mk_proj fx-slurm 'REMOTE_DIR=/x'); touch "$PQ/.charge"
+O=$(subo "$PQ" --rs-mode plan -p paid -n pg -- echo hi); RC=$?; HQ=$(bh "$O"); WQ=$(wid "$O")
+rc_is 0 "$RC" "R4-11: plan -p paid (a t_partition -y gate): the plan goes on" "$O"; has "$O" "^WARNING: partition 'paid' bills the group account" "...the gate's WARNING is printed (t_partition probed with FORCE=0)"
+[ "$(printf '%s\n' "$O" | grep '^t_partition sees' | tr '\n' ' ')" = "t_partition sees PLAN=1 FORCE=0 t_partition sees PLAN=1 FORCE=1 " ] \
+  && ok "...the probe (FORCE=0) first, then the real call (plan: FORCE=1)" || bad "R4-11: t_partition probe then real call"
+has "$(blk "$O")" '^warnings=1$' "...and counted (before: warnings=0 — the plan ran t_partition with FORCE=1 only)"; has "$(blk "$O")" '^warnings_avail=0$' "...as a policy warning"
+O=$(subo "$PQ" --rs-expect "$HQ" --rs-warnings "$WQ" -y -p paid -n pg -- echo hi); rc_is 0 $? "...the approved submit (-y, that card's warnings_id): submits" "$O"; has "$O" '^ARG:--partition=paid$' "...to paid"
+stub_sinfo '-p paid' 'nodeA   gpu:a100:4   gpu:a100:4   mixed'   # nothing free on paid: the availability gate too
+O=$(subo "$PQ" --rs-mode plan -p paid -n pg -- echo hi); B=$(blk "$O")
+has "$B" '^warnings=2$' "R4-11 (N2): availability + the charge gate: warnings=2"; has "$B" '^warnings_avail=1$' "...warnings_avail=1 (warnings != warnings_avail: never an availability-only card)"
+rm -f "$PQ/.charge"; O=$(subo "$PQ" --rs-mode plan -p paid -n pg -- echo hi); HQ2=$(bh "$O"); WQ2=$(wid "$O")
+has "$(blk "$O")" '^warnings=1$' "...a card with the availability warning alone (no charge then)"; touch "$PQ/.charge"
+O=$(subo "$PQ" --rs-attempt pq1 --rs-expect "$HQ2" --rs-warnings "$WQ2" -y -p paid -n pg -- echo hi); RC=$?
+rc_is 6 "$RC" "R4-11: the charge gate appears after that card; the -y sent for the availability warning never passes it: exit 6" "$O"; nosub "...nothing submitted"
+has "$O" '^changed: warnings$' "...changed: warnings"; has "$(cat "$PQ/.rs/attempts/pq1/result")" 'verdict=refused' "...refused"
+rm -f "$T/sinfo.d/-p paid"; touch "$PQ/.maint"
+O=$(subo "$PQ" --rs-mode plan -p paid -n pg -- echo hi); RC=$?
+rc_is 0 "$RC" "R4-11: a t_policy gate AND a t_partition gate" "$O"; has "$O" '^WARNING: maintenance window' "...the t_policy gate's WARNING"
+has "$O" "^WARNING: partition 'paid' bills" "...and the t_partition gate's: the t_policy gate stopping its own probe hides nothing (t_partition is probed on its own)"
+has "$(blk "$O")" '^warnings=2$' "...warnings=2"; rm -f "$PQ/.maint" "$PQ/.charge"
+O=$(subo "$PQ" --rs-mode plan -p nope -n pg -- echo hi); rc_is 2 $? "R4-11: an unknown partition (t_partition returns 1) still ends a plan with exit 2" "$O"
+has "$O" "^ERROR: unknown fx-slurm partition 'nope'" "...saying so"; hasnt "$O" 'policy stops this submit' "...never read as a -y gate"
+O=$(subo "$PQ" -p paid -n pg -- echo hi); has "$O" '^ARG:--partition=paid$' "a plain submit (no plan, no --rs-expect): submits as before"
+[ "$(printf '%s\n' "$O" | grep -c '^t_partition sees')" = 1 ] && ok "...t_partition runs once there (no probe)" || bad "R4-11: a plain submit probes t_partition"
+
+echo "-- R4-12: a gate that prints no WARNING: line — what it printed is in warnings_id: one silent gate never passes for another --"
+cp -R "$RS_USER_DIR" "$T/user-sg"; cat > "$T/user-sg/targets/fx-slurm/policy.local.sh" <<'EOP'
+eval "$(declare -f t_policy | sed '1s/^t_policy/t_policy_shipped/')"
+t_policy() {
+  if [ -f "$PROJ/.gateA" ] && [ "$FORCE" -ne 1 ]; then
+    echo "NOTE: the gpu partition is in its maintenance window: $(cat "$PROJ/.gateA") job(s) may be requeued. Re-run -y to accept." >&2; exit 1; fi
+  if [ -f "$PROJ/.gateB" ] && [ "$FORCE" -ne 1 ]; then
+    echo "NOTE: the group's allocation is overdrawn: this job is billed at the overage rate. Re-run -y to accept the charge." >&2; exit 1; fi
+  t_policy_shipped; }
+eval "$(declare -f t_partition | sed '1s/^t_partition/t_partition_shipped/')"
+t_partition() { if [ -f "$PROJ/.gateC" ] && [ "$FORCE" -ne 1 ]; then echo "the queue is long"; exit 1; fi; t_partition_shipped "$1"; }
+EOP
+PS=$(RS_USER_DIR=$T/user-sg mk_proj fx-slurm 'REMOTE_DIR=/x'); echo 1 > "$PS/.gateA"
+O=$(subo "$PS" --rs-mode plan -n sg -- echo hi); RC=$?; HS=$(bh "$O"); WS=$(wid "$O")
+rc_is 0 "$RC" "R4-12: plan with silent gate A" "$O"; has "$O" '^NOTE: the gpu partition is in its maintenance window' "...its NOTE is printed"
+has "$O" "^WARNING: the target's policy stops this submit without -y (t_policy exit 1, no WARNING line of its own)" "...the generic WARNING line stays"
+has "$(blk "$O")" '^warnings=1$' "...warnings=1 (the generic line)"
+[ "$WS" != "$(wdig "WARNING: the target's policy stops this submit without -y (t_policy exit 1, no WARNING line of its own) — its lines are above.")" ] \
+  && ok "...warnings_id is not the generic line's alone: the probe's output is in it" || bad "R4-12: warnings_id = the generic line's digest"
+rm -f "$PS/.gateA"; touch "$PS/.gateB"
+O=$(subo "$PS" --rs-attempt sg1 --rs-expect "$HS" --rs-warnings "$WS" -y -n sg -- echo hi); RC=$?
+rc_is 6 "$RC" "R4-12 (N3): gate A on the card, gate B at the submit (both silent): exit 6" "$O"; nosub "...nothing submitted"
+has "$O" '^changed: warnings$' "...changed: warnings"; has "$(cat "$PS/.rs/attempts/sg1/result")" '^stage=expect rc=6 verdict=refused' "...journal: refused at stage=expect"
+rm -f "$PS/.gateB"; echo 7 > "$PS/.gateA"
+O=$(subo "$PS" --rs-expect "$HS" --rs-warnings "$WS" -y -n sg -- echo hi); rc_is 0 $? "...gate A again (another number in its text: digit runs masked): submits" "$O"
+rm -f "$PS/.gateA"; touch "$PS/.gateB"; O=$(subo "$PS" --rs-mode plan -n sg -- echo hi); WB=$(wid "$O")
+[ -n "$WB" ] && [ "$WB" != "$WS" ] && ok "...gate B's own card: another warnings_id" || bad "R4-12: gate B's warnings_id differs from A's"
+rm -f "$PS/.gateB"; touch "$PS/.gateC"; O=$(subo "$PS" --rs-mode plan -n sg -- echo hi); RC=$?; WC=$(wid "$O")
+rc_is 0 "$RC" "R4-12: a silent t_partition gate (plain stdout text)" "$O"; has "$O" "^WARNING: the target's policy stops this submit without -y (t_partition 'gpu' exit 1, no WARNING line of its own)" "...gets the generic line, naming t_partition"
+[ "$WC" != "$WS" ] && [ "$WC" != "$WB" ] && ok "...and its own warnings_id" || bad "R4-12: t_partition's silent gate warnings_id"
+rm -f "$PS/.gateC"; O=$(subo "$PS" --rs-mode plan -n sg -- echo hi); has "$(blk "$O")" "^warnings_id=$(printf '' | sha)\$" "no gate: the digest of nothing, as before"
+echo "-- the probe passes each -y gate (exit 1) as plan mode does: a function's first gate hides none after it (tests/vgate bash_exit_fn=) --"
+cp -R "$RS_USER_DIR" "$T/user-mg"; cat > "$T/user-mg/targets/fx-slurm/policy.local.sh" <<'EOP'
+eval "$(declare -f t_policy | sed '1s/^t_policy/t_policy_shipped/')"
+t_policy() {
+  if [ -f "$PROJ/.gx" ] && [ "$FORCE" -ne 1 ]; then echo "WARNING: the gpu partition is busy. Re-run -y." >&2; exit 1; fi
+  if [ -f "$PROJ/.gy" ] && [ "$FORCE" -ne 1 ]; then echo "WARNING: this job is billed to the group account. Re-run -y." >&2; exit 1; fi
+  if [ -f "$PROJ/.gz" ] && [ "$FORCE" -ne 1 ]; then echo "NOTE: the job runs at a reduced priority. Re-run -y." >&2; exit 1; fi
+  [ ! -f "$PROJ/.no" ] || { echo "REFUSED: the account is closed" >&2; exit 3; }
+  t_policy_shipped; }
+EOP
+PM=$(RS_USER_DIR=$T/user-mg mk_proj fx-slurm 'REMOTE_DIR=/x'); touch "$PM/.gx" "$PM/.gy"
+O=$(subo "$PM" --rs-mode plan -n mg -- echo hi); RC=$?; rc_is 0 "$RC" "two -y gates in one t_policy (P2 idiom): the plan goes on" "$O"
+has "$O" '^WARNING: the gpu partition is busy' "...the first gate's WARNING"; has "$O" '^WARNING: this job is billed to the group account' "...and the second's: the first gate's exit no longer ends the probe"
+has "$(blk "$O")" '^warnings=2$' "...warnings=2"
+rm -f "$PM/.gy"; O=$(subo "$PM" --rs-mode plan -n mg -- echo hi); H1=$(bh "$O"); W1=$(wid "$O"); has "$(blk "$O")" '^warnings=1$' "a card with the first gate alone"
+touch "$PM/.gy"; O=$(subo "$PM" --rs-attempt mg1 --rs-expect "$H1" --rs-warnings "$W1" -y -n mg -- echo hi); RC=$?
+rc_is 6 "$RC" "...the second gate fires after that card: the -y for the first never passes it" "$O"; nosub "...nothing submitted"; has "$O" '^changed: warnings$' "...changed: warnings"
+rm -f "$PM/.gy"; touch "$PM/.gz"; O=$(subo "$PM" --rs-attempt mg2 --rs-expect "$H1" --rs-warnings "$W1" -y -n mg -- echo hi); RC=$?
+rc_is 6 "$RC" "...a silent gate after a WARNING gate: its output is in warnings_id too" "$O"; nosub "...nothing submitted"
+has "$O" "^WARNING: the target's policy stops this submit without -y (t_policy exit 1, no WARNING line of its own)" "...with the generic line"
+rm -f "$PM/.gz"; O=$(subo "$PM" --rs-expect "$H1" --rs-warnings "$W1" -y -n mg -- echo hi); rc_is 0 $? "...the first gate alone again: submits" "$O"
+touch "$PM/.no"; O=$(subo "$PM" --rs-mode plan -n mg -- echo hi); rc_is 3 $? "a refusal after a gate: exit 3, as a -y submit meets it" "$O"
+has "$O" '^REFUSED: the account is closed' "...its line"; rm -f "$PM/.no" "$PM/.gx"
 echo "-- --rs-expect HASH: right before the snapshots and sbatch, the same rs_bound hash --"
 printf '%s\n' "$PC" > "$PP/.hpc.conf"; O=$(subo "$PP" --rs-mode plan "${PA[@]}"); H1=$(bh "$O")
 O=$(subo "$PP" --rs-attempt ex1 --rs-expect "$H1" "${PA[@]}"); RC=$?; A=$PP/.rs/attempts/ex1

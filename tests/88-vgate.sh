@@ -19,6 +19,7 @@ echo "-- slurm-remote.sh: a relative scratch dir --"
 O=$(vg scratch/vg gpu); RC=$?; D=$(cd "$V/home/scratch/vg" 2>/dev/null && pwd -P)
 [ "$RC" = 0 ] && [ -n "$D" ] && ok "gate runs to the end on stubs (exit 0)" || { bad "gate runs to the end on stubs (rc=$RC)"; echo "$O" | head -5 | sed 's/^/    | /'; }
 has "$O" "dir=$D\$" "dir= is the physical scratch dir"
+has "$O" '^bash_exit_fn=continued rc=3 (want continued rc=3) bash=' "bash fact: a function named exit replaces the builtin (submit.sh's probe passes a gate's exit 1)"
 has "$(cat "$V/sbatch.log" 2>/dev/null)" "rs-vgate-rq --chdir $D job.sh\$" "requeue job: --chdir is absolute (not resolved again inside the scratch dir)"
 has "$(cat "$D/job.sh" 2>/dev/null)" ">> \"$D/requeue.out\"" "job.sh appends to an absolute requeue.out"
 has "$(cat "$V/sbatch.log" 2>/dev/null)" '^--parsable -p gpu -c 1 ' "no extra sbatch args: none passed"

@@ -203,6 +203,9 @@ These are part of the skill's instructions and are enforced by the harness where
 
 - Check your existing authorisation before every submit, launch or cancel; ask only outside it. Cancel only after
   an identity check; never someone else's job or process.
+- On a workstation the harness picks the GPUs (`-d` / `-n`, never one another job uses unasked): a run command whose
+  leading words set `CUDA_VISIBLE_DEVICES` (or a sibling variable) is refused. What the payload does once it starts is
+  its own code — no harness can check that.
 - Partition and QOS are `submit.sh`'s decision — no raw `sbatch`/`srun`, no `--partition` smuggled in via
   `SBATCH_EXTRA`. A policy refusal is final; `-y` acknowledges a plan's warnings (availability, occupancy, cost), and
   rsk sends it only when the approved card showed warnings or the covering grant's kind covers the plan's warnings
@@ -211,8 +214,8 @@ These are part of the skill's instructions and are enforced by the harness where
 - Smoke tests run with `WANDB_MODE=disabled`; real runs checkpoint and resume.
 - Monitoring is detect-only and byte-bounded; findings are reported, decisions stay with you. The exceptions are what
   you authorised: `run-watch --act` resubmits preempted jobs (or first-submits rows) of a run table you approved,
-  within its budget (`rsk watch --act` first checks every row against your "never"s), and `rsk cancel` / a relaunch
-  that a permission of yours covers.
+  within its budget (`rsk watch --act` first checks every row against your "never"s, for anything it could do), and
+  `rsk cancel` / a relaunch that a permission of yours covers.
 
 ## Repository layout
 

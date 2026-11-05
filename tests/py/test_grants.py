@@ -17,25 +17,28 @@ from helpers import ScratchHome
 from remote_run import cli
 from remote_run import grants as G
 from remote_run import ledger as L
-from remote_run.errors import NEEDS_USER, OK, REFUSED, USAGE, RskError
+from remote_run.errors import CONFLICT, NEEDS_USER, OK, REFUSED, USAGE, RskError
 
 SLURM_BOUND = ("kind", "target", "partition", "gres", "cpus", "mem", "time", "account", "name", "extra", "payload",
-               "env_kind", "env_name", "wandb_mode", "env_hook", "venv_dir", "uv_sync_args", "conf_extra", "chain")
+               "env_kind", "env_name", "wandb_mode", "env_hook", "venv_dir", "uv_sync_args", "conf_extra", "flags",
+               "chain")
 WID = hashlib.sha256(b"").hexdigest()
 
 
 def block(**kv: str) -> str:
     """A Slurm plan reply as remote/submit.sh prints it (values %q; bound_hash over kind= … chain=; conf_extra = the
-    conf's SBATCH_EXTRA words, extra = the policy's + those)."""
+    conf's SBATCH_EXTRA words, extra = the policy's + those; flags = the policy flags; a key given as None is left out:
+    an older deploy's block)."""
     base = {"kind": "slurm", "target": "fx", "partition": "gpu", "gres": "gpu:gt-a:2", "cpus": "16", "mem": "64G",
             "time": "1-00:00:00", "account": "''", "name": "exp--train--base--scratch--s0--a01", "extra": "",
             "payload": "python train.py --lr 0.1", "env_kind": "uv", "env_name": "''", "wandb_mode": "online",
-            "env_hook": "''", "venv_dir": "''", "uv_sync_args": "''", "conf_extra": "", "chain": "0", "warnings": "0",
+            "env_hook": "''", "venv_dir": "''", "uv_sync_args": "''", "conf_extra": "", "flags": "", "chain": "0",
+            "warnings": "0",
             "warnings_avail": "0", "warnings_id": WID}
     if "extra" in kv and "conf_extra" not in kv:
         base["conf_extra"] = kv["extra"]
     base.update(kv)
-    bound = [f"{k}={base[k]}" for k in SLURM_BOUND if not (k == "conf_extra" and base[k] is None)]
+    bound = [f"{k}={base[k]}" for k in SLURM_BOUND if not (k in ("conf_extra", "flags") and base[k] is None)]
     h = kv.get("bound_hash") or hashlib.sha256(("\n".join(bound) + "\n").encode()).hexdigest()
     return ("attempt: .rs/attempts/n\n@@plan v1\napi=3\n" + "".join(ln + "\n" for ln in bound)
             + f"info_avail=''\nwarnings_avail={base['warnings_avail']}\nwarnings_id={base['warnings_id']}\n"
@@ -304,7 +307,7 @@ class Covers(unittest.TestCase):
         changed = plan(name="exp--train--base--scratch--s0--a02", payload="python train.py --lr 1")
         d = G.check(st, "relaunch", plan=changed, run="exp--train--base--scratch--s0")
         self.assertFalse(d.covered)
-        self.assertIn("not the original configuration: payload", " ".join(d.reasons))
+        self.assertIn("not the configuration of a01 it resumes: payload", " ".join(d.reasons))
         more = plan(name="exp--train--base--scratch--s0--a02", gres="gpu:gt-a:4")
         self.assertIn("gres", " ".join(G.check(st, "resubmit", plan=more, run="exp--train--base--scratch--s0").reasons))
         self.assertTrue(G.check(state(g, approval("yes, with lr 1", [changed]), runs=runs), "launch",
@@ -683,6 +686,124 @@ class Round3(unittest.TestCase):
         self.assertEqual((d, o["id"]), (None, own["id"]))
 
 
+class Round4(unittest.TestCase):
+    """The round-4 decisions on grants.py, each pinned with the round-3 recheck's reproduction (R4-1 R4-2 R4-3 R4-6
+    R4-10 R4-15)."""
+
+    RUN = "exp--smoke--a--s0"
+
+    def _att(self, p: dict, aid: str, end: str | None, job: str, plan_id: str, cls: str = "smoke") -> dict:
+        return {"name": G.unq(p["name"]), "target": "fx", "kind": "slurm",
+                "request": {"action": "launch", "plan": plan_id, "bound_hash": p["bound_hash"], "bound": G.bound(p),
+                            "class": cls},
+                "submissions": [{"nonce": f"n-{aid}", "submit": "submitted", "job": job,
+                                 **({"end": {"state": end}} if end else {})}],
+                "result": {"state": end} if end else None}
+
+    def test_r4_1_a_deny_of_a_plan_matches_what_cannot_show_its_hash(self):
+        """NEW-deny-run-failopen / N2: `rsk grant deny --run H` matched rsk launch only — a cancel (no plan) and a
+        run-watch row (no hash) slipped past it; an unknown bound hash / plan id now matches (fail closed)."""
+        p = plan(name=f"{self.RUN}--a01")
+        deny = G.new_deny("do not touch that run, whatever happens", {"runs": [p["bound_hash"]]})
+        own = grant({"targets": ["fx"]}, actions=("launch", "cancel_own"))
+        runs = {self.RUN: {"run": self.RUN, "attempts": {"a01": self._att(p, "a01", None, "101", "p-1")}}}
+        self.assertTrue(G.check(state(own, deny), "launch", plan=p).denied)                 # as before
+        d = G.check(state(own, deny, runs=runs), "cancel", job="101", run=self.RUN, plan={"target": "fx"})
+        self.assertTrue(d.denied, d.reasons)                                                 # the ledger's hash: it
+        self.assertTrue(G.check(state(own, deny), "cancel", job="555", plan={"target": "fx"}).denied)   # no plan
+        row = {"target": "fx", "kind": "slurm", "name": "a", "partition": "gpu", "warnings": "0"}      # a watch row
+        self.assertIsNotNone(G.deny_match(row, ("launch",), state(deny), job=None)[0])
+        other = plan(name=f"{self.RUN}--a01", payload="python other.py")
+        runs2 = {self.RUN: {"run": self.RUN, "attempts": {"a01": self._att(other, "a01", None, "101", "p-1")}}}
+        self.assertTrue(G.check(state(own, deny, runs=runs2), "cancel", job="101", run=self.RUN,
+                                plan={"target": "fx"}).covered)                          # another plan: not that one
+        pdeny = G.new_deny("never that plan", {"plans": ["p-1"]})
+        self.assertIsNotNone(G.deny_match(row, ("launch",), state(pdeny), job=None)[0])  # no plan id: may be it
+        self.assertIsNone(G.deny_match({**row, "plan_id": "p-2"}, ("launch",), state(pdeny), job=None)[0])
+
+    def test_r4_2_a_relaunch_grant_repeats_the_attempt_whose_end_it_relies_on(self):
+        """NEW-relaunch-orig: a01 (--lr 1) was CANCELLED by the user, a02 (--lr 0.1) PREEMPTED; a plan named after a01
+        with a01's configuration rode on a02's preemption. The configuration is now a02's, the one that ran last."""
+        run = "exp--train--lr--s0"
+        a01 = plan(name=f"{run}--a01", payload="python train.py --lr 1")
+        a02 = plan(name=f"{run}--a02", payload="python train.py --lr 0.1")
+        runs = {run: {"run": run, "attempts": {"a01": self._att(a01, "a01", "CANCELLED", "101", "p-1", "train"),
+                                               "a02": self._att(a02, "a02", "PREEMPTED", "102", "p-2", "train")}}}
+        g = grant({"names": [f"{run}*"]}, actions=("relaunch",))
+        back = plan("p-3", name=f"{run}--a01", payload="python train.py --lr 1")
+        d = G.check(state(g, runs=runs), "relaunch", plan=back, run=run)
+        self.assertFalse(d.covered)
+        self.assertIn("not the configuration of a02 it resumes: payload", " ".join(d.reasons))
+        resume = plan("p-4", name=f"{run}--a03", payload="python train.py --lr 0.1")
+        self.assertTrue(G.check(state(g, runs=runs), "relaunch", plan=resume, run=run).covered)
+        flipped = {run: {"run": run, "attempts": {"a01": self._att(a01, "a01", "PREEMPTED", "101", "p-1", "train"),
+                                                  "a02": self._att(a02, "a02", "CANCELLED", "102", "p-2", "train")}}}
+        d = G.check(state(g, runs=flipped), "relaunch", plan=back, run=run)   # a01's end is not the latest one's
+        self.assertFalse(d.covered)
+        self.assertIn("previous attempt a02 ended CANCELLED", " ".join(d.reasons))
+
+    def test_r4_3_a_run_whose_first_attempt_had_no_class_has_none(self):
+        """NEW-class-unlabelled: a label given at a later attempt never makes a class-scoped grant cover the run, and a
+        class deny matches it (the first attempt's class is unknown)."""
+        relabelled = {**plan(name="bigrun--a02"), "class": "smoke", "classes_recorded": ["", "smoke"]}
+        f = G.facts(relabelled)
+        self.assertEqual((f.cls, f.class_unknown), (None, True))
+        self.assertFalse(G.check(state(grant({"classes": ["smoke"]}, actions=("launch", "relaunch"))), "launch",
+                                 plan=relabelled).covered)
+        self.assertTrue(G.check(state(grant(), G.new_deny("no more train runs", {"classes": ["train"]})), "launch",
+                                plan=relabelled).denied)
+        labelled = {**plan(name="bigrun--a02"), "class": "smoke", "classes_recorded": ["smoke"]}
+        self.assertTrue(G.check(state(grant({"classes": ["smoke"]})), "launch", plan=labelled).covered)
+        self.assertEqual(G.run_classes({"attempts": {"a02": {"request": {"class": ""}, "name": "x--a02"},
+                                                     "a01": {"request": {}, "name": "x--smoke--a01"}}}), ["smoke", ""])
+
+    def test_r4_6_a_plan_with_policy_flags_is_never_a_grants_call(self):
+        """NEW-policy-flag: a policy flag the agent chose (`--whole-node` → the policy adds --exclusive) rode on a
+        1-GPU grant. The block binds flags=; no standing grant covers a plan with any (the card lists them)."""
+        g = grant({"targets": ["fx"], "max_gpus": 2})
+        flagged = plan(flags="--whole-node")
+        self.assertEqual(G.facts(flagged).flags, ("--whole-node",))
+        d = G.check(state(g), "launch", plan=flagged)
+        self.assertFalse(d.covered)
+        self.assertIn("policy flag(s) --whole-node", " ".join(d.reasons))
+        self.assertTrue(G.check(state(g), "launch", plan=plan()).covered)
+        self.assertTrue(G.check(state(g, approval("yes, the whole node", [flagged])), "launch", plan=flagged).covered)
+        old = plan(flags=None)                       # a deploy from before flags= was bound
+        self.assertFalse(G.facts(old).flags_known)
+        self.assertIn("does not name its policy flags", " ".join(G.check(state(g), "launch", plan=old).reasons))
+        self.assertIn("flags", G.NEEDED["slurm"])
+        self.assertEqual(G.SLURM_BOUND[-2:], ("flags", "chain"))   # immediately before chain=, as submit.sh prints it
+
+    def test_r4_10_cancel_own_never_covers_an_attempt_the_ledger_shows_ended(self):
+        """N1-cancel-job-ended-pid: the ledger's ended submission of a pid the box has since reused made the cancel
+        'own'; only a live submission is."""
+        p = plan(name=f"{self.RUN}--a01")
+        g = grant({"targets": ["fx"]}, actions=("cancel_own",))
+        live = {self.RUN: {"run": self.RUN, "attempts": {"a01": self._att(p, "a01", None, "101", "p-1")}}}
+        ended = {self.RUN: {"run": self.RUN, "attempts": {"a01": self._att(p, "a01", "ENDED", "101", "p-1")}}}
+        self.assertTrue(G.check(state(g, runs=live), "cancel", job="101", run=self.RUN).covered)
+        d = G.check(state(g, runs=ended), "cancel", job="101", run=self.RUN)
+        self.assertFalse(d.covered)
+        self.assertIn("not one rsk launched", " ".join(d.reasons))
+        seen = {self.RUN: {"run": self.RUN, "attempts": {"a01": {**self._att(p, "a01", None, "101", "p-1"),
+                                                                 "submissions": [{"nonce": "n", "submit": "submitted",
+                                                                                  "job": "101", "seen": {"state": "COMPLETED"}}]}}}}
+        self.assertFalse(G.check(state(g, runs=seen), "cancel", job="101", run=self.RUN).covered)
+
+    def test_r4_15_unreadable_grants_refuse_never_act_as_if_no_deny(self):
+        """N7: a grants.json that does not parse (no good .prev) read as 'no records' — no deny. Now every check is
+        exit 6 'grants unreadable', and deny_match matches everything."""
+        st = state(grant())
+        st.grants_unreadable = "grants.json: not JSON; grants.json.prev: missing"
+        with self.assertRaises(RskError) as c:
+            G.check(st, "launch", plan=plan())
+        self.assertEqual(c.exception.code, CONFLICT)
+        self.assertIn("grants unreadable — rsk grant recount / restore", str(c.exception))
+        with self.assertRaises(RskError):
+            G.check(st, "cancel", job="1", plan={"target": "fx"})
+        self.assertIsNotNone(G.deny_match(plan(), ("launch",), st, job=None)[0])
+
+
 class Store(ScratchHome):
     def setUp(self) -> None:
         super().setUp()
@@ -722,6 +843,57 @@ class Store(ScratchHome):
         self.assertEqual(self.led.state().budgets_unknown, "")
         d = G.check(self.led, "launch", plan=plan())
         self.assertIn("used 2 of 2", " ".join(d.reasons))
+
+    def test_n7_a_deny_lost_with_grants_json_still_counts_and_recount_puts_it_back(self):
+        """N7 case 2 (round 4 not_fixed): grants.json damaged, .prev = the file before the last write — a deny made in
+        that write was gone (rsk launch --approve submitted), and `rsk grant recount` wrote the .prev data back for
+        good. Now audit.jsonl (written first) brings the deny back meanwhile, and recount restores it; a revoke lost
+        the same way never resurrects a grant."""
+        fresh = G.add(self.led, grant({"targets": ["fx"]}))
+        G.add(self.led, G.new_deny("never launch anything on fx", {"targets": ["fx"]}))   # .prev: without it
+        (self.led.dir / "grants.json").write_text('{"version": 1, "records": [')
+        d = G.check(self.led, "launch", plan=plan())
+        self.assertEqual(d.code, REFUSED, d.reasons)
+        self.assertIn("never launch anything on fx", " ".join(d.reasons))
+        G.add(self.led, grant({"targets": ["fx"]}))                    # a write in the recovered state: still there
+        self.assertEqual(G.check(self.led, "launch", plan=plan()).code, REFUSED)
+        self.assertIn("restored from the audit", G.recount(self.led))
+        self.assertEqual(self.led.state().budgets_unknown, "")
+        self.assertEqual(G.check(self.led, "launch", plan=plan()).code, REFUSED)   # in grants.json for good now
+        self.assertTrue(any(r["kind"] == "deny" for r in json.loads((self.led.dir / "grants.json").read_text())["records"]))
+        self.assertNotIn(fresh["id"], G.recount(self.led))            # recount again: nothing more to restore
+        for f in ("grants.json", "grants.json.prev"):                   # R4-15's remedy: both moved aside …
+            (self.led.dir / f).rename(self.led.dir / (f + ".aside"))
+        self.assertEqual(G.check(self.led, "launch", plan=plan()).code, REFUSED)   # … the deny counts all the same
+        self.assertIn("restored from the audit", G.recount(self.led))
+        self.assertEqual(G.check(self.led, "launch", plan=plan()).code, REFUSED)
+        # a revoke lost the same way (another project's ledger): the grant stays revoked after recount
+        (self.home / "p2").mkdir()
+        (self.home / "p2" / ".hpc.conf").write_text("REMOTE_DIR=/r2\n")
+        led = L.Ledger(self.home / "p2")
+        g = G.add(led, grant({"targets": ["fx"]}))
+        self.assertTrue(G.check(led, "launch", plan=plan()).covered)
+        G.revoke(led, g["id"], "stop that")                             # .prev: g not revoked
+        (led.dir / "grants.json").write_text("{torn")
+        d = G.check(led, "launch", plan=plan())
+        self.assertFalse(d.covered)
+        self.assertIn("budgets unknown", " ".join(d.reasons))          # meanwhile: .prev's records cover nothing
+        self.assertIn(f"revocation(s) of {g['id']} restored", G.recount(led))
+        self.assertEqual(led.state().budgets_unknown, "")
+        d = G.check(led, "launch", plan=plan())
+        self.assertFalse(d.covered, d.reasons)
+        self.assertNotIn("budgets unknown", " ".join(d.reasons))       # revoked, not merely unknown
+
+    def test_r4_15_a_corrupt_grants_json_without_prev_is_unreadable(self):
+        G.add(self.led, G.new_deny("never on fx", {"targets": ["fx"]}))
+        (self.led.dir / "grants.json").write_text('{"version": 1, "records": [')     # torn, and its .prev …
+        (self.led.dir / "grants.json.prev").unlink(missing_ok=True)                   # … gone too
+        self.assertIn("grants.json", self.led.state().grants_unreadable)
+        with self.assertRaises(RskError) as c:
+            G.check(self.led, "launch", plan=plan())
+        self.assertEqual(c.exception.code, CONFLICT)
+        rc, text = run("grant", "list", "-C", str(self.proj))
+        self.assertIn("BUDGETS UNKNOWN", text)                                        # rsk grant list still reads
 
     def test_cli_add_list_deny_revoke(self):
         base = ("grant", "add", "-C", str(self.proj), "--quote", "submit the seeds yourself", "--action", "launch",

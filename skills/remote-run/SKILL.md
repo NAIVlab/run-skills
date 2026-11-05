@@ -43,6 +43,7 @@ rsk logs -T <t> <jobid|log> [<ckpt-dir>] [-n 40]  # start a review: the deployed
 rsk exec -T <t> -- <cmd> [args]                   # ONE bounded read in the remote project dir instead of a raw ssh: squeue sacct sinfo nvidia-smi
                                                   #   ps df ls stat, head/tail -c N <relative path>, …; no pipes, no $VAR (write values out)
 rsk watch <table> [--act] [--once] [--for S]      # many jobs or long waits: run-watch under the project's lease (procedure §5); --act: every row checked against the denies
+rsk watch <table> --approve "<the user's words>"  # their OK of the shown rows + `#@ allow` (Slurm); --act / --approve go through rsk watch only
 rsk cancel <run> [--job <id|pid>] [--approve "<the user's words>"]   # identity check on the target, then scancel / TERM → KILL
 rsk pull -T <t> [-n] <path>...                    # copy results back (run-pull; -n = count + size first)
 rsk grant add|deny|list|revoke …                  # the user's standing words (§3); rsk adopt: ledger a run rsk did not start
@@ -71,18 +72,19 @@ approvals, grants, denies); act when it covers the action, ask only when it does
   "<their words>" --action launch|relaunch|chain|cancel_own -T <t> [--partition P] [--name '<glob>'] [--max-gpus N]
   [--max-time T] [--allow-warnings availability|any] --max-live N|none --max-launches N|none --expires <date>|none` —
   exactly the scope and limits they stated (`none` where they set none; unclear → ask). Never invent a grant, never widen
-  one. "Never X" → `rsk grant deny --quote "<their words>" …`: a deny always wins (`rsk watch --act` too). A sweep they
-  approved shares one approval, never one question each. The action is the plan's, never a flag's: a run that ran before
-  = `relaunch`, a singleton chain = `chain` (each one that applies is checked); a run keeps its first attempt's class.
+  one. "Never X" → `rsk grant deny --quote "<their words>" …`: a deny always wins (`rsk watch --act` too) and matches
+  what it cannot rule out (a job without a plan, a watch row, a run of unknown class). A sweep they approved shares one
+  approval, never one question each. The action is the plan's, never a flag's: a run that ran before = `relaunch`, a
+  singleton chain = `chain` (each one that applies is checked); a run's class is set only at its first attempt.
 - Preemption recovery they authorised runs within its budget: a requeueing partition restarts the job itself; else
-  `run-watch --act` resubmits approved rows within `#@ allow preempt=N`, or `rsk launch --relaunch <run>` under a
-  `relaunch` grant (same configuration, and only after an infrastructure end — Slurm PREEMPTED / NODE_FAIL / BOOT_FAIL,
-  box REBOOT; never CANCELLED, COMPLETED, FAILED, TIMEOUT, OUT_OF_MEMORY or unknown; an approved card: any end).
-  "Stop the rest of the group if one fails" = `#@ allow … fail-stop`.
+  `rsk watch <table> --act` resubmits approved rows within `#@ allow preempt=N`, or `rsk launch --relaunch <run>` under a
+  `relaunch` grant (the configuration of the run's latest attempt that ran, and only after an infrastructure end — Slurm
+  PREEMPTED / NODE_FAIL / BOOT_FAIL, box REBOOT; never CANCELLED, COMPLETED, FAILED, TIMEOUT, OUT_OF_MEMORY or unknown;
+  an approved card: any end). "Stop the rest of the group if one fails" = `#@ allow … fail-stop`.
 - Ask first: a charged partition, more resources or a wider scope than authorised. A plan with warnings is never
   grant-covered unless their words allowed it (`--allow-warnings availability` = only the harness's availability gate,
-  `any` = every -y gate, a charged partition's too — only when their words say so); nor is a card with `NO GRANT` (an
-  `SBATCH_EXTRA` word outside the grant allowlist) or `--same-name-ok`. `--max-time` caps every time sbatch could read.
+  `any` = every -y gate, a charged partition's too — only when their words say so); nor is a card with policy flags,
+  `NO GRANT` (an `SBATCH_EXTRA` word outside the grant allowlist) or `--same-name-ok`. `--max-time` caps every time limit.
 - "Cancel job 123" → `rsk cancel --job 123 -T <t> --approve "<their words>"`: cancelled once its identity checks out
   (Slurm: name, WorkDir, user; box: pid, start time, boot id); the approval is bound to it, lasts 1 h and is used up by
   its first cancel, whatever came of it. Your own judgment that a run should stop → ask, unless the user authorised that
@@ -93,11 +95,14 @@ approvals, grants, denies); act when it covers the action, ask only when it does
   `rsk bootstrap --job` (both run only with `--approve "<their words>"`).
 A grant records the user's words; it is bookkeeping, not proof of consent — an agent can write anything there. rsk keeps
 decisions from being asked twice or stretched and constrains only what goes through it. Record only what the user said.
+Exit 6 `grants unreadable`: no deny can be ruled out, so rsk launches, cancels and acts on nothing — tell the user (they
+restore `grants.json`, or move it and its `.prev` aside and `rsk grant recount`: denies return; lost grants need their words).
 
 ## Safety rails (always)
 - **Check the existing authorisation before every submit, launch or cancel; ask only outside it** (§3). Workstations are
   often shared: never launch onto a GPU another job is using without the user's words naming it — auto-pick takes the
-  idlest GPUs with no compute process; read the card's busy line. Cancel only after the identity check (`rsk cancel`).
+  idlest GPUs with no compute process; read the card's busy line. On a box the run command never picks GPUs (`-d`/`-g`
+  do: a `CUDA_VISIBLE_DEVICES=…` in front of it is refused). Cancel only after the identity check (`rsk cancel`).
 - Slurm: partition and QOS are `submit.sh`'s decision — no raw `sbatch`/`srun`/`salloc`, no `scontrol update`, no
   `--partition` inside `SBATCH_EXTRA`. A policy refusal (exit 3) is final; `-y` also confirms policy warnings
   (availability, occupancy, SU cost): rsk sends it only when the approved card showed warnings or the covering grant's
@@ -121,6 +126,6 @@ decisions from being asked twice or stretched and constrains only what goes thro
   keep log reads byte-bounded. Report every finding promptly, healthy status in one line. Detect-only — stopping,
   killing or resubmitting a run is the user's call, except what they authorised and a tool checks: `run-watch --act`
   (Slurm) first-submits or resubmits only table rows the user approved (rows + budget shown, their words recorded with
-  `--approve`), within the table's `#@ allow` budget, `fail-stop` cancels included (`rsk watch --act` first refuses
-  rows a deny of theirs matches); `rsk cancel` / `rsk launch --relaunch` under a grant that covers them (§3); on
-  workstations `run-watch` only detects.
+  `rsk watch <table> --approve`), within the table's `#@ allow` budget, `fail-stop` cancels included (`rsk watch --act`
+  first refuses rows a deny of theirs matches); `rsk cancel` / `rsk launch --relaunch` under a grant that covers them
+  (§3); on workstations `run-watch` only detects.

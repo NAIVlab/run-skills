@@ -14,21 +14,31 @@
 # unknown then is cancelled once it is tracked (its receipt, --adopt), by an --act run only and only while the table's
 # approved `#@ allow` still has fail-stop (approved without it: dropped).
 # A requeued job keeps its id in the queue, so it is only counted (requeue-storm past a threshold); a purged job is settled
-# only by a terminal sacct row that names the row (else held: job-identity-mismatch). A row is one run by its name: with no
-# state in its own table it takes its state from the newest other logs/run-watch/*.state naming it — status and job ids
-# only from a line of its own target (each state line records it; an older line without one counts as another target),
-# else only the spent budgets — together with that table's fail-stop (`#failstop`, `#failstop-pending`); its spent budgets
+# only by a terminal sacct row that names the row and this project's WorkDir (pwd or pwd -P; else held: job-identity-mismatch).
+# A row is one run by its name: with no state in its own table it takes its state from the newest other logs/run-watch/*.state
+# naming it — status and job ids only from a line of its own target (each state line records it; an older line without one
+# counts as another target), else only the spent budgets; its spent budgets
 # are never fewer than another state file holds, and a submit any other state file holds as unknown (its attempt nonce)
 # makes it submit-unknown here too until its own state has settled that attempt (same nonce, or a newer one of its own).
-# A row moved to another target keeps only its spent budgets and an unknown submit. Row submit words never carry --rs-*
+# Every round, a fail-stop (`#failstop`, `#failstop-pending`) in any other state file with a line naming one of a table's
+# rows holds that table too (the row was in the stopped group), whatever state the row has here, until --release of its
+# trigger here (`#failstop-released` keeps it from being taken again). A row moved to another target keeps only its spent
+# budgets and an unknown submit; so does a line of its own table from before the target column unless that file watched
+# one target only and the row was not removed. Row submit words never carry --rs-*
 # (run-watch sends --rs-attempt itself). Numbers (flags, `#@ allow`, after=, --adopt ids) are base 10: 0060 is 60.
 # `#@ ok … conf=` binds an approval to .hpc.conf (sha256[:12]; the submit ssh checks the deployed copy too); an older line
 # without conf= stays valid; a line or table header this copy cannot read is refused, naming a newer run-watch as the likely
 # writer. --adopt takes a job only if its name, user and WorkDir are the row's. One watcher per project (lock).
 #   run-watch TABLE... [--act] [--once] [--every S] [--for S] [--stall-after S] [--max-active N] [--release NAME] [--adopt NAME=JOBID]
 #   run-watch TABLE --approve "the user's words"   # writes `#@ ok` over every unapproved or stale block, nothing else
+# Driven by rsk (`rsk watch`: RS_VIA_RSK=1, RS_WATCH_PARENT=<its pid>): --act or --approve called directly while rsk is
+# installed (on PATH, or in uv's tool bin dir) prints `use: rsk watch …` and exits 2 (watching without them still runs);
+# installed without rsk it acts, with a NOTE. Once RS_WATCH_PARENT is gone (or no longer this process's parent), checked
+# every round, after each read and before each submit or cancel ssh, it stops: nothing more is submitted or cancelled
+# (a cancel not sent yet stays a pending fail-stop cancel), exit 7.
 # Exit 0 every row done; 2 table/conf error; 3 lease over, or --once with rows still moving; 4 the rest waits on a human;
-# 6 another run-watch holds the project's lock (logs/run-watch/.lock: its pid, host, start and act are printed; nothing ran).
+# 6 another run-watch holds the project's lock (logs/run-watch/.lock: its pid, host, start and act are printed; nothing ran);
+# 7 the rsk watch that started it (RS_WATCH_PARENT) is gone — its lease and its deny checks with it.
 set -uo pipefail
 RS_HOME=$(cd "$(dirname "$0")/.." && pwd)
 . "$RS_HOME/lib/common.sh"
@@ -60,6 +70,33 @@ done
 [ "$EVERY" -ge 60 ] || die "--every must be >= 60 s"
 [ "$LEASE" -ge 1 ] && [ "$LEASE" -le 86400 ] || die "--for must be 1..86400 s"
 [ -z "$RELEASE" ] || [ "$ACT" = 1 ] || die "--release needs --act (and the user's OK for that one submit)"
+rsk_installed() {   # rsk on PATH, or in uv's tool bin dir (uv tool install puts it there; that dir may not be on PATH)
+  command -v rsk >/dev/null 2>&1 && return 0
+  command -v uv >/dev/null 2>&1 || return 1
+  local d; d=$(uv tool dir --bin 2>/dev/null) && [ -n "$d" ] && [ -x "$d/rsk" ]
+}
+if [ -z "${RS_VIA_RSK:-}" ] && [ "$ACT$APPROVING" != 00 ]; then   # R4-7: acting goes through rsk watch (its lease, the ledger's denies): a nudge, not a guard
+  if rsk_installed; then
+    if [ "$APPROVING" = 1 ]; then echo "use: rsk watch ${TBL_PATH[0]} --approve \"<the user's words>\" (the ledger's denies are checked first) — nothing written" >&2
+    else echo "use: rsk watch ${TBL_PATH[*]} … --act … (the project's watch lease; every row checked against the ledger's denies) — nothing ran" >&2; fi
+    exit 2
+  fi
+  echo "NOTE: run-skills is installed without rsk: run-watch $([ "$APPROVING" = 1 ] && echo writes the approval || echo acts) directly, no ledger deny checked — the user's words come first" >&2
+fi
+PARENT=${RS_WATCH_PARENT:-}; PARENT=${PARENT%%:*}   # rsk watch's pid: its lease and its deny checks live there
+case "$PARENT" in '') ;; 0*|*[!0-9]*) die "RS_WATCH_PARENT='${RS_WATCH_PARENT:-}' is not a pid (rsk watch sets it to its own)" ;; esac
+parent_gone() {   # rsk watch is gone, or no longer this process's parent (its pid reused by another process is never taken for it)
+  local pp; [ -n "$PARENT" ] || return 1; kill -0 "$PARENT" 2>/dev/null || return 0
+  pp=$(ps -o ppid= -p "$$" 2>/dev/null | tr -d ' '); case "$pp" in ''|*[!0-9]*) return 1 ;; esac   # ps unreadable: the pid alone
+  [ "$pp" != "$PARENT" ]
+}
+orphan_stop() {   # orphan_stop WHERE: the rsk watch that started this run-watch is gone: stop acting, exit 7
+  parent_gone || return 0
+  local m="reason=parent-gone parent=$PARENT at=$1 -- the rsk watch that started this run-watch is gone, and with it its lease and its deny checks: nothing more is submitted or cancelled (exit 7); rsk watch again to go on"
+  [ "$LOCKED" = 1 ] || { echo "ATTENTION $m" >&2; exit 7; }
+  EVQ="$EVQ$(ts) ATTENTION $m$NL"; finish 7
+}
+LOCKED=0; orphan_stop start
 OBS_TO=${RS_WATCH_OBS_TIMEOUT:-180}; SUB_TO=${RS_WATCH_SUBMIT_TIMEOUT:-600}   # deadlines: observe round / one submit
 NK=0; NS=0; LOST=9999; SD=logs/run-watch; W=$(mktemp -d) && [ -d "$W" ] || die "cannot create a scratch dir (TMPDIR)"; LOCK=$SD/.lock; LOCKED=0; NSUB=0; PADOPT=$ADOPTS
 trap 'rm -rf "$W"; [ "$LOCKED" = 0 ] || rm -rf "$LOCK"' EXIT
@@ -214,7 +251,8 @@ approve() {
 
 # ---------- state: logs/run-watch/<table>.state (TSV, '-' = empty), .prev = the version before ----------
 S_FIELDS=18   # name st jobs preempts errors timeouts requeues last storm resume tq gap release skips note nonce spent target
-              # (17 and 15 fields: older lines without a target — read as the row's own; another table never takes their jobs)
+              # (17 and 15 fields: older lines without a target — the file's one '#target' if it names one and the row was not
+              # removed, else '?' = unknown: never the row's own; another table never takes their jobs)
 new_state() { local j=$NS; NS=$((NS + 1)); S_NAME[j]=$1; S_TB[j]=$2; S_ST[j]=$3; S_JOBS[j]=-; S_PRE[j]=0; S_ERR[j]=0; S_TO[j]=0
   S_RQ[j]=0; S_LAST[j]=-; S_STORM[j]=0; S_RES[j]=-; S_TQ[j]=-; S_GAP[j]=0; S_REL[j]=-; S_SKIP[j]=0; S_NOTE[j]=$4; S_NONCE[j]=-; S_SPENT[j]=-; S_TGT[j]=-; }
 tsplit() { local IFS='	'; set -f; XS=($1); set +f; }   # tsplit LINE: XS = its tab-separated fields (no here-string, no temp file)
@@ -225,17 +263,17 @@ unspend() {   # unspend STATE NONCE: give back what that nonce counted (once; no
   case "${S_SPENT[$1]}" in *":$2") ;; *) return 0 ;; esac
   case "${S_SPENT[$1]}" in preempt:*) S_PRE[$1]=$((S_PRE[$1] - 1)) ;; errors:*) S_ERR[$1]=$((S_ERR[$1] - 1)) ;; *) S_TO[$1]=$((S_TO[$1] - 1)) ;; esac; S_SPENT[$1]=-; }
 load_state() {
-  local ti f l k x
+  local ti f l k x ntg tg1
   NS=0
   for ((ti = 0; ti < ${#TBL_PATH[@]}; ti++)); do
-    f=$SD/${TB_BASE[ti]}.state; TB_LOST[ti]=0; TB_CREATED[ti]=$(date +%s); TB_FS[ti]=-; FS_NEW[ti]=""; TB_FSP[ti]=""
+    f=$SD/${TB_BASE[ti]}.state; TB_LOST[ti]=0; TB_CREATED[ti]=$(date +%s); TB_FS[ti]=-; FS_NEW[ti]=""; TB_FSP[ti]=""; TB_FSR[ti]=""; ntg=0; tg1=""
     if [ ! -f "$f" ]; then [ ! -f "$f.prev" ] || TB_LOST[ti]=1; continue; fi
     [ "$(head -1 "$f")" = "#run-watch-state v1" ] || { TB_LOST[ti]=1; continue; }
     while IFS= read -r l; do
       case "$l" in
         '#created '*) TB_CREATED[ti]=${l#'#created '} ;; '#failstop '*) TB_FS[ti]=${l#'#failstop '} ;;
-        '#failstop-pending '*) TB_FSP[ti]=${l#'#failstop-pending '} ;;
-        '#target '*) set -f; set -- $l; set +f
+        '#failstop-pending '*) TB_FSP[ti]=${l#'#failstop-pending '} ;; '#failstop-released '*) TB_FSR[ti]=${l#'#failstop-released '} ;;
+        '#target '*) set -f; set -- $l; set +f; ntg=$((ntg + 1)); tg1=${2:-}
           for ((k = 0; k < NK; k++)); do [ "${TG_NAME[k]}" != "$2" ] || { TG_FAILS[k]=${3#fails=}; TG_SEEN[k]=${4#seen=}; }; done ;;
         '#'*|'') ;;
         *) tsplit "$l"; x=${#XS[@]}
@@ -243,7 +281,8 @@ load_state() {
           new_state "${XS[0]}" "$ti" "${XS[1]}" "${XS[14]}"; k=$((NS - 1))
           S_JOBS[k]=${XS[2]}; S_PRE[k]=${XS[3]}; S_ERR[k]=${XS[4]}; S_TO[k]=${XS[5]}; S_RQ[k]=${XS[6]}; S_LAST[k]=${XS[7]}
           S_STORM[k]=${XS[8]}; S_RES[k]=${XS[9]}; S_TQ[k]=${XS[10]}; S_GAP[k]=${XS[11]}; S_SKIP[k]=${XS[13]}   # a release never outlives its process
-          S_NONCE[k]=${XS[15]:--}; S_SPENT[k]=${XS[16]:--}; S_TGT[k]=${XS[17]:--} ;;
+          S_NONCE[k]=${XS[15]:--}; S_SPENT[k]=${XS[16]:--}; S_TGT[k]=${XS[17]:--}
+          [ "${S_TGT[k]}" != - ] || { [ "$ntg" = 1 ] && [ -n "$tg1" ] && [ "${S_ST[k]}" != removed ] && S_TGT[k]=$tg1 || S_TGT[k]='?'; } ;;   # R4-14
       esac
     done < "$f"
   done
@@ -253,7 +292,8 @@ save_state() {
   for ((ti = 0; ti < ${#TBL_PATH[@]}; ti++)); do
     f=$SD/${TB_BASE[ti]}.state
     { echo "#run-watch-state v1"; echo "#created ${TB_CREATED[ti]}"; [ "${TB_FS[ti]}" = - ] || echo "#failstop ${TB_FS[ti]}"
-      [ "${TB_FS[ti]}" = - ] || [ -z "${TB_FSP[ti]// /}" ] || echo "#failstop-pending ${TB_FSP[ti]}"
+      [ "${TB_FS[ti]}" = - ] || [ -z "${TB_FSP[ti]// /}" ] || echo "#failstop-pending ${TB_FSP[ti]# }"
+      [ -z "${TB_FSR[ti]// /}" ] || echo "#failstop-released ${TB_FSR[ti]# }"
       for ((k = 0; k < NK; k++)); do echo "#target ${TG_NAME[k]} fails=${TG_FAILS[k]} seen=${TG_SEEN[k]}"; done
       for ((j = 0; j < NS; j++)); do [ "${S_TB[j]}" = "$ti" ] || continue
         printf '%s\t' "${S_NAME[j]}" "${S_ST[j]}" "${S_JOBS[j]}" "${S_PRE[j]}" "${S_ERR[j]}" "${S_TO[j]}" "${S_RQ[j]}" \
@@ -291,19 +331,35 @@ unknowns() {   # unknowns NAME -> "<nonce>\t<file>\t<target>" for each line of a
       s = $2; if (s == "removed") { s = $15; sub(/\/.*/, "", s) }
       if (s == "submitting" || s == "submit-unknown") print (NF >= 17 ? $16 : "-"), FILENAME, (NF == 18 ? $18 : "-") }' "${OF[@]}"
 }
-inherit_fs() {   # inherit_fs ROW FILE: the source table's fail-stop goes with the row (G4-2): its '#failstop' when this table
-  local i=$1 ti=${R_TB[$1]} s p   # has none, and the row's own '#failstop-pending' entry (cancelled once tracked)
-  s=$(awk '/^#failstop / { sub(/^#failstop /, ""); print; exit }' "$2"); [ -n "$s" ] || return 0
-  p=$(awk '/^#failstop-pending / { sub(/^#failstop-pending /, ""); print; exit }' "$2")
-  if [ "${TB_FS[ti]}" = - ]; then TB_FS[ti]=$s
-    EVQ="$EVQ$(ts) ATTENTION table=${TBL_PATH[ti]} reason=fail-stop-inherited trigger=${s%% *}:${s#* } from=$2 -- its rows take their state from a table whose group was stopped by #@ allow fail-stop: stopped here too; --release ${s%% *} (user OK) resumes it$(ridx "${s%% *}" >/dev/null || echo ", though it is not a row here")$NL"
-  fi
-  case " $p " in *" ${R_NAME[i]} "*) case " ${TB_FSP[ti]} " in *" ${R_NAME[i]} "*) ;; *) TB_FSP[ti]="${TB_FSP[ti]} ${R_NAME[i]}" ;; esac ;; esac
+fs_others() {   # FSO = per other state file holding a '#failstop': "<file>\t<trigger job>\t<pending names>\t <names its lines carry> "
+  FS_UNREAD=""; FSO=""; [ "${#OF[@]}" -gt 0 ] || return 0   # (a failed read: no submit this round — never "no stop")
+  FSO=$(awk -F'\t' 'function out() { if (f != "" && s != "") print f "\t" s "\t" p "\t " n }
+      FNR == 1 { out(); f = FILENAME; s = ""; p = ""; n = ""; next } /^#failstop / { s = substr($0, 11); next }
+      /^#failstop-pending / { p = substr($0, 19); next } /^#/ || $1 == "" { next } { n = n $1 " " } END { out() }' "${OF[@]}") ||
+    { FSO=""; FS_UNREAD=1; EVQ="$EVQ$(ts) WARN reason=fail-stop-unreadable -- another state file could not be read for its fail-stop: no submit this round$NL"; }
+}
+fs_take() {   # fs_take ROW FRESH: a fail-stop in another state file with a line naming this row (it was in that group: G4-2, R4-13 —
+  local i=$1 ti=${R_TB[$1]} rest=$FSO l f s p n   # every round, whatever state the row has here) holds this table too when it has
+  while [ -n "$rest" ]; do   # none, unless --release of its trigger here released that stop; the row's '#failstop-pending' entry goes
+    l=${rest%%"$NL"*}; case "$rest" in *"$NL"*) rest=${rest#*"$NL"} ;; *) rest="" ;; esac   # with it (once: when taken, or a new row)
+    f=${l%%"	"*}; l=${l#*"	"}; s=${l%%"	"*}; l=${l#*"	"}; p=${l%%"	"*}; n=${l#*"	"}
+    case "$n" in *" ${R_NAME[i]} "*) ;; *) continue ;; esac
+    case " ${TB_FSR[ti]} " in *" ${s% *}:${s#* } "*) continue ;; esac
+    if [ "${TB_FS[ti]}" = - ]; then TB_FS[ti]=$s; FS_TOOK[ti]=1
+      EVQ="$EVQ$(ts) ATTENTION table=${TBL_PATH[ti]} reason=fail-stop-inherited trigger=${s%% *}:${s#* } from=$f -- rows of this table were in a group #@ allow fail-stop stopped there: stopped here too; --release ${s%% *} (user OK) resumes it$(ridx "${s%% *}" >/dev/null || echo ", though it is not a row here")$NL"
+    fi
+    [ "${TB_FS[ti]}" = "$s" ] && { [ "$2" = 1 ] || [ "${FS_TOOK[ti]}" = 1 ]; } || continue
+    case " $p " in *" ${R_NAME[i]} "*) case " ${TB_FSP[ti]} " in *" ${R_NAME[i]} "*) ;; *) TB_FSP[ti]="${TB_FSP[ti]} ${R_NAME[i]}" ;; esac ;; esac
+  done
+}
+fs_release() {   # fs_release TABLE: the user's --release of its stop's trigger: the rows it held pending again, the stop
+  local ti=$1 x j   # remembered as released here (another state file still holding it never stops this table again)
+  TB_FSR[ti]="${TB_FSR[ti]} ${TB_FS[ti]% *}:${TB_FS[ti]#* }"; TB_FS[ti]=-; TB_FSP[ti]=""
+  for ((x = 0; x < NR; x++)); do j=${R_J[x]}; [ "${R_TB[x]}" = "$ti" ] && [ "${S_ST[j]}" = held ] && [ "${S_NOTE[j]}" = fail-stop ] && { S_ST[j]=pending; S_NOTE[j]=-; }; done
 }
 inherit() {   # inherit ROW "<file>\t<line>": a row with no state in its own table takes the run's state from another one —
-  local i=$1 st note j src   # status and jobs only from a line of the row's target (else only its spent budgets), + its fail-stop
+  local i=$1 st note j src   # status and jobs only from a line of the row's target (else only its spent budgets)
   tsplit "$2"; src=${XS[0]}; st=${XS[2]}; note=${XS[15]}
-  inherit_fs "$i" "$src"
   if [ "$st" = removed ]; then st=${note%%/*}; note=${note#*/}; fi
   case "$st" in
     other-target) new_state "${R_NAME[i]}" "${R_TB[i]}" pending -; j=$((NS - 1)); S_PRE[j]=${XS[4]}; S_ERR[j]=${XS[5]}; S_TO[j]=${XS[6]}
@@ -330,7 +386,7 @@ spent_floor() {   # spent_floor STATE "<file>\t<line>": spent budgets never fewe
 retarget() {   # retarget ROW STATE: the row names another target than its own state: that target's jobs are not followed
   local i=$1 j=$2 u=""   # here — only the spent budgets and an unknown submit stay (its journal is there: --adopt / --release)
   case "${S_ST[j]}" in submit-unknown|submitting) u=" and its unknown submit" ;; esac
-  ev NOTE "$i" "target-changed from=${S_TGT[j]} status-there=${S_ST[j]} job-there=${S_JOBS[j]##*,} -- jobs on another target are never followed here: only its spent budgets$u stay with the run"
+  ev NOTE "$i" "target-changed from=${S_TGT[j]} status-there=${S_ST[j]} job-there=${S_JOBS[j]##*,} -- jobs on another target are never followed here$([ "${S_TGT[j]}" != '?' ] || echo " (from=?: a state line from before the target column, of a removed row or of a watch of several targets — its target unknown)"): only its spent budgets$u stay with the run"
   [ -n "$u" ] || { S_ST[j]=pending; S_NOTE[j]=-; }
   S_JOBS[j]=-; S_LAST[j]=-; S_STORM[j]=0; S_RES[j]=-; S_TQ[j]=-; S_GAP[j]=0; S_SKIP[j]=0
 }
@@ -368,8 +424,9 @@ foreign() {   # foreign ROW FRESH: another state file holds this run's submit as
 }
 reconcile() {   # rows <-> state by name; a vanished row is kept as removed (status/note kept in note), a returning one restored
   local i j hit x fresh
-  other_states
+  other_states; fs_others
   for ((j = 0; j < NS; j++)); do S_SEENROW[j]=0; done
+  for ((x = 0; x < ${#TBL_PATH[@]}; x++)); do FS_TOOK[x]=0; done
   for ((i = 0; i < NR; i++)); do
     hit=""; for ((j = 0; j < NS; j++)); do [ "${S_NAME[j]}" != "${R_NAME[i]}" ] || hit=$j; done
     x=$(elsewhere "${R_NAME[i]}" "${R_TGT[i]}") || x=lost   # a failed read is never "no other state"
@@ -388,14 +445,14 @@ reconcile() {   # rows <-> state by name; a vanished row is kept as removed (sta
       if [ "${S_ST[hit]}" = removed ]; then
         S_ST[hit]=${S_NOTE[hit]%%/*}; S_NOTE[hit]=${S_NOTE[hit]#*/}; ev NOTE "$i" "row back in the table, status ${S_ST[hit]}"
       fi
-      [ "${S_TGT[hit]}" = - ] || [ "${S_TGT[hit]}" = "${R_TGT[i]}" ] || retarget "$i" "$hit"   # G4-4: '-' = an older line, its own
+      [ "${S_TGT[hit]}" = "${R_TGT[i]}" ] || retarget "$i" "$hit"   # G4-4, R4-14: '?' (an older line, target unknown) never is
       [ -z "$x" ] || [ "$x" = lost ] || spent_floor "$hit" "$x"
     fi
     if [ "${S_ST[hit]}" = submitting ]; then   # a submit in flight when a run stopped (no round leaves one behind)
       S_ST[hit]=submit-unknown; S_NOTE[hit]=submit-unknown; ev ATTENTION "$i" "reason=submit-interrupted -- a submit was in flight when the last run stopped: --adopt or (user OK) --release"
     fi
     S_TB[hit]=${R_TB[i]}; S_TGT[hit]=${R_TGT[i]}; R_J[i]=$hit; S_SEENROW[hit]=1
-    foreign "$i" "$fresh"
+    fs_take "$i" "$fresh"; foreign "$i" "$fresh"
   done
   for ((j = 0; j < NS; j++)); do
     [ "${S_SEENROW[j]}" = 0 ] && [ "${S_ST[j]}" != removed ] || continue
@@ -582,6 +639,7 @@ why_not() {   # why this row may not submit now ('' = it may): ROW
   local i=$1
   [ "${R_SUB[i]}" != - ] || { echo detect-only-row; return; }
   [ "${R_OKAY[i]}" = 1 ] || { echo not-approved; return; }
+  [ -z "${FS_UNREAD:-}" ] || { echo fail-stop-unreadable; return; }   # another table's stop could not be read this round
   [ "${TB_FS[${R_TB[i]}]}" = - ] || [ "${S_REL[${R_J[i]}]}" != - ] || { echo fail-stop; return; }   # a release is the user's override
   [ -z "${R_FU[i]:-}" ] || [ "${S_REL[${R_J[i]}]}" != - ] || { echo submit-unknown-elsewhere; return; }   # G4-3: attempts not settled yet
   [ "$ACT" = 1 ] || echo no-act
@@ -677,8 +735,9 @@ eval_slurm() {
   # settled only with a terminal sacct row (the submit ssh checks both again)
   IFS='|' read -r id jn jst ec wd el lim <<< "$(awk -F'|' -v j="$cur" '$1 == j { print; exit }' "$D/sj")"
   fst=${jst%% *}
-  if is_term "$fst" && [ "$jn" != "${R_NAME[i]}" ]; then   # G4-4: that id is another job (another target's id, a mix-up)
-    hold "$i" "$cur" job-identity-mismatch "name=$(printf %s "$jn" | tr ' ' _) state=$fst" "-- sacct's row for this job id names another job: never settled or resubmitted on it"; return; fi
+  if is_term "$fst" && { [ "$jn" != "${R_NAME[i]}" ] || ! wd_ok "$wd"; }; then   # G4-4, R4-14: that id is another job (another
+    hold "$i" "$cur" job-identity-mismatch "name=$(printf %s "$jn" | tr ' ' _) workdir=$(printf %s "${wd:--}" | tr ' ' _) state=$fst" \
+      "-- sacct's row for this job id is not this row's job here (another name, or a WorkDir that is not this project's): never settled or resubmitted on it"; return; fi   # target's id, another project's job)
   case "$fst" in   # known, not final: accounting lags the controller; anything unknown is held below
     ''|PENDING|RUNNING|REQUEUED|REQUEUE_FED|REQUEUE_HOLD|RESIZING|SUSPENDED|COMPLETING|CONFIGURING|SIGNALING|STAGE_OUT|STOPPED|SPECIAL_EXIT) ;;
     *) is_term "$fst" || { hold "$i" "$cur" unknown-state "state=$(printf %s "$jst" | tr ' ' _)"; return; } ;;
@@ -766,8 +825,10 @@ SUBMIT_SH='rw_main() {
     [ "${h:0:12}" = "$CONF" ] || { echo "@@fail conf-differs (the deployed .hpc.conf is not the approved one: run-sync, or a new --approve)"; return; }; fi
   if [ -n "$PREV" ]; then
     printf "%s\n" "$q" | grep -aq "^$PREV|" && { echo "@@fail back-in-queue"; return; }
-    s=$(sacct -X -n -P -j "$PREV" -o State) || { echo "@@fail sacct"; return; }
-    s=$(printf "%s\n" "$s" | head -n 1); [ "${s%% *}" = "$EXPECT" ] || { echo "@@fail sacct-now=${s%% *}"; return; }
+    s=$(sacct -X -n -P -j "$PREV" -o State,JobName,WorkDir) || { echo "@@fail sacct"; return; }
+    s=$(printf "%s\n" "$s" | head -n 1); r=${s#*|}; jn=${r%%|*}; jw=${r#*|}; s=${s%%|*}
+    [ "${s%% *}" = "$EXPECT" ] || { echo "@@fail sacct-now=${s%% *}"; return; }
+    [ "$jn" = "$NAME" ] && { [ "$jw" = "$p1" ] || [ "$jw" = "$p2" ]; } || { echo "@@fail prev-identity name=$jn workdir=$jw"; return; }
   else
     s=$(sacct -X -n -P -u "$U" -S now-30days --name="$NAME" -o JobID,WorkDir) || { echo "@@fail sacct"; return; }
     printf "%s\n" "$s" | awk -F"|" -v a="$p1" -v b="$p2" "\$2 == a || \$2 == b { f = 1 } END { exit !f }" && { echo "@@fail name-in-sacct"; return; }
@@ -778,6 +839,7 @@ SUBMIT_SH='rw_main() {
 }'
 do_submit() {
   local k=$1 i=${Q_ROW[$1]} j kind prev exp cls old rel w rc jid out cnt verb nonce conf
+  orphan_stop submit   # (an earlier submit's ssh may have taken minutes)
   j=${R_J[i]}; kind=${Q_KIND[k]}; prev=${Q_PREV[k]}; exp=${Q_EXP[k]}; cls=${Q_CLS[k]}; old=${S_ST[j]}; rel=${S_REL[j]}
   NSUB=$((NSUB + 1)); nonce="rw-$(date -u +%Y%m%dT%H%M%SZ)-$$-$NSUB"; conf=${B_CONF[${R_BLK[i]}]}; [ "$conf" != none ] || conf=""
   spend "$j" "$cls" "$nonce"; S_NONCE[j]=$nonce
@@ -840,6 +902,9 @@ CANCEL_SH='rw_main() {
 }'
 cancel_ssh() {   # cancel_ssh K EVIDENCE: ONE ssh — the identity check and the scancel of exactly what passed it, in the same read
   local k=$1 e=$2 x j i rc sc why ok
+  if parent_gone; then   # never sent: kept as the table's pending fail-stop cancels (an --act run under an approved fail-stop sends them)
+    for x in ${FS_CAN[k]}; do i=${x##*:}; j=${R_TB[i]}; case " ${TB_FSP[j]} " in *" ${R_NAME[i]} "*) ;; *) TB_FSP[j]="${TB_FSP[j]} ${R_NAME[i]}" ;; esac; done
+    orphan_stop cancel; fi
   { echo "RDIR=$(sq "${TG_RDIR[k]}") CAN='$(for x in ${FS_CAN[k]}; do printf '%s ' "${x%:*}"; done)' TERM_RE='$TERM_RE'"; echo "$CANCEL_SH"; echo rw_main; } > "$W/can.sh"
   ssh -o BatchMode=yes -o ConnectTimeout=60 "${TG_HOST[k]}" bash -s < "$W/can.sh" > "$W/can.out" 2> "$W/can.err" & local p=$!
   ( sleep "$SUB_TO"; kill "$p" 2>/dev/null ) >/dev/null 2>&1 & local wdog=$!
@@ -876,9 +941,9 @@ fail_stop() {   # a table whose approved errors-class failure spent its budget: 
     done
     for ((k = 0; k < NK; k++)); do [ -z "${FS_CAN[k]}" ] || cancel_ssh "$k" "$e"; done
   done
-  for ((ti = 0; ti < ${#TBL_PATH[@]}; ti++)); do   # rows that were submit-unknown when the group stopped: once tracked, cancelled —
+  for ((ti = 0; ti < ${#TBL_PATH[@]}; ti++)); do   # rows submit-unknown when the group stopped (or a cancel never sent): once tracked, cancelled —
     [ "${TB_FS[ti]}" != - ] && [ -n "${TB_FSP[ti]// /}" ] || continue   # by an --act run, while the approved #@ allow has fail-stop (G4-1)
-    e="fail-stop=${TB_FS[ti]%% *} (pending since the stop: was submit-unknown)"; rest=""
+    e="fail-stop=${TB_FS[ti]%% *} (pending since the stop: its submit was unknown, or the cancel was never sent)"; rest=""
     if [ "${A_FS[ti]}" != 1 ] && tb_approved "$ti"; then   # the user approved this table without fail-stop: those cancels are withdrawn
       EVQ="$EVQ$(ts) NOTE table=${TBL_PATH[ti]} fail-stop-pending-dropped rows=$(printf %s "${TB_FSP[ti]# }" | tr ' ' ,) $e -- the approved #@ allow has no fail-stop now: they are never cancelled for it (the stop still holds the group until --release ${TB_FS[ti]%% *})$NL"
       TB_FSP[ti]=""; continue
@@ -904,7 +969,7 @@ fail_stop() {   # a table whose approved errors-class failure spent its budget: 
 # ---------- one round, the lock, main ----------
 round() {
   local i j k b
-  observe; adopt_due
+  orphan_stop round; observe; orphan_stop decisions; adopt_due
   for ((k = 0; k < NK; k++)); do Q_ROW[k]=""; ACTIVE[k]=0; done
   for ((i = 0; i < NR; i++)); do R_WAIT[i]=0; j=${R_J[i]}; k=${R_K[i]}; D=$W/t$k
     [ "${TG_OBS[k]}" = 1 ] || continue
@@ -959,25 +1024,20 @@ for a in $ADOPTS; do i=$(row_of "${a%%=*}") || exit 2   # checked against the fi
   [ "${TG_KIND[${R_K[i]}]}" = slurm ] || die "--adopt ${a%%=*}: a workstation row follows its newest log on its own"; done
 UNB=""; for ((b = 0; b < NB; b++)); do [ "${B_MATCH[b]}" != 1 ] || [ -n "${B_CONF[b]}" ] || UNB="$UNB,${TBL_PATH[${B_TB[b]}]}:${B_OK[b]}"; done
 [ -z "$UNB" ] || EVQ="$EVQ$(ts) NOTE approval-unbound lines=${UNB#,} -- written before '#@ ok' carried conf=: still valid; .hpc.conf edits do not make them stale$NL"
-RFS=""; for ((ti = 0; ti < ${#TBL_PATH[@]}; ti++)); do [ "${TB_FS[ti]%% *}" != "$RELEASE" ] || RFS="$RFS $ti"; done
-if [ -n "$RELEASE" ] && [ -n "$RFS" ] && ! ridx "$RELEASE" >/dev/null; then   # the trigger of a stop taken from another table (G4-2),
-  for ti in $RFS; do TB_FS[ti]=-; TB_FSP[ti]=""   # not a row here: releasing it resumes the group, no submit of its own
-    for ((x = 0; x < NR; x++)); do j=${R_J[x]}; [ "${R_TB[x]}" = "$ti" ] && [ "${S_ST[j]}" = held ] && [ "${S_NOTE[j]}" = fail-stop ] && { S_ST[j]=pending; S_NOTE[j]=-; }; done
-    EVQ="$EVQ$(ts) RELEASE table=${TBL_PATH[ti]} fail-stop=$RELEASE -- fail-stop cleared (its trigger is not a row of this table): the rows it held are pending again$NL"
-  done
-elif [ -n "$RELEASE" ]; then
-  i=$(row_of "$RELEASE") || exit 2; j=${R_J[i]}; ti=${R_TB[i]}
+RFS=""; for ((ti = 0; ti < ${#TBL_PATH[@]}; ti++)); do [ "${TB_FS[ti]}" = - ] || [ "${TB_FS[ti]%% *}" != "$RELEASE" ] || RFS="$RFS $ti"; done
+RTI=-; if [ -n "$RELEASE" ] && { [ -z "$RFS" ] || ridx "$RELEASE" >/dev/null; }; then   # a row: one submit past its budget or hold
+  i=$(row_of "$RELEASE") || exit 2; j=${R_J[i]}; RTI=${R_TB[i]}
   case "${S_ST[j]}" in
     held|submit-unknown) [ "${S_JOBS[j]}" = - ] && S_ST[j]=pending || S_ST[j]=active; S_NOTE[j]=- ;;
     pending|active) ;; *) die "nothing to release: $RELEASE is ${S_ST[j]}" ;;
   esac
   S_REL[j]=${S_JOBS[j]##*,}; [ "${S_REL[j]}" != - ] || S_REL[j]=launch
   ev RELEASE "$i" "job=${S_REL[j]} -- one submit past the budget or the hold, for this job only, in this run"
-  if [ "${TB_FS[ti]%% *}" = "$RELEASE" ]; then TB_FS[ti]=-; TB_FSP[ti]=""   # the fail-stop's own row: the group resumes
-    for ((x = 0; x < NR; x++)); do j=${R_J[x]}; [ "${R_TB[x]}" = "$ti" ] && [ "${S_ST[j]}" = held ] && [ "${S_NOTE[j]}" = fail-stop ] && { S_ST[j]=pending; S_NOTE[j]=-; }; done
-    ev NOTE "$i" "fail-stop cleared: the rows it held are pending again"
-  fi
 fi
+for ti in $RFS; do fs_release "$ti"   # a stop it triggered, in any table of this watch (also one taken from another table: G4-2): the group resumes
+  if [ "$ti" = "$RTI" ]; then ev NOTE "$i" "fail-stop cleared: the rows it held are pending again"
+  else EVQ="$EVQ$(ts) RELEASE table=${TBL_PATH[ti]} fail-stop=$RELEASE -- fail-stop cleared (its trigger is not a row of this table): the rows it held are pending again$NL"; fi
+done
 TGS=""; for ((k = 0; k < NK; k++)); do TGS="$TGS,${TG_NAME[k]}"; done
 EVQ="$(ts) START tables=$(printf '%s,' "${TBL_PATH[@]}" | sed 's/,$//') act=$ACT once=$ONCE every=$EVERY for=$LEASE targets=${TGS#,}$NL$EVQ"
 flush; summary

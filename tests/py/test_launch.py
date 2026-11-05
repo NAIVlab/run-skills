@@ -33,14 +33,16 @@ def block(kind="slurm", target="fx", name="exp--train--a--scratch--s0--a01", war
                  ("account", "''"), ("name", name), ("extra", kw.get("extra", "")), ("payload", payload),   # qw "$@": words
                  ("env_kind", "uv"), ("env_name", "''"), ("wandb_mode", "online"), ("env_hook", kw.get("hook", "''")),
                  ("venv_dir", "''"), ("uv_sync_args", "''"), ("conf_extra", kw.get("conf_extra", kw.get("extra", ""))),
-                 ("chain", kw.get("chain", "0"))]
+                 ("flags", kw.get("flags", "")), ("chain", kw.get("chain", "0"))]
         info = [("info_avail", "free:4/max_node:4/gpu_type:any"), ("info_conf_sha256", "a" * 64),
                 ("info_source_commit", "none"), ("info_source_dirty", "none")]
     else:
         bound = [("kind", "nohup"), ("target", target), ("name", name), ("gpus_req", kw.get("gpus_req", "n=1")),
                  ("exclude", ""), ("nice", ""), ("busy_ok", kw.get("busy_ok", "")), ("payload", payload.replace(" ", "\\ ")),
                  ("env_kind", "none"), ("env_hook", "''"), ("venv_dir", "''"), ("uv_sync_args", "''"), ("env_name", "''")]
-        info = [("info_gpus", kw.get("info_gpus", "1")), ("info_uuids", "GPU-x"), ("info_busy", kw.get("busy", ""))]
+        info = [("info_gpus", kw.get("info_gpus", "1")), ("info_uuids", "GPU-x"), ("info_busy", kw.get("busy", "")),
+                ("info_run_gpu", "checked")]
+        info = [(k, v) for k, v in info if k not in kw.get("drop", ())]
     bound = [(k, v) for k, v in bound if k not in kw.get("drop", ())]
     lines = [f"{k}={v}" for k, v in bound]
     h = hashlib.sha256(("\n".join(lines) + "\n").encode()).hexdigest()
@@ -232,11 +234,11 @@ class Flow(Fixture):
     def test_a_user_asked_policy_flag_is_never_a_grants_call(self):
         G.add(self.led, G.new_grant("train runs are fine", {"targets": ["fx"]}, ["launch"], max_live=None,
                                     max_launches=None, expires=None))
-        self.answers = [self.plan_reply()]
+        self.answers = [self.plan_reply(flags="--gate-user-asked")]       # submit.sh binds T_FLAGS as flags=
         rc, text = self.cli("launch", "-T", "fx", "--gate-user-asked", "--", "c")
         self.assertEqual(rc, NEEDS_USER, text)
-        self.assertIn("--gate-user-asked is the user's own OK for a policy gate", text)
-        self.assertIn("  policy     --gate-user-asked", text)
+        self.assertIn("policy flag(s) --gate-user-asked", text)
+        self.assertIn("  policy     --gate-user-asked  (bound", text)
         self.answers = [self.submitted()]
         rc, text = self.cli("launch", "--plan", self.plan_id(text), "--approve", "yes, I asked for the gate")
         self.assertEqual(rc, OK, text)
@@ -513,6 +515,18 @@ class ReviewFixes(Fixture):
         self.assertIn("needs: sync", text)
         self.assertIn("lacks env_hook, venv_dir, uv_sync_args", text)
 
+    def test_r4_5_a_box_whose_launch_sh_lets_run_pick_the_gpus_needs_a_sync(self):
+        """R4-5: launch.sh refuses a RUN that sets or clears a GPU variable and says so (info_run_gpu=checked); a
+        deploy older than that would let RUN's leading CUDA_VISIBLE_DEVICES=… land beside the GPUs the plan shows."""
+        G.add(self.led, G.new_grant("anything on ws", {"targets": ["ws"]}, ["launch"], max_live=None,
+                                    max_launches=None, expires=None))
+        self.answers = [X.Reply(0, block(kind="nohup", target="ws", name="r", drop=("info_run_gpu",)), "")]
+        rc, text = self.cli("launch", "-T", "ws", "-N", "r", "--", "c")
+        self.assertEqual(rc, CONFLICT, text)
+        self.assertIn("needs: sync", text)
+        self.assertIn("lacks info_run_gpu", text)
+        self.assertEqual(len(self.calls), 1)                          # the plan only: nothing launched
+
 
 class Round3(Fixture):
     """The round-2 findings on launch.py, each pinned (grants#4 grants#5 grants#6 grants#9, C-stale-API, F-unknown, L3-regex /
@@ -728,6 +742,145 @@ class Round3(Fixture):
         self.assertEqual(rc, OK, text)                                   # no launch line at all: the receipt decides
         sub = self.led.read_run("sp2").data["attempts"]["a01"]["submissions"][0]
         self.assertEqual((sub["submit"], sub["proc"]["pid"], sub["proc"]["start"]), ("submitted", "777", "55"))
+
+
+class Round4(Fixture):
+    """The round-4 decisions on launch.py / ledger.py, each pinned (R4-2 R4-3 R4-6 R4-8 R4-15)."""
+
+    def grant(self, quote="launches are fine", actions=("launch",), **scope) -> dict:
+        return G.add(self.led, G.new_grant(quote, {"targets": ["fx", "ws"], **scope}, list(actions), max_live=None,
+                                           max_launches=None, expires=None))
+
+    def test_r4_2_a_plan_named_after_an_older_attempt_is_a_new_attempt(self):
+        """NEW-relaunch-orig (ledger side): a new plan named <run>--a01 after a01 ran was folded into the ended a01
+        (under a01's old approval: max_live never counted it, rsk status showed the job UNLEDGERED)."""
+        name = "exp--train--lr--s0--a01"
+        self.answers = [self.plan_reply(name=name, payload="python train.py --lr 1")]
+        pid = self.plan_id(self.cli("launch", "-T", "fx", "-n", name, "--", "python", "train.py", "--lr", "1")[1])
+        self.answers = [self.submitted("101")]
+        self.assertEqual(self.cli("launch", "--plan", pid, "--approve", "run it with lr 1")[0], OK)
+        self.led.observe("exp--train--lr--s0", "a01", "101", "CANCELLED", "sacct",
+                         end={"state": "CANCELLED", "rc": "0:15", "evidence": "sacct"})
+        g = self.grant("auto-resume exp--train if it gets preempted", actions=("relaunch",), names=["exp--train--*"])
+        self.answers = [self.plan_reply(name=name, payload="python train.py --lr 1")]
+        rc, text = self.cli("launch", "-T", "fx", "-n", name, "--", "python", "train.py", "--lr", "1")
+        self.assertEqual(rc, NEEDS_USER, text)                       # CANCELLED is no infrastructure end
+        self.assertIn("previous attempt a01 ended CANCELLED", text)
+        self.answers = [self.submitted("102")]
+        self.assertEqual(self.cli("launch", "--plan", self.plan_id(text), "--approve", "yes, again with lr 1")[0], OK)
+        atts = self.led.read_run("exp--train--lr--s0").data["attempts"]
+        self.assertEqual(sorted(atts), ["a01", "a02"])               # its own attempt, never joined to the ended a01
+        self.assertEqual(([s["job"] for s in atts["a01"]["submissions"]], [s["job"] for s in atts["a02"]["submissions"]]),
+                         (["101"], ["102"]))
+        self.assertEqual(atts["a02"]["name"], name)
+        self.assertNotEqual(atts["a02"]["request"]["grant"], atts["a01"]["request"]["grant"])
+        self.assertNotEqual(atts["a02"]["request"]["grant"], g["id"])
+
+    def test_r4_3_a_label_never_sets_the_class_of_a_run_that_had_none(self):
+        """NEW-class-unlabelled: bigrun's a01 carried no class; `--relaunch bigrun --class smoke` (or -n bigrun with
+        --class) made a smoke-only grant cover it and a train deny miss. Now exit 2, before any ssh."""
+        self.grant(actions=("launch", "relaunch"))
+        self.answers = [self.plan_reply(name="bigrun"), self.submitted("101")]
+        self.assertEqual(self.cli("launch", "-T", "fx", "-n", "bigrun", "--", "c")[0], OK)
+        self.led.observe("bigrun", "a01", "101", "PREEMPTED", "sacct", end={"state": "PREEMPTED", "rc": "",
+                                                                            "evidence": "sacct"})
+        n = len(self.calls)
+        for argv in (("launch", "--relaunch", "bigrun", "--class", "smoke"),
+                     ("launch", "-T", "fx", "--class", "smoke", "-n", "bigrun", "--", "c")):
+            rc, text = self.cli(*argv)
+            self.assertEqual(rc, USAGE, (argv, text))
+            self.assertIn("run bigrun has no class (its first attempt was recorded without one)", text)
+        self.assertEqual(len(self.calls), n)
+        self.answers = [self.plan_reply(name="bigrun--a02"), self.submitted("102")]
+        rc, text = self.cli("launch", "--relaunch", "bigrun")       # no label: as before
+        self.assertEqual(rc, OK, text)
+
+    def test_r4_6_the_card_shows_the_bound_policy_flags_and_a_relaunch_replays_them(self):
+        self.grant(max_gpus=1)
+        self.answers = [self.plan_reply(flags="--whole-node")]
+        rc, text = self.cli("launch", "-T", "fx", "--whole-node", "--", "c")
+        self.assertEqual(rc, NEEDS_USER, text)                       # NEW-policy-flag: a 1-GPU grant never covers it
+        self.assertIn("  policy     --whole-node  (bound", text)
+        self.assertIn("policy flag(s) --whole-node", text)
+        b = G.parse_plan(block(gres="gpu:1", flags="--whole-node --x-user-asked"))
+        flags, _pay, _ = X._from_bound("slurm", G.bound(b), "r--a02")
+        self.assertEqual(flags[-4:], ["-n", "r--a02", "--whole-node", "--x-user-asked"])
+        for odd in ("--rs-chain", "--force", "-x", "'a b'"):         # never replayed as a policy flag
+            with self.assertRaises(RskError):
+                X._from_bound("slurm", G.bound(G.parse_plan(block(flags=odd))), "r--a02")
+        self.answers = [X.Reply(0, block(drop=("flags",)), "", api="api=3")]   # an api=3 deploy without flags=
+        rc, text = self.cli("launch", "-T", "fx", "--", "c")
+        self.assertEqual(rc, CONFLICT, text)
+        self.assertIn("lacks flags", text)
+
+    def nohup_plan(self, name: str) -> str:
+        self.answers = [self.plan_reply(kind="nohup", target="ws", name=name)]
+        return self.plan_id(self.cli("launch", "-T", "ws", "-N", name, "--", "c")[1])
+
+    REF = "[ws] current GPUs on wshost:\n[ws] reference: /x/reference.md — the rules\n"
+
+    def journal(self, **att):
+        def fake(places, *a, **k):
+            n = k["nonces"][places[0].target][0]
+            o = observe.Observation(places[0], ok=True, attempts_ok=True)
+            o.attempts[n] = {"receipt": {}, "result": {}, "gate": "", "missing": False, **att}
+            return [o]
+        return fake
+
+    def test_r4_8_nohup_settle_reads_the_journal_before_it_concludes(self):
+        """NEW-launch-killed-after-go: launch.sh killed (137) after its gate said go was taken for 'never started' —
+        NOT_SUBMITTED, the use given back while the run ran. Now only the journal decides."""
+        g = G.add(self.led, G.new_grant("1 on ws", {"targets": ["ws"]}, ["launch"], max_live=1, max_launches=1,
+                                        expires=None))
+        killed = X.Reply(137, self.REF + "[ws] launching on GPU(s) [2] -> /h/logs/k1-20261105-000000.log\n", "")
+        go = self.journal(receipt={"pid": "4242", "pgid": "4242", "start": "77", "boot_id": "b", "gpu_ids": "2",
+                                   "log": "logs/k1-20261105-000000.log"}, gate="go", result={})
+        self.answers = [self.plan_reply(kind="nohup", target="ws", name="k1"), killed]
+        with mock.patch.object(observe, "observe", go):
+            rc, text = self.cli("launch", "-T", "ws", "-N", "k1", "--", "sleep", "60")
+        self.assertEqual(rc, OK, text)
+        self.assertIn("launched: k1 a01 pid 4242", text)
+        sub = self.led.read_run("k1").data["attempts"]["a01"]["submissions"][0]
+        self.assertEqual((sub["submit"], sub["proc"]["start"]), ("submitted", "77"))
+        self.assertEqual(len(next(r for r in self.led.state().grants if r["id"] == g["id"])["used"]), 1)   # kept
+        cases = (("unreadable", lambda places, *a, **k: [observe.Observation(places[0], why="no answer")], UNKNOWN,
+                  "SUBMIT_UNKNOWN"),
+                 ("abort-gate", self.journal(receipt={"pid": "9"}, gate="abort", result={"verdict": "failed"}), UNKNOWN,
+                  "SUBMIT_UNKNOWN"),
+                 ("no-verdict", self.journal(result={}), UNKNOWN, "SUBMIT_UNKNOWN"),
+                 ("failed", self.journal(result={"verdict": "failed", "rc": "1"}), FAILED, "NOT_SUBMITTED"),
+                 ("missing", self.journal(missing=True), FAILED, "NOT_SUBMITTED"))
+        for name, journal, code, st in cases:
+            pid = self.nohup_plan(name)
+            self.answers = [X.Reply(1 if name != "unreadable" else 137, self.REF, "ERROR: x")]
+            with mock.patch.object(observe, "observe", journal):
+                rc, text = self.cli("launch", "--plan", pid, "--approve", "go")
+            self.assertEqual(rc, code, (name, text))
+            self.assertEqual(L.attempt_state(self.led.read_run(name).data["attempts"]["a01"]), st, name)
+        # no attempt dir proves nothing was started only once launch.sh itself exited: an ssh killed by a signal
+        # (run-launch's 128+N) or a killed run-launch (< 0) may leave launch.sh on its way to the claim
+        for name, code in (("sig-ssh", 143), ("sig-rl", -9)):
+            pid = self.nohup_plan(name)
+            self.answers = [X.Reply(code, self.REF, "")]
+            with mock.patch.object(observe, "observe", self.journal(missing=True)):
+                rc, text = self.cli("launch", "--plan", pid, "--approve", "go")
+            self.assertEqual(rc, UNKNOWN, (name, text))
+            self.assertEqual(L.attempt_state(self.led.read_run(name).data["attempts"]["a01"]), "SUBMIT_UNKNOWN", name)
+
+    def test_r4_15_unreadable_grants_refuse_launch_with_exit_6(self):
+        self.answers = [self.plan_reply()]
+        pid = self.plan_id(self.cli("launch", "-T", "fx", "--", "c")[1])
+        G.add(self.led, G.new_deny("never on fx", {"targets": ["fx"]}))
+        (self.led.dir / "grants.json").write_text('{"version": 1, "records": [')
+        (self.led.dir / "grants.json.prev").unlink(missing_ok=True)
+        rc, text = self.cli("launch", "--plan", pid, "--approve", "go")
+        self.assertEqual(rc, CONFLICT, text)
+        self.assertIn("grants unreadable", text)
+        self.assertIsNone(self.led.plan_claim(pid))                   # nothing claimed, nothing recorded
+        self.answers = [self.plan_reply()]
+        rc, text = self.cli("launch", "-T", "fx", "--", "c")
+        self.assertEqual(rc, CONFLICT, text)
+        self.assertEqual(sum(1 for w in self.calls if "--rs-expect" in w), 0)
 
 
 class Nohup(Fixture):

@@ -11,12 +11,13 @@
 # stage, result, the submit-time snapshots (conf, hook, profile.sh, env.sh) and, once the job exists, its receipt —
 # all written BEFORE anything reaches the caller (the EXIT trap replays out/err), so a dead ssh loses nothing.
 # Protocol api=3 (the `# rs-api=3` line below, which rsk reads in this file): --rs-mode plan runs every check (-y gates
-# count as acknowledged: WARNING, go on; t_policy is probed first as a submit WITHOUT -y, so a gate silent under -y prints
-# too), prints ONE `@@plan v1` … `@@end` block (bound fields + bound_hash; warnings = the distinct WARNING: lines,
-# warnings_id = their digest, digit runs masked) and stops before the snapshots and sbatch; --rs-expect HASH submits only
-# if rs_bound still gives that hash AND this call's warnings_id is the approved card's (--rs-warnings ID; default: no
-# warning at all, so -y never passes another one) — else the block, `changed: <keys>` (from the approved plan's own
-# journal, when it is here), ERROR, exit 6; under --rs-expect a failed squeue is exit 1. --rs-chain = a singleton segment.
+# count as acknowledged: WARNING, go on; t_policy and t_partition are probed as a submit WITHOUT -y, so a gate silent under -y
+# prints too), prints ONE `@@plan v1` … `@@end` block (bound fields incl. the policy flags, + bound_hash; warnings = the
+# distinct WARNING: lines, warnings_id = their digest, digits masked, + a silent gate's output), stops before the snapshots
+# and sbatch; --rs-expect HASH submits only if rs_bound still gives that hash AND this call's warnings_id is the approved
+# card's (--rs-warnings ID; default: no warning at all, so -y never passes another one) — else the block, `changed: <keys>`
+# (from the approved plan's own journal, when it is here), ERROR, exit 6; under --rs-expect a failed squeue is exit 1.
+# --rs-chain = a singleton segment.
 # Every time limit sbatch could read (-t, the conf, the policy's or SBATCH_EXTRA's --time / -t in any value form; sbatch
 # keeps the last) must be explicit — never 0, UNLIMITED or INFINITE — and within MaxTime. Parsing uses no here-string or
 # heredoc (bash <= 5.0 writes them to $TMPDIR: a full one would fail a parse silently).
@@ -119,21 +120,38 @@ SB_ARGS=(--job-name="$NAME" --chdir="$PROJ" --time="$TIME" --requeue --export=AL
 [ -z "$ACCOUNT" ] || SB_ARGS+=(--account="$ACCOUNT")
 SB_H=("${SB_ARGS[@]}")   # the harness's own words: bound as fields (name time account), so `extra` = what follows them
 rs_nwarn() { cat "$A/out" "$A/err" 2>/dev/null | grep -ac '^WARNING: ' || :; }   # WARNING: lines so far (not `WARNING (lint):`)
+# plan / --rs-expect probe the policy as a submit WITHOUT -y sees it — `( FORCE=0; t_policy )`, then t_partition the same way
+# right before its real call (the PART submitted; a t_policy gate cannot hide it) — so a -y gate silent under FORCE=1 prints,
+# journaled and counted. Its `exit 1` (a -y gate) is passed there as plan mode passes gates (a function named exit outranks the
+# builtin outside POSIX mode: tests/vgate bash_exit_fn=), so a function's first gate hides none after it; a gate that printed
+# no WARNING: line gets a generic one, and then all the probe printed (digit runs masked) joins warnings_id (W_SIL: one
+# silent gate never passes for another). Any other exit code is the verdict.
+W_SIL=""; rs_probe() {   # rs_probe LABEL FUNC
+  local w0 o0 e0 rc s g="WARNING: the target's policy stops this submit without -y ($1 exit 1, no WARNING line of its own) — its lines are above."
+  w0=$(rs_nwarn); o0=$(wc -c < "$A/out") && e0=$(wc -c < "$A/err") || { echo "ERROR: cannot read $A back" >&2; exit 2; }
+  ( FORCE=0; _rs_g=0; _rs_w=$w0
+    exit() { local s=$?; [ "$#" -gt 0 ] || set -- "$s"; [ "$1" = 1 ] || builtin exit "$@"   # a -y gate: seen, then on to the next
+      [ "$(rs_nwarn)" -gt "$_rs_w" ] || echo "$g" >&2; _rs_w=$(rs_nwarn); _rs_g=1; return 0; }
+    "$2"; s=$?; [ "$s" = 0 ] || builtin exit "$s"; builtin exit "$_rs_g" ) && rc=0 || rc=$?
+  case "$rc" in 0) ;;
+    1) [ "$(rs_nwarn)" -gt "$w0" ] || echo "$g" >&2   # (a `return 1` with no line of its own)
+       s=$( { tail -c +$((o0 + 1)) "$A/out" && tail -c +$((e0 + 1)) "$A/err"; } ) || { echo "ERROR: cannot read the probe's output back from $A" >&2; exit 2; }
+       case "$s" in *"$g"*) W_SIL="$W_SIL@@probe $1"$'\n'"$(printf '%s\n' "$s" | LC_ALL=C sed -E 's/[0-9]+/#/g')"$'\n' ;; esac ;;   # a silent gate among them
+    *) echo "ERROR: $1 returned $rc (probed as a submit without -y: a refusal -y never lifts)" >&2; exit "$rc" ;; esac
+}
+rs_preset() { P_GPUS=""; P_CPU_PER_GPU=""; P_MEM_PER_GPU=""; P_GTYPE=""; P_GTYPE_DEFAULT=""; P_PREEMPT=""; P_MAXTIME=""; P_CPU_ONLY=""; P_MEM_PER_CPU=""; P_NOTE=""; }
+rs_tpart() { rs_preset; t_partition "$PART" || return 0; }   # `return 1` = an unknown partition (the real call says so), not a gate
 
 # policy gate first (its exit code is the verdict: 1 warning, 2 error, 3 refusal), then the partition's limits
 rs_stage policy
-if { [ "$PLAN" = 1 ] || [ -n "$EXPECT" ]; } && declare -f t_policy >/dev/null; then   # plan / an approved submit: the policy first
-  _w0=$(rs_nwarn); ( FORCE=0; t_policy ) && _pr=0 || _pr=$?   # as a submit WITHOUT -y sees it, in a subshell (its SB_ARGS, exit, trap stay
-  case "$_pr" in 0) ;;                                        # there): a -y gate silent under FORCE=1 (`[ "$FORCE" -ne 1 ] && …`) still prints
-    1) [ "$(rs_nwarn)" -gt "$_w0" ] || echo "WARNING: the target's policy stops this submit without -y (t_policy exit 1, no WARNING line of its own) — its lines are above." >&2 ;;
-    *) echo "ERROR: t_policy returned $_pr (probed as a submit without -y: a refusal -y never lifts)" >&2; exit "$_pr" ;; esac
-fi
+if { [ "$PLAN" = 1 ] || [ -n "$EXPECT" ]; } && declare -f t_policy >/dev/null; then rs_probe t_policy t_policy; fi
 [ "$PLAN" = 0 ] || FORCE=1   # plan mode: every -y gate (the policy's too: PLAN=1 is visible) prints its WARNING and goes on
 if declare -f t_policy >/dev/null; then
   t_policy || { rc=$?; echo "ERROR: t_policy returned $rc (a policy that does not refuse must end with 'return 0')" >&2; exit "$rc"; }
 fi
 declare -f t_partition >/dev/null || { echo "ERROR: $SELF/policy.sh does not define t_partition" >&2; exit 2; }
-P_GPUS=""; P_CPU_PER_GPU=""; P_MEM_PER_GPU=""; P_GTYPE=""; P_GTYPE_DEFAULT=""; P_PREEMPT=""; P_MAXTIME=""; P_CPU_ONLY=""; P_MEM_PER_CPU=""; P_NOTE=""
+if [ "$PLAN" = 1 ] || [ -n "$EXPECT" ]; then rs_probe "t_partition '$PART'" rs_tpart; fi
+rs_preset
 t_partition "$PART" || { echo "ERROR: unknown $CLUSTER partition '$PART' (${T_PARTITIONS:-})" >&2; exit 2; }
 if [ "$P_CPU_ONLY" = 1 ]; then
   [ -n "$NCPU" ] || NCPU="${DEF_CPUS:-8}"; [ -n "$MEM" ] || MEM="${DEF_MEM:-$(( NCPU*${P_MEM_PER_CPU:-4} ))G}"
@@ -191,10 +209,11 @@ _sv="$_sv ntasks-per-gpu ntasks-per-node ntasks-per-socket ntasks-per-tres open-
 _sv="$_sv qos reservation resources segment signal sockets-per-node switches tasks-per-node thread-spec threads-per-core time"
 _sv="$_sv time-min tmp tres-bind tres-per-task uid wait-all-nodes wckey wrap "; _ss=ABCDFGJLMNSabcdeimnopqtwx
 _bad() { echo "ERROR: SBATCH_EXTRA must not contain '$_w' — partition, name/output, arrays, --wait, ':' and bundled short flags are not accepted here. Fix .hpc.conf." >&2; exit 2; }
-_np=${#SB_ARGS[@]}; _cx=()   # where SBATCH_EXTRA's words start in SB_ARGS (before: the harness's, then the policy's); the conf's words
-if [ -n "$SB_EXTRA" ]; then
+_np=${#SB_ARGS[@]}; _cx=(); _cxk=""   # where SBATCH_EXTRA's words start in SB_ARGS (before: the harness's, then the policy's); the
+if [ -n "$SB_EXTRA" ]; then           # conf's words; _cxk: one letter per word, v = the previous option's value, o = not (lint reads it)
   set -f; _prev=""; _val=0   # _val=1: this word is the previous option's value (getopt takes the next word, whatever it is)
   for _w in $SB_EXTRA; do
+    if [ "$_val" = 1 ]; then _cxk=${_cxk}v; else _cxk=${_cxk}o; fi
     _q=""; case "$_prev" in -q|--qo|--qos) _q="$_w" ;; esac
     case "$_w" in
       --part*|--j*|--ou*|--er*|--ar*|--wai|--wait|:) _bad ;;
@@ -290,13 +309,14 @@ if [ "$SAME_OK" = 0 ] && [ "$_chain" = 0 ]; then
 fi
 [ -z "$P_NOTE" ] || echo "NOTE: $P_NOTE"
 [ "$P_PREEMPT" != 1 ] || echo "NOTE: $PART is preemptible (the job is requeued — killed, under --no-requeue — possibly abruptly). Ensure checkpoint+resume."
-lint_extra() {   # SBATCH_EXTRA lint, WARNINGs only (run after every refusal, so a refusal's first line is always its own)
+lint_extra() {   # SBATCH_EXTRA lint, WARNINGs only (run after every refusal, so a refusal's first line is always its own), on the
+  # words as the scan parsed them (_cx _cxk): an option's value (`--comment -t1`) is never an option (tests/vgate comment_value=)
   local allow=" --qos -q --account -A --exclude -x --dependency -d --requeue --no-requeue --signal --mail-type --mail-user --constraint -C --nice --reservation --comment ${T_SBATCH_EXTRA_ALLOW:-} "
-  local w o sp win off; set -f; set -- $SB_EXTRA; set +f   # (a dangling value flag never gets here: refused above)
-  while [ "$#" -gt 0 ]; do
-    w=$1; shift; case "$w" in -?*) ;; *) continue ;; esac
+  local w o sp win off i=0 n=${#_cx[@]}   # (a dangling value flag never gets here: refused above)
+  while [ "$i" -lt "$n" ]; do
+    w=${_cx[$i]}; i=$((i + 1)); [ "${_cxk:$((i - 1)):1}" = o ] || continue; case "$w" in -?*) ;; *) continue ;; esac   # a value: its option's
     case "$w" in --*) o=${w%%=*} ;; *) o=${w:0:2} ;; esac
-    sp=$w; case "$w" in --*=*|-[!-]?*) ;; *) if [ "$#" -gt 0 ]; then case "$1" in -*) ;; *) sp="$w $1" ;; esac; fi ;; esac
+    sp=$w; [ "${_cxk:$i:1}" != v ] || sp="$w ${_cx[$i]}"   # the option with its separate value
     case "$allow" in *" $o "*) off="" ;; *) off=1 ;; esac; win=""
     case "$o" in   # harness-set options: SB_ARGS puts --time/--chdir/--export/--account before SBATCH_EXTRA, cpus/mem/gres after
       --time|-t) win="SBATCH_EXTRA's '$sp' (the harness's --time=$TIME comes earlier)" ;; --chdir|-D) win="SBATCH_EXTRA's '$sp' (the harness's --chdir comes earlier)" ;;
@@ -318,17 +338,17 @@ rs_hook() {   # env_hook as bound: '<ENV_HOOK>:<sha256 of $PROJ/ENV_HOOK>' ('<EN
   [ -n "${ENV_HOOK:-}" ] || return 0
   if [ -f "$PROJ/$ENV_HOOK" ]; then printf '%s:%s' "$ENV_HOOK" "$(rs_sha < "$PROJ/$ENV_HOOK")"; else printf '%s:missing' "$ENV_HOOK"; fi
 }
-rs_bound() {   # THE bound list (the plan block's lines kind= … chain=; bound_hash = sha256 of them): what an approval covers
+rs_bound() {   # THE bound list (the plan block's lines kind= … chain=; bound_hash = sha256 of them): what an approval covers (flags= T_FLAGS)
   local g=${GRES[0]:-} x=("${SB_ARGS[@]}"); [ "${x[*]:0:${#SB_H[@]}}" != "${SB_H[*]}" ] || x=("${x[@]:${#SB_H[@]}}")
-  printf 'kind=slurm\ntarget=%q\npartition=%q\ngres=%q\ncpus=%q\nmem=%q\ntime=%q\naccount=%q\nname=%q\nextra=%s\npayload=%s\nenv_kind=%q\nenv_name=%q\nwandb_mode=%q\nenv_hook=%q\nvenv_dir=%q\nuv_sync_args=%q\nconf_extra=%s\nchain=%s\n' \
+  printf 'kind=slurm\ntarget=%q\npartition=%q\ngres=%q\ncpus=%q\nmem=%q\ntime=%q\naccount=%q\nname=%q\nextra=%s\npayload=%s\nenv_kind=%q\nenv_name=%q\nwandb_mode=%q\nenv_hook=%q\nvenv_dir=%q\nuv_sync_args=%q\nconf_extra=%s\nflags=%s\nchain=%s\n' \
     "$CLUSTER" "$PART" "${g#--gres=}" "$NCPU" "$MEM" "$TIME" "$ACCOUNT" "$NAME" "$(qw ${x[@]+"${x[@]}"})" "$(qw "$@")" \
-    "${ENV_KIND:-uv}" "$(ovr ENV_NAME)" "${WANDB_MODE:-online}" "$(rs_hook)" "$(ovr VENV_DIR)" "${UV_SYNC_ARGS:-}" "$(qw ${_cx[@]+"${_cx[@]}"})" "$_chain"
+    "${ENV_KIND:-uv}" "$(ovr ENV_NAME)" "${WANDB_MODE:-online}" "$(rs_hook)" "$(ovr VENV_DIR)" "${UV_SYNC_ARGS:-}" "$(qw ${_cx[@]+"${_cx[@]}"})" "$(qw ${T_FLAGS[@]+"${T_FLAGS[@]}"})" "$_chain"
 }
-rs_warn() {   # W_N W_ID: this call's distinct WARNING: lines (out + err; `WARNING (lint):` is not one), every digit run -> #, sorted
+rs_warn() {   # W_N W_ID: this call's distinct WARNING: lines (out + err; `WARNING (lint):` is not one), every digit run -> #, sorted (+ W_SIL)
   local l; l=$(cat "$A/out" "$A/err" | { grep -a '^WARNING: ' || [ "$?" = 1 ]; } | LC_ALL=C sed -E 's/[0-9]+/#/g' | LC_ALL=C sort -u) \
     || { echo "ERROR: cannot read this call's WARNING lines back from $A — nothing submitted" >&2; exit 2; }
   W_N=0; W_ID=$(printf '' | rs_sha)   # no warning: the digest of nothing
-  if [ -n "$l" ]; then W_N=$(printf '%s\n' "$l" | grep -c .); W_ID=$(printf '%s\n' "$l" | rs_sha); fi
+  if [ -n "$l" ]; then W_N=$(printf '%s\n' "$l" | grep -c .); W_ID=$(printf '%s\n%s' "$l" "$W_SIL" | rs_sha); fi
 }
 rs_changed() {   # rs_changed BOUND HASH: `changed: <keys>` against the approved plan's block in its own journal (newest 500 attempts)
   local d f="" k=""
