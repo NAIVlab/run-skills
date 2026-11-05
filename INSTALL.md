@@ -162,7 +162,7 @@ Fill `profile.sh` from the probe (every key is commented in the template):
 For Slurm, write one `t_partition` case per partition the user will use: `P_GPUS=1-<GPUs per node>`,
 `P_CPU_PER_GPU` = cpus per node ÷ GPUs per node, `P_MEM_PER_GPU` = MB per node ÷ 1024 ÷ GPUs per node, rounded down
 (GB), `P_MAXTIME` = its timelimit, `P_PREEMPT=1` where jobs can be preempted. Partitions with mixed nodes: use the
-node type the user will actually get, and say so in `P_NOTE`.
+node type the user will actually get, and say so in `P_NOTE`. Only set values there: a plan or an approved submit runs it twice.
 
 Then ask what probes cannot tell (one batch per server, or one batch for several):
 

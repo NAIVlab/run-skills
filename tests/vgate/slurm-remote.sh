@@ -8,7 +8,7 @@
 # it can run more than `true`); one --requeue job that this script requeues once (env and stored script after a
 # requeue; a login-node dir seen from the compute node; torch arch flags without a GPU when VENV= is given), then
 # cancelled. Also the identity reads rsk cancel and run-watch's fail-stop / --adopt rely on (squeue -O / sacct -o of
-# its own jobs).
+# its own jobs). And one bash fact, no job: a function named exit outranks the builtin (submit.sh's policy probe).
 # Prints key=value lines. Writes only under <scratch-dir>; cancels only the jobs it submitted. NOT part of selftest.
 set -u
 D=$1; P=$2; shift 2; VENV=""
@@ -18,6 +18,9 @@ trap 'for j in $J; do scancel "$j" 2>/dev/null; done' EXIT
 mkdir -p "$D" && cd "$D" || { echo "vgate=fail cd $D"; exit 1; }
 D=$(pwd -P)   # absolute from here on: sbatch(1) takes a relative --chdir from the dir it runs in, i.e. inside $D
 echo "host=$(hostname) slurm=$(sbatch --version 2>&1) dir=$D"
+# 0. the login node's bash: a function named exit replaces the builtin outside POSIX mode (submit.sh's policy probe passes a gate's exit 1 so)
+_x=$(bash -c 'exit() { [ "${1-}" = 1 ] && return 0; builtin exit "$@"; }; f() { exit 1; echo continued; }; f; exit 3' 2>&1; echo "rc=$?")
+echo "bash_exit_fn=$(printf '%s' "$_x" | tr '\n' ' ') (want continued rc=3) bash=$BASH_VERSION"
 sb() { sbatch --parsable -p "$P" ${X[@]+"${X[@]}"} -c 1 --mem=1G -o /dev/null "$@"; }   # bash < 4.4: an empty array is unbound under set -u (bash CHANGES, 4.4-rc2 a.)
 got() { [ -n "$1" ] || { echo "vgate=fail sbatch ($2): no job id"; exit 1; }; J="$J $1"; }   # got JOBID LABEL: keep it for the trap, or stop
 tl() { scontrol show job "$1" 2>&1 | grep -o 'TimeLimit=[^ ]*'; }

@@ -88,13 +88,19 @@ covering grant's kind covers the plan's warnings (`--allow-warnings availability
 recomputes which `WARNING:` lines it printed (one that appeared or went away: exit 6), so it never passes a new one;
 `--force` / `--rs-*` are never policy flags, and no word before `--` may contain `--rs-`, not even as an option's value
 (exit 2; nor may a value of `-p -g -G -t -m -c -n --relaunch` start with `-`). `--chain N` = N singleton segments
-(conventions §6) under one approval. A `--…-user-asked` policy flag is the user's own OK for that gate: the card shows
-it, no grant covers it. A name carrying a class (`<exp>--<class>--…`) is that class: a different `--class` is exit 2, and
-a run keeps the class of its first attempt (another one, by name or `--class`: exit 2). The action is the plan's, never
-a flag's: a run that already has attempts that may have run (on any target) is a `relaunch` — a relaunch grant covers it
-only after an infrastructure end (PREEMPTED / NODE_FAIL / BOOT_FAIL), the user's approval of the card after any end —,
-a `chain=1` plan (an `SBATCH_EXTRA` `--dependency=singleton` too) is a `chain`, and every one that applies is checked (a
-deny of any matches; a record must allow all); the card's header says which (`plan <id> — relaunch on <t> …`). Its
+(conventions §6) under one approval. Policy flags (`--<word>`, handed to the target's policy) are bound into the plan
+(`flags=`) and listed on the card's `policy` line: no standing grant covers a plan with policy flags — only the user's
+approval of that card; `--relaunch` replays them. A `--…-user-asked` policy flag is the user's own OK for that gate: the
+card shows it, no grant covers it. A name carrying a class (`<exp>--<class>--…`) is that class: a different `--class` is
+exit 2, and a run's class is set only at its first attempt (another one later, by name or `--class` — or any one when the
+first attempt had none: exit 2, before any ssh). The action is the plan's, never a flag's: a run that already has attempts
+that may have run (on any target) is a `relaunch` — a relaunch grant covers it only when the run's latest attempt that ran
+ended with an infrastructure end (PREEMPTED / NODE_FAIL / BOOT_FAIL) and the plan repeats that attempt's configuration
+(else `not the configuration of aNN it resumes`; a plan named after an older attempt, `<run>--a01` again, is recorded as
+the next aNN), the user's approval of the card after any end —, a `chain=1` plan (an `SBATCH_EXTRA`
+`--dependency=singleton` too) is a `chain`, and every one that applies is checked (a deny of any matches, also one whose
+fact is unknown: a run with an attempt recorded without a class matches a class deny; a record must allow all); the
+card's header says which (`plan <id> — relaunch on <t> …`). Its
 `conf extra` row lists the conf's own `SBATCH_EXTRA` words; a `NO GRANT` line names those outside the grant allowlist
 (`conf-keys.md`, `SBATCH_EXTRA`): such a card is the user's call. Its `TIME` line shows an `SBATCH_EXTRA` / policy
 `--time` (sbatch takes the last one) — for information: a grant's `max_time` holds for every time limit sbatch could
@@ -105,7 +111,9 @@ submitted (job id, log), 1 failed, 2 usage, 3 refused (policy or a deny: final, 
 (`needs user: approval — plan <id>`), 5 reply lost (SUBMIT_UNKNOWN: never resubmit; `rsk status` settles it from the
 journal below), 6 a used / superseded / expired plan, drift (`differs from the approved plan`, and what changed:
 `time: 1-00:00:00 → 2-00:00:00`, or `the warnings differ from the approved card`) or `needs: sync` (the deployed
-`submit.sh` lacks the `# rs-api=3` line, or an older one refused rsk's words) — plan again and show the new card.
+`submit.sh` lacks the `# rs-api=3` line, an older one refused rsk's words, or its block lacks a field this rsk binds, such
+as `flags=`) — plan again and show the new card; also 6 `grants unreadable — rsk grant recount / restore` (the ledger's
+`grants.json` cannot be read, so no deny can be ruled out: nothing is done — tell the user, SKILL.md §3).
 When the target proves nothing was submitted (verdict refused / failed with no receipt, or no attempt dir at all) the
 attempt is NOT_SUBMITTED, never SUBMIT_UNKNOWN: the use is given back and rsk says `plan <id> is free again` — once the
 cause is fixed, `rsk launch --plan <id>` resubmits it under the same record with no new words (`--rs-expect` still
@@ -114,9 +122,12 @@ Defaults: `-p`/`-G` ← `<TAG>_DEFAULT_PARTITION` / `<TAG>_DEFAULT_GPU_TYPE` els
 `DEFAULT_GPUS/CPUS/MEM/TIME`, `JOB_NAME` (`<TAG>_` form wins); `ACCOUNT`, `SBATCH_EXTRA` are appended. CLI flags win.
 Unset cpus/mem fall back to the partition's per-GPU heuristics (policy.sh). `submit.sh` then, in order: runs the
 target's `t_policy` (a refusal propagates its exit code, typically 3, and `-y` does not unlock it; in plan mode and under
-`--rs-expect` it first probes `( FORCE=0; t_policy )` in a subshell — the policy as a submit without `-y` sees it — so a
-gate that stays silent under `-y` still prints its `WARNING:` onto the card; an exit 1 with no `WARNING:` of its own
-gets a fixed one, any other non-zero exit ends the call with that code), validates the partition and `-g` range,
+`--rs-expect` it first probes `( FORCE=0; t_policy )` in a subshell — the policy as a submit without `-y` sees it — and,
+right before the partition's real check, `t_partition` the same way with the partition that is submitted, so a gate
+that stays silent under `-y`, in either function, still prints its `WARNING:` onto the card; in the probe each `exit 1`
+is a `-y` gate that is noted and passed, so every gate of a function shows, not only its first; a gate with no
+`WARNING:` of its own gets a fixed one, and what the probe printed then joins the card's `warnings_id`; any other
+non-zero exit ends the call with that code), validates the partition and `-g` range,
 rejects a time limit that is no limit — 0 in any spelling, `UNLIMITED`, `INFINITE`, `-1` (exit 2, `give an explicit
 limit ≤ MaxTime`) — or one it cannot read (an unreadable MaxTime too), and one beyond the partition MaxTime (`exceeds …
 MaxTime` = it would pend forever; lower it); that holds for `-t`, `DEFAULT_TIME`, and EVERY `--time`/`-t` sbatch could
@@ -128,8 +139,10 @@ that is neither an option nor the value of the option before it, or a value opti
 `conf-keys.md`), prints per-node availability and stops with `WARNING: only N free … Re-run -y` when the GPUs are not
 free (`-y` queues anyway), refuses a second live job of the same name from this project (`ERROR: '<name>' is already
 RUNNING from this project (job N …)`, exit 6: follow that job, or pick another `-n`; `--same-name-ok` only when the user
-wants both; `--dependency=singleton` chains skip the check), prints `WARNING (lint): SBATCH_EXTRA …` for an option
-outside its allowed set or one the harness sets itself (warnings only, for now: tell the user), then `sbatch --requeue
+wants both; `--dependency=singleton` chains skip the check), prints `WARNING (lint): SBATCH_EXTRA …` (warnings only,
+for now: tell the user) for an option outside its allowed set or one the harness sets itself — reading the words as the
+scan does, so an option's separate value is never linted as an option (in `--comment -t1` the `-t1` is the comment) —,
+then `sbatch --requeue
 --export=ALL,PROJ,CLUSTER,TARGET … --mem=… --comment=… rs=<NONCE> .<t>/job.sbatch <RUN>` (the early `--requeue` lets a later
 `SBATCH_EXTRA` `--no-requeue` win). The `.hpc.conf` is read in a child shell: only its keys count, never a function or `PATH` it sets.
 Report the job id. Unknown `--word` flags pass through to policy (`--…-user-asked` sets `ACK=1` for it).
@@ -142,15 +155,16 @@ job (and every requeued restart) uses. An ssh that died or printed nothing is **
 anything else; a dir from the call without `result` is still running (read it again shortly); no dir from the call = it
 never started. Exit 75 = that NONCE was already used (`--rs-attempt NONCE` callers only).
 **rsk's protocol (api=3: the line `# rs-api=3` inside the deployed `.<t>/submit.sh`, which rsk's plan ssh reads before it
-runs anything).** `--rs-mode plan` (separate words, like `--rs-attempt`) runs every step above — policy (probed without
-`-y` first), limits, MaxTime, availability, duplicate guard, lint — with each `-y` gate acknowledged (it prints its
+runs anything).** `--rs-mode plan` (separate words, like `--rs-attempt`) runs every step above — policy and partition
+(probed without `-y` first), limits, MaxTime, availability, duplicate guard, lint — with each `-y` gate acknowledged (it prints its
 `WARNING:` and goes on), then prints ONE `@@plan v1` … `@@end` block instead of submitting: the bound fields (`partition gres
-cpus mem time account name extra payload env_kind env_name wandb_mode env_hook venv_dir uv_sync_args conf_extra chain`;
-`extra` = the policy's and `SBATCH_EXTRA`'s words after the harness's own, `conf_extra` = the conf's `SBATCH_EXTRA` words
-alone, `env_hook` = `<ENV_HOOK>:<sha256 of the file>`), `info_*` lines (availability, sha256 of the conf/profile/policy,
+cpus mem time account name extra payload env_kind env_name wandb_mode env_hook venv_dir uv_sync_args conf_extra flags
+chain`; `extra` = the policy's and `SBATCH_EXTRA`'s words after the harness's own, `conf_extra` = the conf's `SBATCH_EXTRA`
+words alone, `flags` = the policy flags, `env_hook` = `<ENV_HOOK>:<sha256 of the file>`), `info_*` lines (availability, sha256 of the conf/profile/policy,
 the `.run-source` commit), then the envelope `warnings=N` (the distinct `WARNING:` lines, not `WARNING (lint)`),
 `warnings_avail=` (how many of them the availability gate printed), `warnings_id=` (the sha256 of those lines, sorted,
-every digit run masked as `#`) and `bound_hash=` (result `verdict=planned`; only the conf is snapshotted, nothing submitted).
+every digit run masked as `#`, and of a silent gate's probe output) and `bound_hash=` (result `verdict=planned`; only the
+conf is snapshotted, nothing submitted).
 `--rs-expect <bound_hash> [--rs-warnings <warnings_id>]` submits only while the resolved submission still hashes the
 same and the call's `WARNING:` lines give the same `warnings_id` (none given = no warning at all): a warning that
 appeared or went away is a difference. Else the current block, `changed: <keys>` (read from the approved plan's own
@@ -203,14 +217,18 @@ the earlier attempts) — confirm the trainer's own resume line after every rest
 …` for a job not in the ledger): the same ssh that runs `scancel` first checks the job's name, user and WorkDir (exit 6 =
 mismatch, nothing cancelled; exit 3 = someone else's job: never). It acts on the user's words naming that job, or —
 for your own judgment that a run should stop — on a `cancel_own` grant (runs rsk launched only); else exit 4: ask.
+`cancel_own` covers only an attempt the ledger shows live: a job of a run the ledger shows ended needs the user's words.
+A deny of the user's matches a cancel whatever it cannot rule out: a deny of plans (`rsk grant deny --run <hash>`, one
+that covers cancels) matches every cancel of a job the ledger has no plan for.
 An approval (`--approve`) is bound to the identity it was given for (target, job id, run name, WorkDir), expires after
 1 h and is used up by its first cancel that passed the authorisation check, whatever came of it (no refund): a later
 cancel of that id needs the user's words again (`rsk grant list`: `jobs used N/M`). A `cancel_own` grant's cancels count
 against its `max_launches` (`cancels N/M`, or `uses N/M` on a grant that only cancels); a use comes back only when the
 answer proves nothing was signalled. A ledgered job squeue lists as ended is exit 0 `nothing to cancel … ended (<STATE>)`,
 recorded in the ledger with that state. A cancel approval recorded before identities were bound covers nothing: ask
-again. An answer that timed out or was cut off after the cancel started says `the
-cancel may have been sent: rsk status` (exit 5): read `rsk status` before anything else.
+again. An answer cut off after the cancel started, or no answer at all (a timeout, ssh's own 255, a signal: the body may
+have run there), says `the cancel may have been sent: rsk status` (exit 5; a `cancel_own` use is kept, the job may have
+been cancelled): read `rsk status` before anything else.
 Without rsk: the job's line in `ssh <host> 'squeue -h -u $USER --states=all -O "JobID:0|,Name:0|,UserName:0|,WorkDir:0|,State:0|"'`
 (the read `rsk cancel` makes) must show the run's name, your user and this remote dir; then `scancel <jobid>`, on the same terms.
 
@@ -219,13 +237,20 @@ Without rsk: the job's line in `ssh <host> 'squeue -h -u $USER --states=all -O "
 `-n`, no `*-user-asked`, no shell quoting; `rsk watch <table> …` runs it under the project's lease). Each round: one
 read-only ssh per target, one dated event per change (LAUNCH REQUEUE RESUBMIT RETRY DONE STALL WARN ATTENTION CANCEL …).
 Without `--act` it never submits. To let it act, show the user the rows plus `#@ allow launch preempt=N errors=N timeout=N [fail-stop]` (no default: absent = 0; paid partitions:
-the cost of first submits plus N resubmits); only after their explicit OK run `run-watch <table> --approve "<their
-words>"`. Any later edit to those rows, the budget or `.hpc.conf` makes them detect-only again (the `#@ ok` line
+the cost of first submits plus N resubmits); only after their explicit OK run `rsk watch <table> --approve "<their
+words>"`, then `rsk watch <table> --act …`. Acting goes through rsk (it runs run-watch with `RS_VIA_RSK=1` and
+`RS_WATCH_PARENT=<its pid>`): a direct `run-watch … --act` or `--approve` while rsk is installed prints `use: rsk watch …`
+and exits 2, writing and running nothing (watching without them still runs directly; installed without rsk it acts,
+with a NOTE, and no ledger deny is checked). Any later edit to those rows, the budget or `.hpc.conf` makes them detect-only again (the `#@ ok` line
 carries `conf=`, and the submit ssh checks the deployed copy; an older line without it stays valid). `rsk watch --act`
-(and `rsk watch … --approve`) first checks every row — target, `-p`, `-G`, `-g`, `-t`, name / run id, class — against
-the user's denies for what the table's `#@ allow` lets run-watch do there (launch → launch; preempt / errors / timeout →
-resubmit and relaunch; fail-stop → cancel): a match is exit 3 with the deny's words, nothing started and no `#@ ok`
-written; a matching deny recorded while it runs stops run-watch (TERM) at the next lease refresh, exit 3. `fail-stop` makes
+(and `rsk watch … --approve`) first checks every row — target, `-g`, `-t`, name / run id, class — against the user's
+denies for EVERY action run-watch could take on it (launch, relaunch, resubmit, chain on Slurm rows, cancel), whatever
+the table's `#@ allow` says (`--release` and an `SBATCH_EXTRA` singleton act outside it); what a row cannot show
+matches: a GPU-type deny matches every row of its target and a partition deny every Slurm row of its target (the policy
+may force a type or rewrite `-p`), a deny of plans every row in its scope (a row has no bound hash), a class deny a row
+whose class is unknown. A match is exit 3 with the deny's words and why, nothing started and no `#@ ok` written; an
+unreadable `grants.json` is exit 6 (`grants unreadable`); a matching deny recorded while it runs stops run-watch (TERM)
+at the next lease refresh, exit 3. `fail-stop` makes
 the table one group: once an approved row fails (FAILED/OUT_OF_MEMORY before its time limit) with its `errors` budget
 spent, it cancels the table's other live jobs — only those whose name, user and WorkDir it verified in that same ssh —
 and holds the rows not yet submitted; preemption, timeouts and CANCELLED never trigger it, workstation rows are never
@@ -234,18 +259,27 @@ once it is tracked (its receipt, or `--adopt`), but only by an `--act` run and o
 still has `fail-stop`: a detect-only run reports `fail-stop-not-cancelled why=no-act` and keeps it pending; approving
 the table without `fail-stop` drops those pending cancels (`NOTE … fail-stop-pending-dropped`), while the stop itself
 still holds the group until `--release <trigger>`. A stopped table's fail-stop goes with its rows: a renamed or copied
-table, or any table whose rows take their state from the stopped table's state file, is stopped too (`ATTENTION …
-reason=fail-stop-inherited`) and inherits the rows' pending cancels; `--release <trigger>` resumes it even when the
-trigger is not a row of that table (`RELEASE table=… fail-stop=…`). A row is one run by its name: with no state in its
+table, or any table with a row the stopped group had, is stopped too (`ATTENTION … reason=fail-stop-inherited`) and
+inherits the rows' pending cancels — every round, a `#failstop` in ANY other state file with a line naming one of the
+table's rows (a removed row's line too) holds that table, whatever state the row has here (`from=<file>`); if another
+state file cannot be read for its stop, nothing is submitted that round (`why=fail-stop-unreadable`). `--release
+<trigger>` (a stop whose trigger is that name) clears the stop in every table of this watch, even where the trigger is
+not a row (`RELEASE table=… fail-stop=…`), and records `#failstop-released <trigger>:<job>` in their state, so that
+stop is never taken again from another file; a table outside this watch keeps its own copy (an older run-watch drops
+that line, so it may take the stop again: fail closed). A row is one run by its name: with no state in its
 own table it takes it from the newest other `logs/run-watch/*.state` naming it, but its status and job ids only from a
-state line of the row's own target (every state line records its target; older lines without one still load, and from
-another table count as another target); from another target only the spent budgets carry over (`NOTE … budgets-from=…
-target-there=…`), plus any unknown submit. Spent budgets are never fewer than any state file holds. A row whose target is
+state line of the row's own target (every state line records its target); from another target only the spent budgets carry over (`NOTE … budgets-from=…
+target-there=…`), plus any unknown submit. A line from before the target column follows its jobs only when its own file
+names exactly one `#target`, the row's, and the row was not removed; else its target is unknown (`NOTE …
+target-changed from=?`): only its spent budgets and an unknown submit stay, and a live job of the row's name and this
+WorkDir is adopted again (an ended one: held `adopted-terminal`). Spent budgets are never fewer than any state file holds. A row whose target is
 edited in its own table drops its jobs and becomes pending (`NOTE … target-changed`), keeping its budgets and any unknown
 submit. Row words never carry `--rs-*` (run-watch sends its own `--rs-attempt`). It resubmits only a job the
-controller has purged with a terminal sacct state whose row names this row (JobName; else the row is held
-`job-identity-mismatch`, never resubmitted on another job's id), never a CANCELLED one, never past an unknown submit
-outcome. Each submit carries its own attempt nonce; an unknown submit held by ANY other state file of the project (its
+controller has purged with a terminal sacct state whose row names this row and this project's WorkDir (JobName, and
+WorkDir = `pwd` or `pwd -P` — any other spelling, a third symlink path, counts as a mismatch: fail closed; else the
+row is held `job-identity-mismatch … workdir=…`, never resubmitted on another job's id), never a CANCELLED one, never
+past an unknown submit outcome; the submit ssh checks that job's name and WorkDir again (`submit-skipped …
+prev-identity`). Each submit carries its own attempt nonce; an unknown submit held by ANY other state file of the project (its
 nonce) makes the row submit-unknown even when the row has its own state, unless that state already settled the attempt
 (the same nonce, or a newer submit of its own). The next read settles it from the remote attempt journal — a receipt
 gives `ADOPT`; a journal showing nothing was queued gives the row its own status back (`NOTE … queued nothing … back to
@@ -254,13 +288,17 @@ gives `ADOPT`; a journal showing nothing was queued gives the row its own status
 keeps its id and is only counted. One watcher per project: a second one refuses (exit 6) and names the holder's pid,
 host, start and act; nothing runs (`rsk status` shows the lease and a `run-watch lock:` line). Exit: 0 every row done, 2 table or conf error, 3 lease over or `--once` with rows
 still moving (`rsk watch`: 7; its 3 = a deny matches a row), 4 the rest waits on the user, 6 another watcher (the
-lease, a live run-watch lock here, or any lock holder on another host). Numbers — the flags `--every --for
+lease, a live run-watch lock here, or any lock holder on another host; `rsk watch`: also `grants unreadable`), 7 the
+`rsk watch` that started it is gone or no longer its parent (`RS_WATCH_PARENT`; checked at the start, every round,
+after each read and before each submit or cancel ssh, in every mode): nothing more is submitted or cancelled, the event
+is `ATTENTION reason=parent-gone parent=P at=…`, a fail-stop cancel not yet sent stays pending for the next `--act`
+run — run `rsk watch` again. Numbers — the flags `--every --for
 --stall-after --max-active`, `#@ allow N`, `after=`, `--adopt` job ids — are base 10, leading zeros dropped, at most 9
 significant digits: `0060` is 60 (`rsk watch` reads them the same way). An installed run-watch from before `conf=` binding refuses `#@ ok … conf=` lines
 (`malformed '#@ ok' line (write it with --approve)`) and its `--approve` cannot repair them: update the installed
 harness (`rsk update`, then `rsk setup`), never edit the line. Conversely this one refuses an ok line with keys it does
 not know, or a `#@ run-watch vN` header other than v1, naming a newer run-watch and the same update path; a hand-edited
-malformed ok line: delete it, then `--approve` with the user's words. An older run-watch reads the state files this
+malformed ok line: delete it, then `rsk watch <table> --approve` with the user's words. An older run-watch reads the state files this
 one writes as lost (rows held `state-lost`): refresh the installed copy before mixing them. A job ending within min(15 min, a tenth of its limit) of the time limit
 counts as `timeout` even when sacct says FAILED (killed by the USR1 warning) or COMPLETED without its done-path; one
 COMPLETED there with done `-` waits for a human (a save-and-exit is not proof the run finished). Run it as this session's background task with a lease (`--for`,

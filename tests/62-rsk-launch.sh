@@ -8,8 +8,8 @@
 # (exit 6); a sweep under one approval; a superseded / used plan (exit 6); ssh lost -> SUBMIT_UNKNOWN, reconciled by
 # rsk status; an old deploy (needs: sync); the local duplicate; relaunch; cancel (identity: name, WorkDir, user);
 # nohup: busy GPU never grant-covered, approved card -> --gpu-busy-ok, cancel TERM/KILL; the watch lease. The P3 review
-# findings (H1 H2 H3 M1 M3 M4 M5 M6 M7 L2 L3 L4 L5) and the round-3 decisions (D1 D3 D5 D6 D8 D9 D10; C-stale-API,
-# F-unknown, grants#1/3/4, H1-owner/msg, G-space), each end to end.
+# findings (H1 H2 H3 M1 M3 M4 M5 M6 M7 L2 L3 L4 L5), the round-3 decisions (D1 D3 D5 D6 D8 D9 D10; C-stale-API,
+# F-unknown, grants#1/3/4, H1-owner/msg, G-space) and the round-4 ones (R4-1 R4-2 R4-4 R4-6 R4-8 R4-15), each end to end.
 # Run by selftest.sh with RS_HOME set:  bash tests/62-rsk-launch.sh
 set -u
 . "$RS_HOME/tests/lib.sh"
@@ -372,6 +372,69 @@ O=$(rsk watch t.tsv --approve "and b"); RC=$?
 [ "$RC" = 3 ] && cmp -s "$R/t.tsv" "$T/t.before" && ok "D8: --approve over rows a deny matches -> exit 3, no '#@ ok' written" || bad "D8 approve (rc=$RC)"
 CWD=$P
 
+echo "-- round 4 R4-6: a policy flag is bound (flags=) and never a grant's call; R4-1: a deny of a run's plan stops its cancel --"
+R=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\n' "$R" > "$R/.hpc.conf"; CWD=$R
+rsk grant add --quote "1-GPU smoke runs on fx are fine; kill a broken one yourself" -T fx-slurm --action launch,cancel_own --max-gpus 1 --max-live 5 --max-launches 5 --expires 2099-12-31 >/dev/null
+: > "$T/sbatch.log"; O=$(rsk launch -T fx-slurm -n exp--smoke--wn--a01 -g 1 -t 30 --whole-node -- python t.py); RC=$?; PF=$(pid_of "$O")
+[ "$RC" = 4 ] && has "$O" 'policy flag(s) --whole-node' "R4-6: a policy flag -> no standing grant covers the plan (exit 4)" || { bad "R4-6 policy flag (rc=$RC)"; printf '%s\n' "$O" | tail -6 | sed 's/^/    | /'; }
+has "$O" '^  policy     --whole-node  (bound' "...the card lists it, bound (flags=)"; nosub "...nothing submitted"
+O=$(rsk launch --plan "$PF" --approve "yes, the whole node for this smoke"); RC=$?
+[ "$RC" = 0 ] && has "$(grep -- '--rs-expect' "$T/ssh-body.log" | tail -n 1)" '--whole-node' "R4-6: the approved card's submit carries the flag (--rs-expect binds it)" || bad "R4-6 approved (rc=$RC)"
+O=$(rsk launch -T fx-slurm -n exp--smoke--dr--a01 -g 1 -t 30 -- python t.py); RC=$?
+HD=$(printf '%s\n' "$O" | sed -n 's/^  bound_hash \([0-9a-f]*\)$/\1/p')
+[ "$RC" = 0 ] && [ -n "$HD" ] || bad "R4-1 setup: a covered launch (rc=$RC)"
+rsk grant deny --quote "do not touch that run, whatever happens" --run "$HD" >/dev/null
+: > "$T/scancel.log"; O=$(rsk cancel exp--smoke--dr); RC=$?
+[ "$RC" = 3 ] && has "$O" 'do not touch that run' "R4-1: a deny of the run's plan (--run H) stops the agent's own cancel (exit 3)" || { bad "R4-1 deny --run vs cancel (rc=$RC)"; printf '%s\n' "$O" | tail -4 | sed 's/^/    | /'; }
+[ ! -s "$T/scancel.log" ] && ok "...scancel never called" || bad "...scancel called"
+printf '#@ run-watch v1\n#@ allow launch\nwr fx-slurm - -p gpu -g 1 -t 30 -- python t.py\n' > "$R/t.tsv"
+O=$(rsk watch t.tsv --approve "watch wr"); RC=$?
+[ "$RC" = 3 ] && has "$O" 'a deny of plans matches every row' "R4-1/N2: a row has no bound hash: a deny of plans matches it (exit 3, said why)" || bad "R4-1 watch row (rc=$RC)"
+
+echo "-- R4-2: a relaunch grant repeats the attempt whose end it relies on; a plan named after an older attempt is a new one --"
+R=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\n' "$R" > "$R/.hpc.conf"; CWD=$R; X=exp--train--lr--s0
+jid() { printf '%s\n' "$1" | sed -n 's/^submitted: .* job \([0-9]*\) .*/\1/p' | tail -n 1; }
+O=$(rsk launch -T fx-slurm -n $X--a01 -g 1 -t 30 -- python train.py --lr 1); O=$(rsk launch --plan "$(pid_of "$O")" --approve "run it with lr 1"); J1=$(jid "$O")
+O=$(rsk cancel --job "$J1" -T fx-slurm --approve "cancel job $J1, lr 1 is wrong"); rsk status >/dev/null
+O=$(rsk launch -T fx-slurm -n $X--a02 -g 1 -t 30 -- python train.py --lr 0.1); O=$(rsk launch --plan "$(pid_of "$O")" --approve "rerun it with lr 0.1"); J2=$(jid "$O")
+[ -n "$J1" ] && [ -n "$J2" ] || bad "R4-2 setup: a01 and a02 submitted ($J1 $J2)"
+rsk grant add --quote "auto-resume exp--train if it gets preempted, up to 3 times" -T fx-slurm --name 'exp--train--*' --action relaunch --max-live 1 --max-launches 3 --expires 2099-12-31 >/dev/null
+jobstate "$J2" PREEMPTED; rsk status >/dev/null
+: > "$T/sbatch.log"; O=$(rsk launch -T fx-slurm -n $X--a01 -g 1 -t 30 -- python train.py --lr 1); RC=$?
+[ "$RC" = 4 ] && has "$O" 'not the configuration of a02 it resumes' "R4-2: the cancelled a01's configuration named after a01 -> not covered by a02's preemption (exit 4)" || { bad "R4-2 (rc=$RC)"; printf '%s\n' "$O" | tail -4 | sed 's/^/    | /'; }
+nosub "...nothing submitted"
+O=$(rsk launch --relaunch $X); RC=$?
+[ "$RC" = 0 ] && has "$O" "^submitted: $X a03 " "R4-2: a02's own configuration -> the relaunch grant resumes it (a03)" || { bad "R4-2 resume (rc=$RC)"; printf '%s\n' "$O" | tail -4 | sed 's/^/    | /'; }
+
+echo "-- R4-4: rsk watch --act checks every row for every action (--release too); a GPU-type deny matches every row of its target --"
+R=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\n' "$R" > "$R/.hpc.conf"; CWD=$R
+printf '#@ run-watch v1\na fx-slurm - -p gpu -G gt-a -g 1 -t 1:00:00 -- python train.py\n' > "$R/t.tsv"   # no '#@ allow' line
+O=$(rsk watch t.tsv --approve "watch a"); [ "$?" = 0 ] || bad "R4-4 setup: the table approved"
+rsk grant deny --quote "never launch anything on fx-slurm any more" -T fx-slurm --action launch >/dev/null
+: > "$T/sbatch.log"; O=$(rsk watch t.tsv --once --act --max-active 1 --release a); RC=$?
+[ "$RC" = 3 ] && has "$O" 'row a on fx-slurm (launch)' "R4-4/N1: --release a under a launch deny (no '#@ allow' line) -> exit 3" || { bad "R4-4 release (rc=$RC)"; printf '%s\n' "$O" | tail -4 | sed 's/^/    | /'; }
+nosub "...nothing submitted"
+R=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\n' "$R" > "$R/.hpc.conf"; CWD=$R
+printf '#@ run-watch v1\n#@ allow launch\na fx-slurm - -p gpu -G gt-a -g 1 -t 1:00:00 -- python train.py\n' > "$R/t.tsv"
+rsk grant deny --quote "never use the gt-z GPUs" --gpu-type gt-z -T fx-slurm >/dev/null
+O=$(rsk watch t.tsv --approve "watch a"); RC=$?
+[ "$RC" = 3 ] && has "$O" 'GPU type is not certain here' "R4-4/N3: -G gt-a vs a gt-z deny: the partition may force a type -> exit 3, said why" || bad "R4-4 gpu type (rc=$RC)"
+
+echo "-- R4-15: an unreadable grants.json -> rsk launch / cancel / watch --act exit 6, never 'no deny' --"
+R=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\n' "$R" > "$R/.hpc.conf"; CWD=$R
+rsk grant deny --quote "never on fx-slurm" -T fx-slurm >/dev/null
+GD=$(pyl 'print(L.Ledger(sys.argv[2]).dir)' "$R"); printf '{"version": 1, "records": [' > "$GD/grants.json"; rm -f "$GD/grants.json.prev"
+: > "$T/sbatch.log"; O=$(rsk launch -T fx-slurm -n exp--smoke--gu--a01 -g 1 -t 30 -- python t.py); RC=$?
+[ "$RC" = 6 ] && has "$O" 'grants unreadable' "R4-15/N7: rsk launch -> exit 6 'grants unreadable'" || bad "R4-15 launch (rc=$RC)"
+nosub "...nothing submitted"
+printf '#@ run-watch v1\n#@ allow launch\na fx-slurm - -p gpu -g 1 -t 1:00:00 -- python train.py\n' > "$R/t.tsv"
+O=$(rsk watch t.tsv --once --act --max-active 1); RC=$?
+[ "$RC" = 6 ] && has "$O" 'grants unreadable' "R4-15/N7: rsk watch --act -> exit 6" || bad "R4-15 watch (rc=$RC)"
+nosub "...nothing submitted"
+: > "$T/scancel.log"; O=$(rsk cancel --job 101 -T fx-slurm --approve "cancel job 101"); RC=$?
+[ "$RC" = 6 ] && has "$O" 'grants unreadable' "R4-15/N7: rsk cancel -> exit 6" || bad "R4-15 cancel (rc=$RC)"
+[ ! -s "$T/scancel.log" ] && ok "...scancel never called" || bad "...scancel called"; CWD=$P
+
 echo "-- watch: the lease (one watcher per project) --"
 sleep 60 & LP=$!
 pyl 'import socket, time; led = L.Ledger(sys.argv[2]); led.ensure(); p = int(sys.argv[3])
@@ -471,3 +534,14 @@ O=$(rsk launch --plan "$PSP" --approve "yes, launch sp"); RC=$?
 [ "$RC" = 1 ] && has "$O" '^not submitted: sp a01' "L3: uv gate fails at the launch, the payload's look-alike line in the reply: not submitted (exit 1)" || { bad "L3 (rc=$RC)"; printf '%s\n' "$O" | tail -6 | sed 's/^/    | /'; }
 has "$O" '^\[ws-box\] started PID 1 on GPU(s) 0 ; log ' "...(the reply did carry the look-alike line)"
 hasnt "$O" '^launched: ' "...never 'launched'"; has "$(att sp a01)" '^NOT_SUBMITTED not_submitted' "...ledger: NOT_SUBMITTED"
+
+echo "-- R4-8: launch.sh killed after its gate said go -> launched (the journal's receipt), never NOT_SUBMITTED; the use kept --"
+W7=$(mk_proj ws-box 'x'); ln -s "$W7" "$H/projects/w7"; printf 'WS_REMOTE_DIR=projects/w7\nENV_KIND=none\n' > "$W7/.ws.conf"; CWD=$W7
+sed 's|^stage done$|stage done; kill -KILL $$|' "$W7/.ws/launch.sh" > "$T/launch.k" && cat "$T/launch.k" > "$W7/.ws/launch.sh"
+if grep -q 'kill -KILL \$\$' "$W7/.ws/launch.sh"; then
+  rsk grant add --quote "launch on the box, at most 1 at a time and 1 in total" -T ws-box --action launch --max-live 1 --max-launches 1 --expires 2099-12-31 >/dev/null
+  O=$(rsk launch -T ws-box -d 2 -N k1 -- sleep 60); RC=$?
+  [ "$RC" = 0 ] && has "$O" '^launched: k1 a01 pid [0-9]*' "R4-8: launch.sh killed (137) after go -> launched, from the journal's receipt" || { bad "R4-8 (rc=$RC)"; printf '%s\n' "$O" | tail -6 | sed 's/^/    | /'; }
+  has "$(att k1 a01)" '^SUBMITTED submitted [0-9]' "...ledger: submitted with the pid (never NOT_SUBMITTED)"
+  has "$(rsk grant list)" 'launches 1/1' "...the grant's use is kept (launches 1/1)"
+else bad "R4-8 setup: the deployed launch.sh has no 'stage done' line to kill itself after"; fi

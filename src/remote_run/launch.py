@@ -10,7 +10,8 @@ submit — every step recorded in the project's ledger (ledger.py) and checked a
 0. Usage: --force (submit.sh's -y) is never a policy flag, and no word before `--` may contain --rs- (not even as an
    option's value: rsk sends those words itself); a value of -p -g -G -t -m -c -n -N -d --nice never starts with '-';
    a name that carries a class (<exp>--<class>--…) is that class — a different --class is exit 2; a run's class is
-   sticky: the class recorded at its first attempt — another one (name or --class) is exit 2; --gpu-busy-ok needs -d.
+   sticky: the class recorded at its first attempt — another one (name or --class), or any one when its first attempt
+   had none, is exit 2; --gpu-busy-ok needs -d.
 1. Local duplicate: a live ledger attempt of the run (the name minus --aNN) on that target → exit 6 unless
    --same-name-ok (also passed on to the remote guard). A --chain skips it, as submit.sh skips singleton chains. A
    SUBMIT_UNKNOWN attempt of the run blocks ALWAYS (--same-name-ok, chains, relaunch too): rsk status settles it.
@@ -19,7 +20,7 @@ submit — every step recorded in the project's ledger (ledger.py) and checked a
    `RS_VIA_RSK=1 bin/run-launch --rs-attempt <nonce> --rs-mode plan …` from the harness (cwd = the project, TARGET
    set; the block launch.sh prints is its own api= line). A deploy that does not speak api=3, an older parser's exit 2
    (`unknown arg …`), or a block that lacks a key this rsk needs (grants.NEEDED: env_hook venv_dir uv_sync_args,
-   warnings_avail warnings_id; slurm conf_extra; nohup busy_ok) → exit 6 `needs: sync`. A plan never submits: its
+   warnings_avail warnings_id; slurm conf_extra flags; nohup busy_ok info_run_gpu) → exit 6 `needs: sync`. A plan never submits: its
    refusal (policy 3, duplicate 6, usage 2, too few free GPUs 8, a nohup env that would fail the gate 1) is the exit
    code, with the target's lines (a nohup plan creates nothing outside .rs/).
 3. The plan and its card are stored (plans/<id>.json, never rewritten). Its action is derived, never a flag: a run that
@@ -28,8 +29,9 @@ submit — every step recorded in the project's ledger (ledger.py) and checked a
    decides: a deny → exit 3 with its quote; a record that covers the plan → submit now; else the card and `needs
    user: approval — plan <id>` → exit 4. A standing grant never covers a workstation plan that lands on a GPU in use
    (only the user's words naming it), a --<x>-user-asked policy flag, --same-name-ok, a plan with warnings its
-   allow_warnings kind does not cover, a conf SBATCH_EXTRA word outside grants.EXTRA_ALLOW (the card names it), or a
-   relaunch whose previous attempt did not end with an infrastructure end (PREEMPTED NODE_FAIL BOOT_FAIL REBOOT).
+   allow_warnings kind does not cover, a conf SBATCH_EXTRA word outside grants.EXTRA_ALLOW (the card names it), a
+   Slurm plan with policy flags (bound as flags=; the card lists them), or a relaunch whose latest attempt that ran did
+   not end with an infrastructure end (PREEMPTED NODE_FAIL BOOT_FAIL REBOOT) or whose configuration it does not repeat.
 4. --plan … --approve "words": in ONE ledger lock hold, each plan re-checked (unused, younger than PLAN_TTL_S, not
    superseded by a newer plan of the same target + name; else exit 6, nothing submitted, no approval), denies checked
    again, every plan claimed (single use), then one approval record (created_via plan-approve) per kind of request
@@ -37,19 +39,23 @@ submit — every step recorded in the project's ledger (ledger.py) and checked a
    later plan of the same configuration is a new card for the user, also after a refused submit gave its use back; a
    failure recording it revokes what was recorded. Each plan is then submitted with a fresh nonce, --rs-expect
    <bound_hash> and --rs-warnings <the card's warnings_id> (the target recomputes which WARNING: lines it printed and
-   refuses a difference, exit 6): -y only when its card showed warnings (and the record that covers it covers them),
-   --rs-chain on each of N chain segments (slurm; a segment's own attempt is not counted against the grant's
-   max_live), --gpu-busy-ok only when the card's own landing was on a busy GPU, pinned to it with -d <the card's GPUs>
-   (nohup; launch.sh binds who is on it: another occupant since the plan is exit 6, the refusal names what changed).
+   refuses a difference, exit 6): -y only when the approved card showed warnings or the covering grant's kind covers
+   the plan's warnings, --rs-chain on each of N chain segments (slurm; a segment's own attempt is not counted against
+   the grant's max_live), --gpu-busy-ok only when the card's own landing was on a busy GPU, pinned to it with -d <the
+   card's GPUs> (nohup; launch.sh binds who is on it: another occupant since the plan is exit 6, the refusal names what
+   changed).
    --plan without --approve submits only when a record covers the plan now.
 5. Each submission is recorded as SUBMIT_UNKNOWN before it is sent (sticky); the reply settles it: a receipt = submitted
-   (nohup: the receipt read back from the journal first; else launch.sh's own launch line, the last `[<t>] started PID
-   … ; log … ; pid file …` line, its fields taken from the end — a look-alike line a payload printed proves nothing);
-   proof that nothing was sent = not submitted: the remote verdict refused/failed with no receipt, submit.sh's exit
-   with no attempt dir (it claims one before anything else), run-launch failing before its launch ssh; then the use
-   is given back and, for the plan's first segment, its claim released — `rsk launch --plan <id>` retries it under the
-   same approval (--rs-expect still guards drift). ssh 255, a timeout or no receipt stays SUBMIT_UNKNOWN — `rsk status`
-   reconciles it from the remote journal; never resubmitted blind.
+   (nohup: the receipt read back from the journal first — also after a non-zero exit, e.g. launch.sh killed after its
+   gate said go; else, when the journal cannot be read and run-launch exited 0, launch.sh's own launch line, the last
+   `[<t>] started PID … ; log … ; pid file …` line, its fields taken from the end — a look-alike line a payload printed
+   proves nothing); proof that nothing was sent = not submitted: the remote verdict refused/failed with no receipt,
+   submit.sh's exit with no attempt dir (it claims one before anything else), launch.sh's exit with no attempt dir in
+   the journal read back (the same claim), run-launch failing before its launch ssh; then the use is given back and,
+   for the plan's first segment, its claim released — `rsk launch --plan <id>` retries it under the same approval
+   (--rs-expect still guards drift). ssh 255, a timeout, an exit the journal does not explain (nohup: it is always
+   read before deciding) or no receipt stays SUBMIT_UNKNOWN — `rsk status` reconciles it from the remote journal;
+   never resubmitted blind.
 A record is bookkeeping, not proof that the user agreed: the card shown and the user's words are what make it theirs.
 The ledger lock is held for each check-then-record step, never across an ssh.
 Exit: 0 submitted · 1 failed on the target · 2 usage · 3 refused (policy, deny) · 4 needs the user · 5 unknown ·
@@ -119,7 +125,7 @@ def parser() -> argparse.ArgumentParser:
                              ("-m", "mem", "memory"), ("-c", "cpus", "CPUs"), ("-n", "name", "job name")):
         s.add_argument(flag, dest=dest, default=None, help=what)
     s.add_argument("-y", action="store_true", help="accepted, never sent as typed: the card decides (-y only when "
-                   "the approved card showed warnings)")
+                   "the approved card showed warnings or the covering grant's kind covers the plan's warnings)")
     s.add_argument("--chain", type=int, default=0, metavar="N", help="N singleton segments (--rs-chain), one approval")
     n = p.add_argument_group("nohup (run-launch)")
     n.add_argument("-d", dest="ids", default=None, help="exactly these GPU ids")
@@ -137,7 +143,8 @@ def parse(extra: list[str]) -> argparse.Namespace:
     rs = [w for w in head if "--rs-" in w]      # also inside a value (-n--rs-chain): the target's pre-scan would act on it
     if rs:
         raise RskError(f"rsk launch: {' '.join(rs)}: no word before -- may contain --rs- — rsk sends the --rs-* words "
-                       "itself (-y only when the approved card showed warnings)", USAGE)
+                       "itself (-y only when the approved card showed warnings or the covering grant's kind covers the "
+                       "plan's warnings)", USAGE)
     ns, rest = parser().parse_known_args(head)
     bad = [w for w in rest if not POLICY_FLAG.fullmatch(w)]
     if bad:
@@ -145,7 +152,8 @@ def parse(extra: list[str]) -> argparse.Namespace:
     own = [w for w in rest if w in NOT_POLICY]
     if own:
         raise RskError(f"rsk launch: {' '.join(own)} is not a policy flag: rsk sends submit.sh's -y / --force itself "
-                       "(-y only when the approved card showed warnings)", USAGE)
+                       "(-y only when the approved card showed warnings or the covering grant's kind covers the plan's "
+                       "warnings)", USAGE)
     dash = [f"{flag} {v}" for flag, v in (("-p", ns.part), ("-g", ns.gpus), ("-G", ns.gtype), ("-t", ns.time),
                                          ("-m", ns.mem), ("-c", ns.cpus), ("-n", ns.name), ("-d", ns.ids),
                                          ("-N", ns.wsname), ("--nice", ns.nice), ("--relaunch", ns.relaunch))
@@ -202,7 +210,8 @@ def _asked(ns: argparse.Namespace) -> bool:
 
 
 def _from_bound(kind: str, bound: dict, name: str) -> tuple[list[str], list[str], int]:
-    """(flags, payload, chain) that ask for the original attempt's bound fields again (a relaunch, nothing typed)."""
+    """(flags, payload, chain) that ask for the original attempt's bound fields again (a relaunch, nothing typed; the
+    bound policy flags too)."""
     b = {k: str(v) for k, v in bound.items()}
     if kind == "slurm":
         f: list[str] = []
@@ -217,7 +226,13 @@ def _from_bound(kind: str, bound: dict, name: str) -> tuple[list[str], list[str]
             v = grants.unq(b.get(key, ""))
             if v:
                 f += [flag, v]
-        return f + ["-n", name], grants.qwords(b.get("payload", "")), 1 if b.get("chain") == "1" else 0
+        pflags = [w for w in grants.qwords(b.get("flags", "")) if w]     # the policy flags it was planned with
+        odd = [w for w in pflags if not POLICY_FLAG.fullmatch(w) or "--rs-" in w or w in NOT_POLICY]
+        if odd:
+            raise RskError(f"the recorded policy flags {' '.join(odd)} are not ones rsk launch would send: give the "
+                           "relaunch's flags and command again", USAGE)
+        return (f + ["-n", name] + pflags, grants.qwords(b.get("payload", "")),
+                1 if b.get("chain") == "1" else 0)
     f = []
     req = b.get("gpus_req", "")
     if req.startswith("ids="):
@@ -248,7 +263,7 @@ def build_request(ns: argparse.Namespace, led: L.Ledger, place: harness.Place) -
         raise RskError("--chain N: N >= 1 segments", USAGE)
     if ns.y:
         out("NOTE: -y is not sent as typed: the plan shows every -y gate as a warning, and the submit carries -y only "
-            "when the approved card showed one")
+            "when the approved card showed warnings or the covering grant's kind covers the plan's warnings")
     name = ns.name if kind == "slurm" else ns.wsname
     class_check(ns.cls, name or "")
     if name:
@@ -301,22 +316,27 @@ def class_check(label: str, name: str) -> None:
 
 
 def recorded_classes(run_rec: dict | None) -> list[str]:
-    """The classes a run's attempts were recorded with, oldest attempt first (de-duplicated)."""
-    atts = (run_rec or {}).get("attempts") or {}
-    order = sorted(atts, key=lambda k: (int(k[1:]) if k[1:].isdigit() else 0, k))
-    return [c for c in dict.fromkeys(str((atts[k].get("request") or {}).get("class") or "") for k in order) if c]
+    """The classes a run's attempts were recorded with, oldest attempt first (de-duplicated; none left out)."""
+    return [c for c in dict.fromkeys(grants.run_classes(run_rec)) if c]
 
 
 def sticky_class(led: L.Ledger, name: str, label: str) -> str:
-    """A run's class is the one recorded at its first attempt (from its name, or --class): a later attempt whose name
-    or --class says another one is a usage error (exit 2). Returns the class of NAME's run ('' when none is known)."""
+    """A run's class is the one recorded at its first attempt (from its name, or --class) — and only there: a later
+    attempt whose name or --class says another one, or says one at all when the first attempt had none, is a usage
+    error (exit 2). Returns the class of NAME's run ('' when it has none)."""
     run = L.run_id(name)
-    first = (recorded_classes(led.read_run(run).data) or [""])[0]
+    classes = grants.run_classes(led.read_run(run).data)
     new = grants.name_class(name) or label
+    if not classes:
+        return new
+    first = classes[0]
     if first and new and new != first:
         raise RskError(f"run {run} is class {first} (recorded at its first attempt): this attempt says {new} — a run's "
                        "class never changes (drop --class, or name a new run)", USAGE)
-    return new or first
+    if not first and new:
+        raise RskError(f"run {run} has no class (its first attempt was recorded without one): this attempt says {new} "
+                       "— a run's class is set only at its first attempt (drop --class, or name a new run)", USAGE)
+    return first
 
 
 # ================================================================================================ the remote calls
@@ -618,7 +638,11 @@ def render_card(rec: dict) -> str:
         if f.extra_res:
             o.append(f"  NO GRANT   SBATCH_EXTRA word(s) {' '.join(f.extra_res)} — outside what a standing grant covers "
                      "(time, resources, nodes, anything unknown): only the user's approval of this card")
-    if policy_flags(rec):
+    bound_flags = _words(b.get("flags", "")) if kind == "slurm" and "flags" in b else None
+    if bound_flags:
+        o.append(f"  policy     {bound_flags}  (bound: handed to the target's policy — no standing grant covers a plan "
+                 "with policy flags, only the user's approval of this card)")
+    elif bound_flags is None and policy_flags(rec):
         o.append(f"  policy     {' '.join(policy_flags(rec))}  (passed to the target's policy; not bound)")
     if rec.get("same_name_ok"):
         o.append("  same name  --same-name-ok: a live run of this name may share its logs/ckpts")
@@ -711,12 +735,13 @@ def plan_actions(runs: dict, rec: dict) -> tuple[str, ...]:
 
 
 def check_plan(rec: dict, runs: dict | None = None) -> dict:
-    """The plan as grants.check() reads it: the block, the class (sticky: the run's first), every class the run was
-    recorded with (a deny of any of them matches), the plan id (approvals name plan ids)."""
+    """The plan as grants.check() reads it: the block, the class (sticky: the run's first), the class each attempt of
+    the run was recorded with (a deny of any of them matches; one recorded without: any class), the plan id
+    (approvals name plan ids)."""
     plan = dict(rec["block"])
     if rec.get("class"):
         plan["class"] = rec["class"]
-    plan["classes_recorded"] = recorded_classes((runs or {}).get(rec["run"]))
+    plan["classes_recorded"] = grants.run_classes((runs or {}).get(rec["run"]))   # each attempt's, '' = none
     plan["plan_id"] = rec["id"]
     return plan
 
@@ -949,56 +974,71 @@ def settle(led: L.Ledger, place: harness.Place, rec: dict, run: str, aid: str, n
         out(unknown.replace("no receipt in the reply", f"exit {reply.rc}, verdict {v or 'absent'}, no receipt"))
         return UNKNOWN
     # nohup: run-launch's reply. The receipt in the journal decides whenever it can be read (launch.sh writes it, then
-    # the gate, then prints its launch line last); a payload (RUN is echoed) may print look-alike lines
+    # the gate, then prints its launch line last); a payload (RUN is echoed) may print look-alike lines. R4-8: nothing
+    # but the journal proves a launch never started — launch.sh's verdict refused/failed with no receipt, or no attempt
+    # dir at all (launch.sh claims it before anything else) — or run-launch ending before its launch ssh
     m = started(t, place.target)
-    if reply.rc == 255 and not launch_ssh_reached(reply, place.target):
+    reached = launch_ssh_reached(reply, place.target)
+
+    def unsent(where: str) -> int:
+        """The exit code of a launch proven never started (WHERE: what proves it), named by run-launch's exit."""
+        if reply.rc == 6:
+            c = changed("launch")
+            if c is not None:
+                return c
+            return refused(CONFLICT, f"refused on the box (a live run of that name, or a GPU in use since the plan; "
+                                     f"its lines are above) — {where}")
+        if reply.rc == 2 and any(s in t for s in OLD_DEPLOY):
+            sync_note()
+            return refused(CONFLICT, f"the deploy no longer speaks {API}: rsk sync -T {place.target}, then plan again",
+                           retry=False)
+        if reply.rc == 1 and FEW_FREE.search(t):
+            return refused(PLACEMENT, f"too few free GPUs now (placement; its lines are above) — {where}")
+        return refused(USAGE if reply.rc == 2 else FAILED, f"exit {reply.rc} on the box (its lines are above) — {where}")
+
+    if reply.rc == 255 and not reached:
         return refused(UNKNOWN, f"run-launch's read-only GPU-table ssh failed (exit 255) before its launch ssh: nothing "
                                 f"was sent to {place.target}")
     if reply.rc is None or reply.rc == 255:
         out(unknown.replace("no receipt in the reply", reply.why or f"exit {reply.rc}"))
         return UNKNOWN
-    if reply.rc == 0 or m:
-        o = observe.observe([place], 1, deadline, nonces={place.target: [nonce]})[0]
-        a = (o.attempts.get(nonce) or {}) if o.ok and o.attempts_ok else None
-        rc = (a or {}).get("receipt") or {}
-        verdict = ((a or {}).get("result") or {}).get("verdict", "")
-        if rc.get("pid") and (a or {}).get("gate") == "go":
-            proc = {"pid": rc["pid"], "pgid": rc.get("pgid", rc["pid"]), "start": rc.get("start", ""),
-                    "boot_id": rc.get("boot_id", ""), "log": rc.get("log", rel_log(m.group(3)) if m else ""),
-                    "gpu_ids": rc.get("gpu_ids", m.group(2) if m else "")}
-            ev = "remote receipt (pid + start + boot_id)"
-        elif a is not None and reply.rc != 0 and verdict in ("refused", "failed"):
-            proc, m = {}, None             # read: no receipt, the attempt ended unlaunched — the line was the payload's
-        elif a is None and reply.rc == 0 and m:   # the journal could not be read: launch.sh's own last line
-            proc = {"pid": m.group(1), "pgid": m.group(1), "start": "", "boot_id": "", "log": rel_log(m.group(3)),
-                    "gpu_ids": m.group(2)}
-            ev = "launch.sh: started PID " + m.group(1)
-        else:
-            why = (f"exit {reply.rc}" + (" with a launch line" if m else " without the launch line")
-                   + f", and the journal shows {'no receipt' if a is not None else 'nothing'} ({o.why or 'verdict ' + (verdict or 'absent')})")
-            out(unknown.replace("no receipt in the reply", why))
-            return UNKNOWN
-        if proc:
-            led.set_submission(run, aid, nonce, submit="submitted", proc=proc, evidence=ev)
-            led.audit("submit_result", run=run, attempt=aid, nonce=nonce, to="submitted", pid=proc["pid"],
-                      log=proc["log"])
-            out(f"launched: {run} {aid} pid {proc['pid']} on GPU(s) {proc['gpu_ids']} of {place.target}, log "
-                f"{proc['log']} (nonce {nonce}, under {rid})" + ("" if proc["start"] else
-                                                                 " — receipt not read yet (rsk status)"))
-            return OK
-    if reply.rc == 6:
-        c = changed("launch")
-        if c is not None:
-            return c
-        return refused(CONFLICT, "refused on the box (a live run of that name, or a GPU in use since the plan; its "
-                                 "lines are above)")
-    if reply.rc == 2 and any(s in t for s in OLD_DEPLOY):
-        sync_note()
-        return refused(CONFLICT, f"the deploy no longer speaks {API}: rsk sync -T {place.target}, then plan again",
-                       retry=False)
-    if reply.rc == 1 and FEW_FREE.search(t):
-        return refused(PLACEMENT, "too few free GPUs now (placement; its lines are above)")
-    return refused(USAGE if reply.rc == 2 else FAILED, f"exit {reply.rc} on the box (its lines are above)")
+    if reply.rc != 0 and not reached and not m:
+        return unsent(f"run-launch ended (exit {reply.rc}) before its launch ssh: launch.sh never ran")
+    if reply.rc == 75:              # launch.sh's claim of the nonce failed: this call started nothing (the dir is not its)
+        return refused(CONFLICT, f"the attempt name {nonce} was taken on the box (exit 75): this call claimed nothing "
+                                 "and launched nothing")
+    o = observe.observe([place], 1, deadline, nonces={place.target: [nonce]})[0]
+    a = (o.attempts.get(nonce) or {}) if o.ok and o.attempts_ok else None
+    rc = (a or {}).get("receipt") or {}
+    verdict = ((a or {}).get("result") or {}).get("verdict", "")
+    proc: dict = {}
+    if rc.get("pid") and (a or {}).get("gate") == "go":
+        proc = {"pid": rc["pid"], "pgid": rc.get("pgid", rc["pid"]), "start": rc.get("start", ""),
+                "boot_id": rc.get("boot_id", ""), "log": rc.get("log", rel_log(m.group(3)) if m else ""),
+                "gpu_ids": rc.get("gpu_ids", m.group(2) if m else "")}
+        ev = "remote receipt (pid + start + boot_id)" + ("" if reply.rc == 0 else f"; launch.sh exit {reply.rc} after it")
+    elif a is None and reply.rc == 0 and m:   # the journal could not be read: launch.sh's own last line
+        proc = {"pid": m.group(1), "pgid": m.group(1), "start": "", "boot_id": "", "log": rel_log(m.group(3)),
+                "gpu_ids": m.group(2)}
+        ev = "launch.sh: started PID " + m.group(1)
+    elif a is not None and 0 < reply.rc < 128 and a.get("missing"):   # launch.sh's own exit (ssh's is 255; a killed
+        # ssh is 128+N and a killed run-launch < 0: launch.sh may still be on its way to the claim, so no proof then)
+        return unsent(f"no .rs/attempts/{nonce} on the box after launch.sh exited {reply.rc}: it never claimed it, so "
+                      "it started nothing")
+    elif a is not None and reply.rc != 0 and verdict in ("refused", "failed") and not rc:
+        return unsent(f"the journal: verdict {verdict}, no receipt")   # a launch line in the reply was the payload's
+    if not proc:
+        shows = "nothing" if a is None else "a receipt whose gate is not go" if rc else "no receipt"
+        why = (f"exit {reply.rc}" + (" with a launch line" if m else " without the launch line")
+               + f", and the journal shows {shows} ({o.why or 'verdict ' + (verdict or 'absent')})")
+        out(unknown.replace("no receipt in the reply", why))
+        return UNKNOWN
+    led.set_submission(run, aid, nonce, submit="submitted", proc=proc, evidence=ev)
+    led.audit("submit_result", run=run, attempt=aid, nonce=nonce, to="submitted", pid=proc["pid"], log=proc["log"])
+    out(f"launched: {run} {aid} pid {proc['pid']} on GPU(s) {proc['gpu_ids']} of {place.target}, log "
+        f"{proc['log']} (nonce {nonce}, under {rid})" + ("" if proc["start"] else
+                                                         " — receipt not read yet (rsk status)"))
+    return OK
 
 
 def submit_plan(led: L.Ledger, src: Path, proj: Path, place: harness.Place, rec: dict, rid: str, quote: str,

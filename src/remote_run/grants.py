@@ -49,16 +49,24 @@ The kinds:
             policy's, which comes after the harness's and wins, included), nor
             is a Slurm plan whose conf_extra (the conf's SBATCH_EXTRA words) holds a word outside EXTRA_ALLOW — any
             time / resource / node option in any spelling or abbreviation, an unknown option, a bare word (the card
-            names it); the policy's own SB_ARGS words never count either way. relaunch / resubmit are covered only
-            with the ORIGINAL attempt's configuration (same bound fields; the name may differ in --aNN) AND when the
-            previous attempt ended with positive evidence of an infrastructure end (INFRA_END: Slurm PREEMPTED /
-            NODE_FAIL / BOOT_FAIL, nohup REBOOT) — never CANCELLED, COMPLETED, FAILED, TIMEOUT, OUT_OF_MEMORY or an
-            unknown end. scope.names globs match the plan's name as it is (a glob for the run id alone does not
-            match its --aNN attempts: fails closed; write 'run*' to cover them).
+            names it); the policy's own SB_ARGS words never count either way, but a Slurm plan with policy flags
+            (the bound flags=: --<word> handed to the target's policy, which may add any sbatch option for them) or
+            from a deploy that does not bind them is never covered. relaunch / resubmit are covered only when the
+            run's LATEST attempt that may have run — the one whose end it relies on — ended with positive evidence of
+            an infrastructure end (INFRA_END: Slurm PREEMPTED / NODE_FAIL / BOOT_FAIL, nohup REBOOT; never
+            CANCELLED, COMPLETED, FAILED, TIMEOUT, OUT_OF_MEMORY or an unknown end) AND the plan repeats THAT
+            attempt's configuration (same bound fields; the name may differ in --aNN; never an older attempt's the
+            plan is named after). scope.names globs match the plan's name as it is (a glob for the run id alone does
+            not match its --aNN attempts: fails closed; write 'run*' to cover them). A run's class is its first
+            attempt's: a run whose first attempt had none has no class (a classes scope never covers it).
   deny      the user forbade it: a matching deny always wins (exit 3, quote shown), whatever else exists; a plan fact
-            that cannot be read counts as matching. A deny of `launch` also stops relaunch / resubmit / chain; its
-            names globs match the name or its run id (the name minus --aNN); its classes match the class the name
-            carries, the --class label or any class the run was recorded with.
+            that cannot be read or is not known counts as matching (fail closed: a cancel of a job without a plan, a
+            run-watch row — a deny of plans (bound hashes), names, classes, partitions or GPU types then matches).
+            A deny of `launch` also stops relaunch / resubmit / chain; its names globs match the name or its run id
+            (the name minus --aNN); its classes match the class the name carries, the --class label or any class the
+            run was recorded with (an attempt recorded without one: any class).
+  A grants.json that cannot be read at all (corrupt, no good .prev) holds denies that cannot be ruled out: check()
+  raises RskError(CONFLICT) (unreadable()) and deny_match() matches everything — never "no deny".
   The class of a plan is the one its name carries (<exp>--<class>--…); --class only labels a name without one. The
   action of a launch is derived (launch.py): a run that already has attempts → relaunch, a chain=1 plan → chain;
   every action that applies is checked — a deny of any of them matches, a record must allow all of them.
@@ -76,11 +84,15 @@ API:
                                     -> (record|None, reasons)   pure
   check(ledger_or_state, action, *, plan=None, job='', run='', extending=None, also=(), ident='') -> Decision(covered,
                                     record, reasons, needs)  (plan may carry "class" — a label —, "classes_recorded"
-                                    and "plan_id"; extending = the (run, attempt) a chain segment extends: not counted
-                                    against max_live; also = the other actions that apply; ident = the cancel identity)
-                                    the one entry point; Decision.code = 0 | 3 (deny) | 4 (needs the user)
+                                    (run_classes(): each attempt's, oldest first, '' = none) and "plan_id"; extending =
+                                    the (run, attempt) a chain segment extends: not counted against max_live; also = the
+                                    other actions that apply; ident = the cancel identity; a cancel_own grant covers
+                                    only a LIVE ledger submission of the job) the one entry point; Decision.code = 0 |
+                                    3 (deny) | 4 (needs the user); RskError(CONFLICT) when grants.json is unreadable
   deny_match(plan, actions, state, *, job=None) -> (deny|None, reason, cancel_own deny|None)   pure (job None = any)
   conf_extra_bad(words) -> [word]   the conf SBATCH_EXTRA words outside EXTRA_ALLOW (they make a plan uncoverable)
+  unreadable(state) -> str          '' unless grants.json could not be read (the refusal text: exit 6)
+  attempt_class(att) / run_classes(run_record)   the class an attempt was recorded with / each attempt's, oldest first
   describe(record) -> str           what it covers, one line;  balance(record, state) -> str;  after_deny(...)
 Hold `with led.locked():` from check() to use() so two launches cannot both pass one budget.
 """
@@ -102,7 +114,7 @@ from pathlib import Path
 from typing import Any
 
 from remote_run import ledger as L
-from remote_run.errors import NEEDS_USER, OK, REFUSED, USAGE, RskError
+from remote_run.errors import CONFLICT, NEEDS_USER, OK, REFUSED, USAGE, RskError
 
 KINDS = ("approval", "grant", "deny")
 VIA = ("cli", "import", "plan-approve")
@@ -121,14 +133,15 @@ NO_LIMIT = "no limit (user's words)"
 FLAG_WINDOW_S = 3600            # a grant created (or a deny revoked) within this long after a deny is flagged
 HEX64 = re.compile(r"[0-9a-f]{64}")
 SLURM_BOUND = ("partition", "gres", "cpus", "mem", "time", "account", "name", "extra", "payload", "env_kind",
-               "env_name", "wandb_mode", "env_hook", "venv_dir", "uv_sync_args", "conf_extra", "chain")
+               "env_name", "wandb_mode", "env_hook", "venv_dir", "uv_sync_args", "conf_extra", "flags", "chain")
 NOHUP_BOUND = ("name", "gpus_req", "exclude", "nice", "busy_ok", "payload", "env_kind", "env_hook", "venv_dir",
                "uv_sync_args", "env_name")
-# keys this rsk needs in a plan block (an api=3 deploy from before them lacks them: needs a sync) — bound ones, and the
-# envelope's warnings identity (warnings_id: what rsk sends back as --rs-warnings; warnings_avail: the harness's own
-# availability gate's share of the warnings)
-NEEDED = {"slurm": ("env_hook", "venv_dir", "uv_sync_args", "conf_extra", "warnings_avail", "warnings_id"),
-          "nohup": ("busy_ok", "env_hook", "venv_dir", "uv_sync_args", "warnings_avail", "warnings_id")}
+# keys this rsk needs in a plan block (an api=3 deploy from before them lacks them: needs a sync) — bound ones (slurm
+# flags: the policy flags submit.sh handed to the policy, T_FLAGS), and the envelope's warnings identity (warnings_id: what
+# rsk sends back as --rs-warnings; warnings_avail: the harness's own availability gate's share of the warnings; nohup
+# info_run_gpu: its launch.sh refuses a RUN that sets or clears a GPU variable — an older one would let RUN pick the GPUs)
+NEEDED = {"slurm": ("env_hook", "venv_dir", "uv_sync_args", "conf_extra", "flags", "warnings_avail", "warnings_id"),
+          "nohup": ("busy_ok", "env_hook", "venv_dir", "uv_sync_args", "info_run_gpu", "warnings_avail", "warnings_id")}
 # D1: the conf's SBATCH_EXTRA words a standing grant may cover — exactly these spellings (sbatch also takes unique
 # long-option prefixes: an abbreviation is "anything else", uncoverable). A value is `--opt=V`, `-oV` or the NEXT word
 # (always consumed, whatever it is: getopt_long gives a required argument the next word even when it starts with '-').
@@ -294,14 +307,18 @@ class Facts:
     cpus: int | None = None
     mem_gb: float | None = None        # math.inf = unbounded (--mem=0, or no limit at all)
     time_s: float | None = None        # math.inf = unlimited (a nohup run has no time limit)
-    cls: str | None = None             # the name's class, else the --class label
+    cls: str | None = None             # the run's class: the name's, else the --class label; None = unknown (also when
+                                       # the run's first attempt was recorded without one: a class is set only there)
     classes: tuple[str, ...] = field(default=())   # every class it may be (the name's, the label, recorded): denies
+    class_unknown: bool = False        # an attempt of the run was recorded without a class: a class deny matches
     bound_hash: str = ""
     plan_id: str = ""
     warnings: int | None = None        # the de-duplicated WARNING: lines (-y gates) the plan printed
     warnings_avail: int | None = None  # how many of them the harness's own availability gate printed
     extra_res: tuple[str, ...] = field(default=())  # conf_extra words outside EXTRA_ALLOW: no standing grant covers it
     conf_extra: bool = False           # the block names the conf's SBATCH_EXTRA words (an older deploy's does not)
+    flags: tuple[str, ...] = field(default=())   # slurm: the policy flags submit.sh handed to the policy (bound flags=)
+    flags_known: bool = False          # the block names them (an older deploy's does not: no standing grant covers it)
     time_extra: str = ""               # an SBATCH_EXTRA / policy --time / -t (shown on the card: sbatch takes the last)
     time_max_s: float | None = None    # the longest of time and every --time / -t in extra (max_time_s caps it)
     unreadable: tuple[str, ...] = field(default=())
@@ -363,6 +380,20 @@ def name_class(name: str) -> str | None:
     """The run class a name carries (<exp>--<class>--…, experiment-conventions.md §2), None without one."""
     f = str(name).split("--")
     return f[1] if len(f) > 1 and f[1] in CLASSES else None
+
+
+def attempt_class(att: dict) -> str:
+    """The class an attempt was recorded with: its --class label / the name's at the time, else its name's (an adopted
+    attempt records none); '' = none."""
+    return str((att.get("request") or {}).get("class") or "") or name_class(str(att.get("name") or "")) or ""
+
+
+def run_classes(run_rec: dict | None) -> list[str]:
+    """The class of each attempt of a run, oldest attempt first ('' = recorded without one): what a plan's
+    "classes_recorded" carries. The first one is the run's class (a class is set only at a run's first attempt)."""
+    atts = (run_rec or {}).get("attempts") or {}
+    order = sorted(atts, key=lambda k: (int(k[1:]) if k[1:].isdigit() else 0, k))
+    return [attempt_class(atts[k]) for k in order]
 
 
 def conf_extra_bad(words: list[str]) -> list[str]:
@@ -468,9 +499,13 @@ def facts(plan: dict) -> Facts:
     label = str(plan.get("class") or "") or None
     cls = name_class(name) or label
     w, wa = str(plan.get("warnings", "")), str(plan.get("warnings_avail", ""))
-    recorded = [str(c) for c in plan.get("classes_recorded") or [] if c]
+    raw = [str(c or "") for c in plan.get("classes_recorded") or []]     # the run's attempts, oldest first ('' = none)
+    recorded = [c for c in raw if c]
+    if raw and not raw[0]:          # its first attempt carried no class: the run has none (a later label never sets it)
+        cls = None
     common = dict(target=str(plan.get("target", "")), kind=kind, name=name, run=L.run_id(name) if name else "",
                   cls=cls, classes=tuple(dict.fromkeys(c for c in (name_class(name), label, *recorded) if c)),
+                  class_unknown="" in raw,
                   bound_hash=str(plan.get("bound_hash", "")), plan_id=str(plan.get("plan_id", "")),
                   warnings=int(w) if w.isdigit() else None, warnings_avail=int(wa) if wa.isdigit() else None)
     if kind == "nohup":
@@ -506,6 +541,12 @@ def facts(plan: dict) -> Facts:
             res = conf_extra_bad(qwords(str(plan["conf_extra"])))
         except RskError:
             bad.append("conf_extra")
+    pflags: list[str] = []
+    if "flags" in plan:                        # the policy flags (T_FLAGS): bound, and never a standing grant's call
+        try:
+            pflags = [x for x in qwords(str(plan["flags"])) if x]
+        except RskError:
+            bad.append("flags")
     try:
         mem_gb = slurm_mem_gb(mem) if mem else None
     except ValueError:
@@ -521,8 +562,8 @@ def facts(plan: dict) -> Facts:
     except ValueError:
         time_max, _ = None, bad.append("extra")
     return Facts(**common, partition=part, gpu_type=gt, gpus=gn, cpus=cpus_n, mem_gb=mem_gb, time_s=time_s,
-                 extra_res=tuple(res), conf_extra="conf_extra" in plan, time_extra=t_extra, time_max_s=time_max,
-                 unreadable=tuple(bad))
+                 extra_res=tuple(res), conf_extra="conf_extra" in plan, flags=tuple(pflags), flags_known="flags" in plan,
+                 time_extra=t_extra, time_max_s=time_max, unreadable=tuple(bad))
 
 
 def bound(plan: dict) -> dict[str, str]:
@@ -869,9 +910,22 @@ def refund(led: L.Ledger, rid: str, nonce: str, why: str) -> bool:
 
 def recount(led: L.Ledger) -> str:
     """Rebuild every record's `used` from audit.jsonl (uses minus refunds, in order) and clear "budgets unknown"
-    — on grants.json and on every recovered run record. A use the audit holds is never dropped."""
+    — on grants.json and on every recovered run record. A use the audit holds is never dropped, nor a deny or the
+    revocation of a grant / approval (a grants.json recovered from .prev lost the last write: the audit line of a
+    deny made in it puts the deny back — one that cannot be rebuilt cleanly stays a fail-closed deny —, that of a
+    revoke the revocation; a lost grant or approval stays lost: the user's words again)."""
     with led.locked():
         doc, got = load(led)
+        made, gone = led.audit_grants()
+        have = {r.get("id") for r in doc["records"] if isinstance(r, dict) and isinstance(r.get("id"), str)}
+        back = [rid for rid, r in made.items() if r["kind"] == "deny" and rid not in have]
+        doc["records"] += [{**made[rid], "revoked": gone.get(rid)} for rid in back]
+        revoked = []
+        for r in doc["records"]:      # a revoked grant / approval never comes back (a deny's revoke is the user's again)
+            if (isinstance(r, dict) and r.get("kind") in ("grant", "approval") and isinstance(r.get("id"), str)
+                    and r["id"] in gone and not r.get("revoked")):
+                r["revoked"] = gone[r["id"]]
+                revoked.append(r["id"])
         recs, bad = led.read_audit()
         uses: dict[str, dict[str, dict]] = {}
         for a in recs:
@@ -898,9 +952,12 @@ def recount(led: L.Ledger) -> str:
             if g.data and (g.data.get("recovered") or g.recovered):
                 led.update_run(run, lambda rec: rec.update(recovered=None))
                 cleared.append(run)
-        led.audit("recount", added=added, bad_lines=bad, runs_cleared=cleared)
+        led.audit("recount", added=added, bad_lines=bad, runs_cleared=cleared, records_restored=back,
+                  revocations_restored=revoked)
         led.write_grants(doc)
         return (f"{added} use(s) restored from the audit; {note}"
+                + (f"; record(s) {', '.join(back)} restored from the audit (lost with grants.json)" if back else "")
+                + (f"; revocation(s) of {', '.join(revoked)} restored from the audit" if revoked else "")
                 + (f"; run record(s) {', '.join(cleared)} trusted again — any job they lost shows as UNLEDGERED in "
                    "rsk status" if cleared else ""))
 
@@ -1013,8 +1070,8 @@ def _scope_misses(scope: dict, f: Facts, deny: bool) -> list[str]:
         elif t.lower() not in want_t:
             miss.append(f"GPU type {t} not in {', '.join(scope['gpu_types'])}")
     want_c = scope.get("classes") or []
-    if want_c and deny:            # the name's class, the label or a recorded one: any of them denied is enough
-        if f.classes and not set(f.classes) & set(want_c):
+    if want_c and deny:            # the name's class, the label or a recorded one: any of them denied is enough; an
+        if f.classes and not f.class_unknown and not set(f.classes) & set(want_c):   # attempt without one: may be any
             miss.append(f"class {'/'.join(f.classes)} not in {', '.join(want_c)}")
     elif want_c:
         lst("classes", f.cls, "class")
@@ -1023,11 +1080,11 @@ def _scope_misses(scope: dict, f: Facts, deny: bool) -> list[str]:
     if names and not hit:
         if not (deny and not f.name):
             miss.append(f"name {f.name or '?'} matches none of {', '.join(names)}")
-    runs = scope.get("runs") or []
-    if runs and f.bound_hash not in runs:
-        miss.append("not one of the approved plans (bound hash differs)")
+    runs = scope.get("runs") or []         # a deny: a plan whose bound hash / plan id is not known here (a cancel of a
+    if runs and f.bound_hash not in runs and not (deny and not f.bound_hash):   # job without a plan, a run-watch row)
+        miss.append("not one of the approved plans (bound hash differs)")      # may be it: it matches (fail closed)
     plans = scope.get("plans") or []
-    if plans and f.plan_id not in plans:
+    if plans and f.plan_id not in plans and not (deny and not f.plan_id):
         miss.append(f"not one of the approved plans ({f.plan_id or 'no plan id'} not in {', '.join(plans[:4])})")
     if not deny:
         for key, have, label, show in (("max_gpus", f.gpus, "GPUs", str), ("max_cpus", f.cpus, "CPUs", str),
@@ -1115,13 +1172,31 @@ def fail_closed(r: Any) -> str:
     return bad
 
 
+def unreadable(state: L.LedgerState) -> str:
+    """'' unless the ledger's grants.json could not be read at all (corrupt, and no good .prev): then no deny can be
+    ruled out — rsk launch, rsk cancel and rsk watch --act refuse (exit 6) with this text instead of acting as if there
+    were no deny."""
+    why = getattr(state, "grants_unreadable", "")
+    if not why:
+        return ""
+    return (f"grants unreadable — rsk grant recount / restore: {why[:300]} — no deny it holds can be ruled out, so "
+            "nothing is done: restore grants.json (or move it and its .prev aside and run rsk grant recount: every deny "
+            "audit.jsonl shows comes back, a revoked grant stays revoked; re-import the user's grants with rsk grant "
+            "import)")
+
+
 def deny_match(plan: dict, actions: tuple[str, ...] | list[str], state: L.LedgerState, *,
                job: str | None = "") -> tuple[dict | None, str, dict | None]:
     """Pure. The deny that stops any of ACTIONS on PLAN: (record, reason, None). A cancel that only a cancel_own deny
     matches: (None, '', that deny) — the agent's own discretion is off, the user's named cancels stand. Else
     (None, '', None). JOB: a cancel's job id; None = not known (a deny naming job ids then matches: fail closed).
-    A record fail_closed() names matches everything (a stand-in deny record is returned for it)."""
+    A record fail_closed() names matches everything (a stand-in deny record is returned for it), and so does an
+    unreadable grants.json (unreadable())."""
     t = time.time() if state.now is None else state.now
+    bad_file = unreadable(state)
+    if bad_file:
+        return ({"id": "grants.json", "kind": "deny", "quote": "(unreadable)", "damaged": True},
+                f"denied: {bad_file}", None)
     f = facts(plan or {})
     for r in state.grants:
         bad = fail_closed(r)
@@ -1157,11 +1232,12 @@ def covers(plan: dict, action: str, state: L.LedgerState, *, orig: dict | None =
            own: bool = False, extending: tuple[str, str] | None = None, also: tuple[str, ...] = (),
            prev: tuple[str, dict] | None = None, ident: str = "") -> tuple[dict | None, list[str]]:
     """Pure. (deny record, [why]) when a deny matches — it wins; (record, []) for the first approval, then standing
-    grant, that covers ACTION (and every action in ALSO) of PLAN; (None, reasons) otherwise. ORIG = the original
-    attempt's request (relaunch / resubmit must repeat it), PREV = (aid, attempt) the run's previous attempt (a grant
-    resumes only after an infrastructure end); JOB / OWN / IDENT for cancel (OWN: the run is one rsk launched for this
-    project; IDENT: cancel_ident() of the job); EXTENDING = the (run, attempt) a chain segment is added to (not
-    counted against max_live). A record validate() rejects covers nothing; fail_closed() ones deny everything."""
+    grant, that covers ACTION (and every action in ALSO) of PLAN; (None, reasons) otherwise. PREV = (aid, attempt) the
+    run's latest attempt that may have run (a grant resumes only after its infrastructure end), ORIG = its request
+    (relaunch / resubmit under a grant must repeat it); JOB / OWN / IDENT for cancel (OWN: a live submission rsk
+    launched for this project; IDENT: cancel_ident() of the job); EXTENDING = the (run, attempt) a chain segment is
+    added to (not counted against max_live). A record validate() rejects covers nothing; fail_closed() ones deny
+    everything."""
     needed = tuple(dict.fromkeys((action, *also)))
     for a in needed:
         if a not in ACTIONS:
@@ -1246,7 +1322,8 @@ def _misses(r: dict, plan: dict, f: Facts, action: str, needed: tuple[str, ...],
         if "cancel_own" not in acts:
             return ["no cancel_own in its actions"]
         if not own:
-            return ["the run is not one rsk launched for this project (cancel_own covers only the agent's own runs)"]
+            return ["the job is not a live run rsk launched for this project — not one rsk launched, or one the ledger "
+                    "shows ended (cancel_own covers only the agent's own live runs)"]
         mx = lim.get("max_launches")
         if mx is not None and cancels_used(r) >= mx:
             return [f"used {cancels_used(r)} of {mx} (its max_launches counts cancel_own uses too)"]
@@ -1272,13 +1349,21 @@ def _misses(r: dict, plan: dict, f: Facts, action: str, needed: tuple[str, ...],
         if f.extra_res:
             miss.append(f"SBATCH_EXTRA word(s) no standing grant covers ({', '.join(f.extra_res)}): the user decides "
                         "(an approval of this card covers them)")
+        if f.kind == "slurm" and not f.flags_known:
+            miss.append("the plan does not name its policy flags (no flags=: a deploy older than this rsk) — the user "
+                        "decides")
+        if f.flags:
+            miss.append(f"policy flag(s) {' '.join(f.flags)}: what the target's policy makes of them is outside any "
+                        "scope — no standing grant covers a plan with policy flags (an approval of this card does)")
         if {"relaunch", "resubmit"} & set(needed):
             if not orig or not (orig.get("bound") or orig.get("bound_hash")):
-                miss.append("the original attempt has no recorded plan (adopted?): the user decides")
+                miss.append(f"its previous attempt{' ' + prev[0] if prev else ''} has no recorded plan (adopted?): the "
+                            "user decides")
             else:
                 diff = same_config(orig, plan)
                 if diff:
-                    miss.append("not the original configuration: " + "; ".join(diff[:4]))
+                    miss.append(f"not the configuration of {prev[0] if prev else 'the attempt'} it resumes: "
+                                + "; ".join(diff[:4]))
             miss += _infra_miss(prev)
         mx = lim.get("max_launches")
         if mx is not None and launches_used(r) >= mx:
@@ -1322,19 +1407,13 @@ def prior_attempts(runs: dict, run: str, plan_id: str = "") -> list[tuple[str, d
                   key=lambda kv: _anum(kv[0]))
 
 
-def _original(state: L.LedgerState, run: str, plan: dict) -> dict | None:
-    prior = prior_attempts(state.runs, run, str(plan.get("plan_id", "")))
-    if not prior:
+def _original(prev: tuple[str, dict] | None) -> dict | None:
+    """The configuration a relaunch / resubmit must repeat: that of PREV, the run's latest attempt that may have run —
+    the one whose end a relaunch grant relies on (never an older attempt the plan happens to be named after)."""
+    if not prev:
         return None
-    name = ""
-    try:
-        name = unq(str(plan.get("name", "")))
-    except RskError:
-        pass
-    same = [a for _k, a in prior if a.get("name") == name]
-    pick = same[-1] if same else prior[-1][1]
-    req = dict(pick.get("request") or {})
-    return {**req, "target": pick.get("target", ""), "kind": pick.get("kind", "")}
+    att = prev[1]
+    return {**dict(att.get("request") or {}), "target": att.get("target", ""), "kind": att.get("kind", "")}
 
 
 def check(ledger: L.Ledger | L.LedgerState, action: str, *, plan: dict | None = None, job: str = "", run: str = "",
@@ -1351,24 +1430,33 @@ def check(ledger: L.Ledger | L.LedgerState, action: str, *, plan: dict | None = 
     needed = tuple(dict.fromkeys((action, *also)))
     if any(a in LAUNCHES for a in needed) and not plan:
         raise RskError(f"check({action}) needs the plan", USAGE)
+    why = unreadable(state)
+    if why:
+        raise RskError(why, CONFLICT)
     orig, prev, own, facts_plan = None, None, False, dict(plan or {})
     if {"relaunch", "resubmit"} & set(needed):
         if not run:
             raise RskError(f"check({action}) needs the run id", USAGE)
-        orig = _original(state, run, facts_plan)
         prior = prior_attempts(state.runs, run, str(facts_plan.get("plan_id", "")))
         prev = prior[-1] if prior else None
+        orig = _original(prev)
     if action == "cancel":
         if not job:
             raise RskError("check(cancel) needs the job id (or the nohup pid)", USAGE)
-        for a in ((state.runs.get(run) or {}).get("attempts") or {}).values():
-            for s in a.get("submissions") or []:
-                if job in (s.get("job"), str((s.get("proc") or {}).get("pid", ""))):
-                    req = a.get("request") or {}
-                    own = req.get("action") in LAUNCHES and s.get("submit") != "adopted" and bool(req.get("plan"))
-                    facts_plan = {"target": a.get("target", ""), "kind": a.get("kind", ""), "warnings": "0",
-                                  **req.get("bound", {}), **{"name": a.get("name", "")},
-                                  **({"class": req["class"]} if req.get("class") else {})}
+        run_rec = state.runs.get(run) or {}
+        hits = [(a, s) for a in (run_rec.get("attempts") or {}).values() for s in a.get("submissions") or []
+                if job in (s.get("job"), str((s.get("proc") or {}).get("pid", "")))]
+        live = [(a, s) for a, s in hits if not a.get("result") and not s.get("end")
+                and s.get("submit") != "not_submitted" and (s.get("seen") or {}).get("state", "") not in L.TERMINAL]
+        if hits:   # the submission the cancel is about: a live one (cancel_own covers only that), else the last that ended
+            a, s = (live or hits)[-1]
+            req = a.get("request") or {}
+            own = bool(live) and req.get("action") in LAUNCHES and s.get("submit") != "adopted" and bool(req.get("plan"))
+            facts_plan = {"target": a.get("target", ""), "kind": a.get("kind", ""), "warnings": "0",
+                          **req.get("bound", {}), "name": a.get("name", ""),
+                          "bound_hash": str(req.get("bound_hash") or ""), "plan_id": str(req.get("plan") or ""),
+                          "classes_recorded": run_classes(run_rec),
+                          **({"class": req["class"]} if req.get("class") else {})}
     rec, reasons = covers(facts_plan, action, state, orig=orig, job=job, own=own, extending=extending, also=also,
                           prev=prev, ident=ident)
     if rec and rec.get("kind") == "deny":

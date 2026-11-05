@@ -19,8 +19,12 @@
 # rs-api=3
 # The run is setsid'd under a wrapper (pid = pgid = <log>.pid) that starts the payload only after the receipt is on disk
 # (.rs/attempts/<NONCE>/gate -> go; anything else = never started), forwards TERM/INT once and ends the log with
-# `[<date>] EXIT rc=N term=0|1 …` + <log>.rc (`rc= term= at=`). RUN is one shell string, parsed once (as before).
-# Exit: 0 launched (planned), 1 failed (env gate, nvidia-smi, start) or too few free GPUs, 2 usage/data, 6 NAME still
+# `[<date>] EXIT rc=N term=0|1 …` + <log>.rc (`rc= term= at=`). RUN is one shell string, parsed once (as before), and
+# never picks the GPUs: leading words (before its command, also after a leading `env`) that set or clear CUDA_VISIBLE_DEVICES,
+# CUDA_DEVICE_ORDER, NVIDIA_/HIP_/ROCR_VISIBLE_DEVICES, or an env option that may (-i, -S, …) = exit 2 before the claim when
+# RUN's text shows it; else (an expansion) the wrapper checks the expanded words and never starts it (rc 2, ERROR in the log).
+# Exit: 0 launched (planned), 1 failed (env gate, nvidia-smi, start) or too few free GPUs, 2 usage/data (RUN setting a GPU
+# variable: before the claim, no .rs/attempts/<NONCE>/), 6 NAME still
 # running, a busy -d GPU, or not the --rs-expect plan; 75 NONCE claimed.
 set -u
 unset RS_ATTEMPT RS_CONF_FILE RS_RUN RS_ACKS    # a launch from inside a run never inherits that run's attempt
@@ -49,6 +53,77 @@ while [ "$#" -gt 0 ]; do
 done
 RUN_CMD="$*"; PLAN=0; [ "$MODE" != plan ] || PLAN=1
 [ -z "$RS_WARN" ] || [ -n "$EXPECT" ] || uerr=${uerr:-"--rs-warnings goes with --rs-expect (the approved card's warnings_id)"}
+
+# ---- RUN never picks the GPUs: the landing (-d / -n, checked for other users' processes, bound in the plan) is this
+#      script's. The run starts as `env <RUN>`, so a GPU variable set (or cleared) by RUN's leading words would replace it.
+rs_gpuenv() {   # rs_gpuenv WORD…: the words `env` gets. 0 = they leave the GPU variables alone; else 1 and why (stdout).
+  # GNU env: options first (getopt '+': they end at the first non-option; `--` ends them; a `-` then = -i), then every word
+  # holding '=' is NAME=VALUE (NAME = up to the first '='), then the command — `env` again (or …/env) is read the same way.
+  # Only options that leave the environment's GPU variables alone pass (-v --debug -C DIR -u NAME); any other may set or
+  # clear them (-i, -S, an abbreviation…). The payload is code: what it does once it runs is beyond this check.
+  local w n o=1
+  while [ "$#" -gt 0 ]; do
+    w=$1; shift; n=""
+    if [ "$o" = 1 ]; then
+      case "$w" in
+        --) o=2; continue ;;
+        -v|--debug) continue ;;
+        -C|--chdir) [ "$#" = 0 ] || shift; continue ;;
+        -C?*|--chdir=*) continue ;;
+        -u|--unset) [ "$#" -gt 0 ] || return 0; n=$1; shift ;;
+        -u?*) n=${w#-u} ;;
+        --unset=*) n=${w#--unset=} ;;
+        -) echo "starts env with '-' (= -i: the harness's CUDA_VISIBLE_DEVICES and CUDA_DEVICE_ORDER would go)"; return 1 ;;
+        -?*) echo "gives env the option '$w' (it may set or clear the GPU variables; only -v, -C DIR and -u NAME pass)"; return 1 ;;
+        *) o=0 ;;
+      esac
+      if [ -n "$n" ]; then case "$n" in
+        CUDA_VISIBLE_DEVICES|CUDA_DEVICE_ORDER|NVIDIA_VISIBLE_DEVICES|HIP_VISIBLE_DEVICES|ROCR_VISIBLE_DEVICES) echo "clears $n (env -u)"; return 1 ;;
+      esac; continue; fi
+    fi
+    if [ "$o" = 2 ]; then o=0; [ "$w" != - ] || { echo "gives env '-- -' (= -i: the harness's CUDA_VISIBLE_DEVICES and CUDA_DEVICE_ORDER would go)"; return 1; }; fi
+    case "$w" in
+      *=*) n=${w%%=*}; case "$n" in
+             CUDA_VISIBLE_DEVICES|CUDA_DEVICE_ORDER|NVIDIA_VISIBLE_DEVICES|HIP_VISIBLE_DEVICES|ROCR_VISIBLE_DEVICES) echo "sets $n before its command ('$w')"; return 1 ;;
+           esac ;;
+      env|*/env) o=1 ;;
+      *) return 0 ;;   # the command: what it does is the payload's
+    esac
+  done
+  return 0
+}
+rs_runwords() {   # rs_runwords RUN -> RS_W: RUN's first words as env gets them (quotes removed) while each is literal; RS_P: the
+  # literal start of the word where that ends — an expansion ($ `), a glob, a brace, a leading ~, an unquoted separator,
+  # redirection or comment. Reads only what is certain without expanding anything; the wrapper checks the expanded words.
+  local LC_ALL=C; local s=$1 i=0 n c q="" w="" in=0 st=""   # bytes (O(1) ${s:i:1}); multibyte text is copied byte by byte
+  n=${#s}; RS_W=(); RS_P=""
+  while [ "$i" -lt "$n" ]; do
+    c=${s:i:1}; i=$((i + 1))
+    case "$q" in
+      "'") if [ "$c" = "'" ]; then q=""; else w=$w$c; fi; continue ;;
+      '"') case "$c" in
+             '"') q="" ;;
+             '\') c=${s:i:1}; case "$c" in '$'|'`'|'"'|'\') w=$w$c; i=$((i + 1)) ;; $'\n') i=$((i + 1)) ;; *) w=$w'\' ;; esac ;;
+             '$'|'`') st=x; break ;;
+             *) w=$w$c ;;
+           esac; continue ;;
+    esac
+    case "$c" in
+      ' '|$'\t') [ "$in" = 0 ] || { RS_W+=("$w"); w=""; in=0; } ;;
+      "'"|'"') q=$c; in=1 ;;
+      '\') [ "$i" -lt "$n" ] || { st=x; break; }; c=${s:i:1}; i=$((i + 1)); [ "$c" = $'\n' ] || { w=$w$c; in=1; } ;;
+      '~'|'#') [ "$in" = 1 ] || { st=x; break; }; w=$w$c ;;
+      '$'|'`'|'*'|'?'|'['|'{'|$'\n'|';'|'&'|'|'|'<'|'>'|'('|')') st=x; break ;;
+      *) w=$w$c; in=1 ;;
+    esac
+  done
+  if [ -n "$st" ]; then RS_P=$w; elif [ -z "$q" ] && [ "$in" = 1 ]; then RS_W+=("$w"); fi
+}
+if [ -z "$uerr" ]; then   # before the claim: nothing is created for a RUN refused here
+  rs_runwords "$RUN_CMD"; set -- ${RS_W[@]+"${RS_W[@]}"}
+  case "$RS_P" in -*) ;; *=*) set -- ${1+"$@"} "$RS_P" ;; esac   # a word that starts NAME=…: an assignment of NAME, whatever follows
+  why=$(rs_gpuenv ${1+"$@"}) || { echo "ERROR: RUN $why — the GPUs are launch.sh's choice (-d IDS / -n N: checked for other users' processes, bound in the plan), not RUN's; nothing launched" >&2; exit 2; }
+fi
 
 # ---- the claim: mkdir of the attempt dir (never -p for the leaf); a caller's NONCE that exists = it ran already ----
 AN=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789   # spelled out: [A-Z] ranges follow the locale (as submit.sh)
@@ -228,8 +303,9 @@ rs_plan() {   # rs_plan check|print: `check` (--rs-expect) returns when the hash
   if [ "$1" = check ]; then   # both modes, before the payload is echoed) match; else the block, changed:, ERROR, exit 6
     [ "$h" != "$EXPECT" ] || [ "$W_ID" != "$RS_WARN" ] || { echo "plan: bound_hash=$h = --rs-expect (the approved plan); its $W_N warning(s) = the approved card's (warnings_id)"; return 0; }
     stage expect; ch=$(rs_changed "$b" "$h"); fi
-  printf '@@plan v1\napi=3\n%s\ninfo_gpus=%s\ninfo_uuids=%s\ninfo_busy=%s\nwarnings=%s\nwarnings_avail=0\nwarnings_id=%s\nbound_hash=%s\n@@end\n' \
-    "$b" "$DEV" "$UUIDS" "$BUSY" "$W_N" "$W_ID" "$h"   # warnings_avail=0: a nohup box has no availability -y gate (too few free = exit 1)
+  printf '@@plan v1\napi=3\n%s\ninfo_gpus=%s\ninfo_uuids=%s\ninfo_busy=%s\ninfo_run_gpu=checked\nwarnings=%s\nwarnings_avail=0\nwarnings_id=%s\nbound_hash=%s\n@@end\n' \
+    "$b" "$DEV" "$UUIDS" "$BUSY" "$W_N" "$W_ID" "$h"   # warnings_avail=0: a nohup box has no availability -y gate (too few free = exit 1);
+  # info_run_gpu=checked: this launch.sh refuses a RUN whose leading words set or clear a GPU variable (an older api=3 one lacks the line)
   [ "$1" = print ] || { VERDICT=refused; [ -z "$ch" ] || echo "$ch" >&2
     if [ "$h" != "$EXPECT" ]; then echo "ERROR: the resolved submission differs from the approved plan (bound_hash $h, --rs-expect $EXPECT) — nothing launched; plan it again" >&2
     else echo "ERROR: the resolved submission differs from the approved plan: its $W_N warning(s) are not the approved card's (warnings_id) — nothing launched; plan it again" >&2; fi
@@ -290,7 +366,11 @@ rm -f "$_rw_a/vars"   # read (or never to be): no value of the conf or the hook 
 [ "$_rw_g" = go ] || _rw_fin 125 " (not started: the launch was never confirmed)"
 [ "$_rw_term" = 0 ] || _rw_fin 143 " (TERM before the run started)"
 echo "[$(date)] target=$_rw_t job=$$ restart=0 attempt=$_rw_n gpus=$_rw_dev"
-eval "exec nohup ${_rw_nice:+nice -n $_rw_nice }env $_rw_run" &
+_rw_go() {   # the payload, started as `env <RUN>`: here with RUN expanded once (by the eval below), so "$@" = exactly the words env
+  # gets — refused (rc 2, nothing started) when they set or clear a GPU variable: the GPUs are picked by launch.sh, never RUN
+  _rw_y=$(rs_gpuenv "$@") || { echo "[$(date)] ERROR: RUN $_rw_y — not started (the GPUs are picked by launch.sh: -d / -n)" >> "$_rw_log"; exit 2; }
+  exec nohup ${_rw_nice:+nice -n "$_rw_nice"} env "$@"; }
+eval "_rw_go $_rw_run" &
 _rw_c=$!; [ "$_rw_term" = 0 ] || kill -TERM "$_rw_c" 2>/dev/null
 while :; do   # >128 = the status of the payload OR a trap interrupting wait: while it exists, wait again
   wait "$_rw_c"; _rw_rc=$?; [ "$_rw_rc" -gt 128 ] || break
@@ -298,7 +378,7 @@ while :; do   # >128 = the status of the payload OR a trap interrupting wait: wh
 done
 _rw_fin "$_rw_rc" ""'
 { printf '_rw_a=%q _rw_log=%q _rw_nice=%q _rw_t=%q _rw_n=%q _rw_dev=%q _rw_wait=120\n' "$A" "$PROJ/$LOG" "$NICE" "$TN" "$NONCE" "$DEV"
-  printf '%s\n' "$RW"; } > "$A/run" || { echo "ERROR: cannot write $A/run" >&2; exit 1; }
+  declare -f rs_gpuenv && printf '%s\n' "$RW"; } > "$A/run" || { echo "ERROR: cannot write $A/run" >&2; exit 1; }
 (
   exec 3>&- 4>&- 9>&-; trap - TERM INT   # nothing below (env.sh, a hook's helper, the run) holds the ssh channel or the lock
   # env.sh sources the conf and the hook into THIS shell: from here on only _rl_ copies are read (a conf may set LOG=, A=, …)

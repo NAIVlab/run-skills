@@ -129,10 +129,10 @@ and the next check time for re-invocation. Do not promise unattended monitoring 
   Done = the expected artifact exists, not a state word. "Is the result good" is judged once, after the run
   ends, raw numbers shown before interpretation.
 - **Detect, don't act:** a check never `scancel`s, `kill`s or resubmits; the exceptions are what the user authorised
-  and a tool checks first: `run-watch --act` on rows the user approved, within their `#@ allow` line, `fail-stop`
-  cancels included (procedure §5); `rsk cancel` / `rsk launch --relaunch` under a grant that covers them (SKILL.md §3).
-  Clearly-bad → report the evidence (URL, last metrics, log lines, reason) plus a recommendation, then wait for the OK:
-  your own judgment that a run should stop is the user's call unless they authorised that kind of decision
-  (`cancel_own`). The same failure twice after a fix → stop retrying and escalate.
+  and a tool checks first: `run-watch --act` (via `rsk watch`) on rows the user approved, within their `#@ allow`
+  line, `fail-stop` cancels included (procedure §5); `rsk cancel` / `rsk launch --relaunch` under a grant that covers
+  them (SKILL.md §3). Clearly-bad → report the evidence (URL, last metrics, log lines, reason) plus a recommendation,
+  then wait for the OK: your own judgment that a run should stop is the user's call unless they authorised that kind of
+  decision (`cancel_own`). The same failure twice after a fix → stop retrying and escalate.
 - A new session first lists what is running (`rsk status`; `squeue -u $USER`, `ls -t logs/`, `logs/run-watch/`); keep the run's
   receipt (job ids, log path, ckpt dir, URL, ETA; a watched table's state file) where the next session finds it.

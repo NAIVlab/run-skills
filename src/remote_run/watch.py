@@ -13,16 +13,24 @@ on SIGTERM / SIGINT / SIGHUP, which are passed on to run-watch first. `until` = 
 7200 s; the last --for / --every given wins, as in run-watch) + one round (--every, default 300 s) + 15 min of slack
 for a last submit, and while run-watch runs rsk moves it forward every minute to now + one round + the slack (a long
 last round never outlives its lease); `rsk status` shows the lease and a live run-watch lock holder.
-Denies bind run-watch too: with --act (and --approve), every row of every table (target, -p, -G, -g, -t, name / run
-id, class) is checked against the ledger's denies for what its `#@ allow` line lets run-watch do (launch → launch,
-preempt/errors/timeout → resubmit + relaunch, fail-stop → cancel) — a match → exit 3 with the deny's quote, nothing
-started (--approve: no `#@ ok` written); and again on every lease refresh — a new matching deny → run-watch gets TERM,
-exit 3. A damaged record that may be a deny matches every row (fail closed).
+Denies bind run-watch too: with --act (and --approve), every row of every table (target, -p, -g, -t, name / run id,
+class) is checked against the ledger's denies for EVERY action run-watch could take on it — launch, relaunch,
+resubmit, chain, cancel — whatever its `#@ allow` line says (--release launches or resubmits a row outside it, a conf
+SBATCH_EXTRA singleton makes a launch a chain): a match → exit 3 with the deny's quote, nothing started (--approve: no
+`#@ ok` written); and again on every lease refresh — a new matching deny → run-watch gets TERM, exit 3. What a row
+cannot show counts as matching (fail closed): its GPU type (the partition's policy may force one: a GPU-type deny
+matches every row of its target), its partition (the target's t_policy may rewrite -p: a partition deny matches every
+Slurm row of its target), its plan (no bound hash: a deny of plans matches every row in its scope). A damaged record that may be a deny matches every row; an unreadable grants.json → exit 6
+("grants unreadable"), before anything starts and on a refresh (run-watch gets TERM).
+run-watch runs with RS_VIA_RSK=1 and RS_WATCH_PARENT=<this rsk's pid>, as its direct child: in every mode it stops
+(exit 7, LEASE_ENDED: nothing more submitted or cancelled, its lock released) once that pid is gone or is no longer its
+parent — a run-watch whose rsk watch was killed outright stops at its next check (start, each round, after each read,
+before each submit or cancel ssh), never holding the lock for the rest of --for.
 Exit: run-watch's, with its 3 (lease over, or --once with rows still moving) as rsk's 7 (LEASE_ENDED); 0 every row
 done, 2 table/conf error, 3 a deny matches a row, 4 the rest waits on the user; 6 another watcher holds the lease or
 the run-watch lock (rsk's check above, or run-watch's own: a live holder here, or any holder on another host — its
-pid, host, start and act printed, nothing run). Numeric flags are read as run-watch reads them: base 10, leading zeros
-dropped, at most 9 significant digits.
+pid, host, start and act printed, nothing run), or grants.json cannot be read. Numeric flags are read as run-watch
+reads them: base 10, leading zeros dropped, at most 9 significant digits.
 """
 
 from __future__ import annotations
@@ -89,8 +97,9 @@ def tables(argv: list[str]) -> list[str]:
 def table_rows(path: Path, kinds: dict[str, str]) -> tuple[set[str], list[dict]]:
     """(the actions the table's `#@ allow` line lets run-watch take, one plan-like dict per row) — read only to check
     denies (run-watch parses and validates the table itself). Row: `name target done submit-words` (-p -g -G -t …
-    before `--`), `#@ allow launch preempt=N errors=N timeout=N fail-stop`. An unreadable file → no rows (run-watch
-    refuses it)."""
+    before `--`), `#@ allow launch preempt=N errors=N timeout=N fail-stop`. A row's GPU type and partition are left
+    unknown (the -G / -p words are kept as asked_gtype / asked_partition, for the message): the target's policy may
+    force a GPU type or rewrite the partition. An unreadable file → no rows (run-watch refuses it)."""
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -124,27 +133,58 @@ def table_rows(path: Path, kinds: dict[str, str]) -> tuple[set[str], list[dict]]
                 continue
             i += 1
         plan = {"target": tgt, "kind": kinds.get(tgt, ""), "name": name, "warnings": "0"}
-        if "-p" in opt:
-            plan["partition"] = opt["-p"]
-        if "-G" in opt or "-g" in opt:
-            plan["gres"] = f"gpu:{opt['-G']}:{opt.get('-g', '1')}" if "-G" in opt else f"gpu:{opt['-g']}"
+        if "-p" in opt:                  # asked, never certain: t_policy may rewrite PART (policy.sh API) — any
+            plan["asked_partition"] = opt["-p"]   # partition, so a partition deny matches it (fail closed)
+        if "-G" in opt or "-g" in opt:   # the count only: the GPU type is never certain here (the partition's policy may
+            plan["gres"] = f"gpu:{opt.get('-g', '1')}"   # force one: P_GTYPE) — any type, so a GPU-type deny matches it
+            plan["asked_gtype"] = opt.get("-G", "")
         if "-t" in opt:
             plan["time"] = opt["-t"]
         rows.append(plan)
     return acts, rows
 
 
+ROW_ACTIONS = ("launch", "relaunch", "resubmit", "chain", "cancel")   # what run-watch may do to any row (R4-4; chain:
+                                                                      # Slurm rows, or a target of unknown kind)
+
+
 def deny_hit(led: L.Ledger, proj: Path, argv: list[str], kinds: dict[str, str]) -> str:
-    """'' unless a deny in the ledger matches a row of the tables in ARGV for an action their `#@ allow` lines permit;
-    else the line saying which (row, deny id, quote)."""
+    """'' unless a deny in the ledger matches a row of the tables in ARGV for ANY action run-watch could take on it
+    (ROW_ACTIONS, whatever the `#@ allow` line says: --release, an SBATCH_EXTRA singleton); else the line saying which
+    (row, action, deny id, quote, and why an unknown fact of the row matched). A grants.json that cannot be read →
+    RskError(CONFLICT): no deny can be ruled out."""
     st = led.state()
+    bad = grants.unreadable(st)
+    if bad:
+        raise RskError(bad, CONFLICT)
     for t in tables(argv):
-        acts, rows = table_rows(proj / t, kinds)
+        _acts, rows = table_rows(proj / t, kinds)
         for row in rows:
-            for a in sorted(acts):
+            row = {**row, "classes_recorded": grants.run_classes(st.runs.get(L.run_id(row["name"])))}
+            for a in ROW_ACTIONS:
+                if a == "chain" and row["kind"] == "nohup":   # a workstation launch is never a singleton chain
+                    continue
                 d, why, _own = grants.deny_match(row, (a,), st, job=None)
                 if d:
-                    return f"{t}: row {row['name']} on {row['target']} ({a}): {why}"
+                    sc = d.get("scope") or {}
+                    notes = []
+                    if sc.get("gpu_types") and row["kind"] == "nohup":
+                        notes.append("a workstation row names no GPU type: a GPU-type deny matches every row of its "
+                                     "target")
+                    elif sc.get("gpu_types"):
+                        notes.append("the row's GPU type is not certain here (" + (f"it asks -G {row['asked_gtype']}, "
+                                     if row.get("asked_gtype") else "") + "but the partition's policy may force one): "
+                                     "a GPU-type deny matches every row of its target")
+                    if sc.get("partitions") and row["kind"] != "nohup":
+                        notes.append("the row's partition is not certain here (" + (
+                                     f"it asks -p {row['asked_partition']}, " if row.get("asked_partition") else "")
+                                     + "but the target's policy may rewrite it): a partition deny matches every row "
+                                     "of its target")
+                    if sc.get("runs") or sc.get("plans"):
+                        notes.append("a row has no plan (bound hash) to compare: a deny of plans matches every row in "
+                                     "its scope")
+                    return (f"{t}: row {row['name']} on {row['target']} ({a}): {why}"
+                            + (" — " + "; ".join(notes) if notes else ""))
     return ""
 
 
@@ -207,7 +247,7 @@ def run_watch(led: L.Ledger, argv: list[str], cwd: str, env: dict[str, str], cmd
     child: subprocess.Popen | None = None
     got: list[int] = []
     old = {}
-    denied = ""
+    denied, denied_code = "", REFUSED
 
     def forward(signum, _frame) -> None:
         got.append(signum)
@@ -236,7 +276,9 @@ def run_watch(led: L.Ledger, argv: list[str], cwd: str, env: dict[str, str], cmd
                 if guard is not None:
                     try:
                         denied = guard()
-                    except (RskError, OSError) as exc:     # the ledger cannot be read: never act unchecked
+                    except RskError as exc:                # grants.json unreadable (exit 6) …
+                        denied, denied_code = f"the ledger's denies cannot be read ({exc})", exc.code
+                    except OSError as exc:                 # … or the ledger itself: never act unchecked
                         denied = f"the ledger's denies cannot be read ({exc})"
                     if denied:
                         print(f"denied: {denied} — run-watch gets TERM", flush=True)
@@ -261,7 +303,8 @@ def run_watch(led: L.Ledger, argv: list[str], cwd: str, env: dict[str, str], cmd
         for s, h in old.items():
             signal.signal(s, h)
     if denied:
-        raise RskError(f"a deny now matches a row: run-watch was stopped (TERM) — {denied}", REFUSED)
+        raise RskError(f"a deny now matches a row: run-watch was stopped (TERM) — {denied}" if denied_code == REFUSED
+                       else f"run-watch was stopped (TERM) — {denied}", denied_code)
     if rc < 0:                     # killed by a signal: the shell's 128+N
         return 128 - rc
     return RC_MAP.get(rc, rc)
@@ -276,6 +319,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
     src = paths.harness_src()
     env = harness.env(src)
     env["RS_VIA_RSK"] = "1"
+    env["RS_WATCH_PARENT"] = str(os.getpid())    # run-watch stops (exit 7) once this rsk is gone (R4-7): Popen it directly
     for k in ("CLUSTER", "STATION", "TARGET"):
         env.pop(k, None)
     led = L.Ledger(proj)

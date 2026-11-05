@@ -244,16 +244,16 @@ for r in 'rsk sends it only when the approved card showed warnings or the coveri
 hasnt "$RT" 'rsk adds it only to a card you approved' "README: the pre-D3 -y wording is gone"
 for r in 'rsk sends `-y` only when the approved card showed warnings or the covering grant.s kind covers the plan.s warnings' \
          '`availability` covers a plan whose only warnings are the harness.s own availability gate' \
-         'a `relaunch` grant only after the previous attempt ended with positive evidence of an infrastructure end' \
+         'A `relaunch` grant covers a relaunch only after the run.s latest attempt that ran ended with positive evidence of an infrastructure end' \
          'it expires after an hour and is used up by the first cancel that passed authorisation' \
          'binds run-watch to the user.s denies' 'No remote parsing goes through a here-string or a heredoc' \
          'the line `# rs-api=3` inside the deployed `submit.sh` / `launch.sh`' 'Fail-stop goes with the rows, and cancels only under `--act`'; do
   has "$DT" "$r" "DESIGN: $r"; done
 for r in '`rsk watch` only adds the lease' 'on a workstation not the env gate'; do hasnt "$DT" "$r" "DESIGN: the outdated '$r' is gone"; done
 AT=$(tr '\n' ' ' < "$RS_HOME/AGENTS.md" | tr -s ' ')
-for r in 'last_attempt fulltmp fulltmp_ok' 'Remote parsing uses no here-string or heredoc' '`t_policy` may run twice and must have no side effects' \
+for r in 'last_attempt fulltmp fulltmp_ok' 'Remote parsing uses no here-string or heredoc' 'so both may run twice and must have no side effects' \
          'api=3\*\* = the line `# rs-api=3` inside the deployed `submit.sh` / `launch.sh`' '`allow_warnings` = `availability`' \
-         'a relaunch whose previous attempt did not end in `INFRA_END`'; do has "$AT" "$r" "AGENTS: $r"; done
+         'a relaunch whose latest attempt that ran did not end in `INFRA_END`'; do has "$AT" "$r" "AGENTS: $r"; done
 has "$(cat "$RS_HOME/tests/lib.sh")" '^fulltmp(){' "...tests/lib.sh defines fulltmp"; has "$(cat "$RS_HOME/tests/lib.sh")" '^fulltmp_ok(){' "...and fulltmp_ok"
 has "$S" 'run-sync' "$F names run-sync"; has "$S" 'run-bootstrap' "$F names run-bootstrap"; has "$S" 'run-launch' "$F names run-launch"
 has "$S" 'submit\.sh' "$F names submit.sh"
@@ -269,7 +269,7 @@ for f in $F $PSL $PNO; do
   hasnt "$(cat "$RS_HOME/$f")" 'Monitor(\|/loop\|CronCreate\|ScheduleWakeup\|run_in_background' "$f names no runtime-specific waiting tool"; done
 for f in $PSL $PNO; do
   has "$(tr '\n' ' ' < "$RS_HOME/$f")" 'Never  *detach it (no `nohup`, `setsid`, cron)' "$f: run-watch stays owned by the session"; done
-has "$(tr '\n' ' ' < "$RS_HOME/$PSL")" 'only after their explicit OK run `run-watch <table> --approve' "procedure-slurm: --approve only after the user's OK"
+has "$(tr '\n' ' ' < "$RS_HOME/$PSL")" 'only after their explicit OK run `rsk watch <table> --approve' "procedure-slurm: --approve only after the user's OK (through rsk watch: R4-7)"
 RW=$(cat "$RS_HOME/bin/run-watch")
 for r in 'only by an `--act` run and only while the table.s approved `#@ allow` still has `fail-stop` @@ fail-stop-not-cancelled' \
          'reports `fail-stop-not-cancelled why=no-act` @@ why=no-act' 'drops those pending cancels (`NOTE … fail-stop-pending-dropped`) @@ fail-stop-pending-dropped' \
@@ -287,6 +287,83 @@ if O1=$(git -C "$RS_HOME" show 8560838:bin/run-watch 2>/dev/null) && O2=$(git -C
   has "$O2" '!= 17 && NF != 15) { lost = 1' "2fd4991's run-watch: a state line of another width (this one's 18) is lost"
   has "$PSLT" "malformed '#@ ok' line (write it with --approve)" "procedure-slurm quotes it"
 else ok "older run-watch copies not in this clone's history: SKIP"; fi
+echo "-- round 4: what the docs now promise, each beside the code that does it (docs @@ code) --"
+LP=$(cat "$RS_HOME/src/remote_run/launch.py"); GP=$(cat "$RS_HOME/src/remote_run/grants.py"); CP=$(cat "$RS_HOME/src/remote_run/cancel.py")
+WP=$(cat "$RS_HOME/src/remote_run/watch.py"); TPL=$(tr '\n' ' ' < "$RS_HOME/targets/_template-slurm/policy.sh" | tr -s ' ')
+PKT=$(tr '\n' ' ' < "$RS_HOME/docs/packs.md" | tr -s ' '); RT=$(tr '\n' ' ' < "$RS_HOME/README.md" | tr -s ' ')
+DT=$(tr '\n' ' ' < "$RS_HOME/docs/DESIGN.md" | tr -s ' '); AT=$(tr '\n' ' ' < "$RS_HOME/AGENTS.md" | tr -s ' ')
+CKT=$(tr '\n' ' ' < "$RS_HOME/$CKF" | tr -s ' ')
+# R4-7: acting goes through rsk watch (the steer), and a run-watch whose rsk watch is gone stops (exit 7)
+has "$ST" 'rsk watch <table> --approve "<the user.s words>"' "$F: the table's OK is recorded with rsk watch <table> --approve"
+has "$ST" '--act / --approve go through rsk watch only' "$F: --act / --approve only through rsk watch"
+hasnt "$ST$PSLT$PNOT" 'run `run-watch <table> --approve' "no doc tells the agent to run run-watch --approve directly"
+for r in 'a direct `run-watch … --act` or `--approve` while rsk is installed prints `use: rsk watch …` and exits 2 @@ use: rsk watch ' \
+         'is `ATTENTION reason=parent-gone parent=P at=…` @@ reason=parent-gone parent=' \
+         'a fail-stop cancel not yet sent stays pending for the next `--act` run @@ orphan_stop cancel' \
+         'records `#failstop-released <trigger>:<job>` in their state @@ #failstop-released ' \
+         'nothing is submitted that round (`why=fail-stop-unreadable`) @@ fail-stop-unreadable' \
+         'target-changed from=?`) @@ from=?: a state line' '(`submit-skipped … prev-identity`) @@ @@fail prev-identity' \
+         'held `job-identity-mismatch … workdir=…` @@ job-identity-mismatch "name=.* workdir='; do
+  has "$PSLT" "${r%% @@ *}" "procedure-slurm (R4-7/13/14): ${r%% @@ *}"; has "$RW" "${r#* @@ }" "...bin/run-watch: ${r#* @@ }"; done
+has "$WP" 'env\["RS_WATCH_PARENT"\] = str(os.getpid())' "...and rsk watch sets RS_WATCH_PARENT to its own pid"; has "$PNOT" 'exit 7 = the `rsk watch` that started it is gone' "procedure-nohup: exit 7"
+# R4-4 + R4-1: every action, every row; a deny matches what it cannot rule out
+has "$PSLT" 'denies for EVERY action run-watch could take on it (launch, relaunch, resubmit, chain on Slurm rows, cancel)' "procedure-slurm: rsk watch checks every action of every row"
+has "$WP" 'ROW_ACTIONS = ("launch", "relaunch", "resubmit", "chain", "cancel")' "...watch.py checks those"
+has "$PSLT" 'a GPU-type deny matches every row of its target and a partition deny every Slurm row of its target' "procedure-slurm: GPU-type / partition denies match every row of their target"
+has "$ST" 'matches what it cannot rule out (a job without a plan, a watch row, a run of unknown class)' "$F: a deny fails closed on unknown facts"
+has "$GP" 'that cannot be read or is not known counts as matching' "...grants.py says so"
+# R4-6: policy flags are bound and never grant-covered
+has "$ST" 'nor is a card with policy flags' "$F: no grant covers a card with policy flags"
+has "$PSLT" 'no standing grant covers a plan with policy flags' "procedure-slurm: policy flags are bound, never grant-covered"
+has "$DT" 'no standing grant covers a plan with policy flags' "DESIGN: the same"; has "$PKT" 'no standing grant covers a plan that has one' "packs.md: the same"
+has "$TPL" 'no standing grant covers a plan with one' "policy template: the same"; has "$AT" 'then `flags` = `T_FLAGS`' "AGENTS: flags= in the bound list"
+has "$SUB" 'conf_extra=%s\\nflags=%s\\nchain=%s' "...submit.sh binds flags= right before chain="; has "$LP" 'no standing grant covers a plan ' "...launch.py's card says so"
+has "$GP" 'no standing grant covers a plan with policy flags' "...grants.py refuses to cover one"; has "$GP" '"conf_extra", "flags", "warnings_avail"' "...and needs flags= (needs: sync)"
+# R4-11/12: t_partition probed too; every gate passes; a silent gate's output in warnings_id
+has "$PSLT" '`t_partition` the same way with the partition that is submitted' "procedure-slurm: t_partition is probed too"
+has "$PSLT" 'every gate of a function shows, not only its first' "procedure-slurm: every gate of a function shows"
+has "$PSLT" 'what the probe printed then joins the card.s `warnings_id`' "procedure-slurm: a silent gate's output joins warnings_id"
+has "$TPL" 'probes t_partition the same way' "policy template: t_partition is probed"; has "$TPL" 'So BOTH may run twice and must have no side effects' "policy template: both run twice"
+has "$TPL" 'code after a gate must not assume the gate stopped the run' "policy template: a gate is passed in the probe"
+has "$PKT" 'probes `t_partition` the same way' "packs.md: t_partition is probed"; has "$AT" 'a function.s first gate hides none after it' "AGENTS: every gate passes"
+has "$DT" '`t_partition` can hold such a gate too, so it is probed the same way' "DESIGN: t_partition probed"
+has "$SUB" 'rs_probe "t_partition' "...submit.sh probes t_partition"; has "$SUB" '\[ "$1" = 1 \] || builtin exit "$@"' "...and passes each gate's exit 1"
+has "$SUB" 'W_SIL="$W_SIL@@probe' "...and binds a silent gate's output (W_SIL) into warnings_id"
+# the bash facts the probe rests on (AGENTS, DESIGN, the template cite them; tests/vgate bash_exit_fn= reproduces the first on a login node)
+X=$(bash -c 'exit() { [ "${1-}" = 1 ] && return 0; builtin exit "$@"; }; f() { exit 1; echo continued; }; f; exit 3' 2>&1; echo "rc=$?")
+[ "$(printf '%s' "$X" | tr '\n' ' ')" = "continued rc=3" ] && ok "bash fact: a function named exit outranks the builtin (continued rc=3)" || bad "bash fact: a function named exit ($X)"
+X=$(bash -c 'set -o posix; ( exit() { return 0; }; echo defined ); echo "rc=$?"' 2>/dev/null)
+[ "$X" = "rc=2" ] && ok "bash fact: under set -o posix bash refuses a function named exit (the subshell exits 2)" || bad "bash fact: posix refuses a function named exit ($X)"
+cp -R "$RS_USER_DIR" "$T/user-px" && printf 'set -o posix\n' > "$T/user-px/targets/fx-slurm/policy.local.sh"
+PX=$(RS_USER_DIR=$T/user-px mk_proj fx-slurm 'REMOTE_DIR=/x'); O=$(PATH="$T/bin:$PATH" bash "$PX/.fx-slurm/submit.sh" --rs-mode plan -n px -- echo hi 2>&1); RC=$?
+[ "$RC" = 2 ] && has "$O" '^ERROR: t_policy returned 2' "...so a policy that turns on set -o posix makes the plan fail closed (exit 2), as the docs say" || bad "posix policy: plan exit 2 (rc=$RC)"
+hasnt "$O" '^@@plan' "...no card"
+# R4-5: RUN never picks the GPUs (workstations); the honest limit: the payload is code
+for v in CUDA_VISIBLE_DEVICES CUDA_DEVICE_ORDER NVIDIA_VISIBLE_DEVICES HIP_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES; do
+  has "$PNOT" "\`$v\`" "procedure-nohup: RUN may not set or clear $v"; has "$CKT" "\`$v\`" "conf-keys RUN row: $v"; has "$LSH" "$v" "...launch.sh checks $v"; done
+has "$PNOT" 'RUN never picks the GPUs' "procedure-nohup: RUN never picks the GPUs"; has "$CKT" 'It never picks the GPUs (`-d` / `-n` do)' "conf-keys: the RUN row says so"
+has "$PNOT" 'an `env` option other than `-v`/`--debug`, `-C DIR` or `-u OTHER` is refused too' "procedure-nohup: env options that may touch them are refused"
+has "$PNOT" 'exit 2 before the claim (`ERROR: RUN … — the GPUs are launch.sh.s choice`), nothing launched, no card' "procedure-nohup: a literal one: exit 2 before the claim"
+has "$LSH" "the GPUs are launch.sh's choice" "...launch.sh's refusal"; has "$LSH" 'not started (the GPUs are picked by launch.sh' "...and the wrapper's, after expansion"
+has "$PNOT" 'the wrapper never starts the payload (`ERROR: RUN … — not started` in the log, `<log>.rc` rc=2)' "procedure-nohup: an expanded one never starts"
+has "$PNOT" 'the payload is code — what it does once it starts' "procedure-nohup: the honest limit"
+has "$PNOT" '`info_run_gpu=checked`' "procedure-nohup: the envelope line"; has "$LSH" 'info_run_gpu=checked' "...launch.sh prints it"; has "$GP" '"info_run_gpu", "warnings_avail"' "...rsk needs it (needs: sync)"
+has "$ST" 'On a box the run command never picks GPUs' "$F rail: on a box the run command never picks GPUs"
+has "$RT" 'What the payload does once it starts is its own code — no harness can check that' "README: the honest limit"
+has "$DT" 'what it does once it starts — set its own environment' "DESIGN: the honest limit"; has "$AT" 'What the payload.s own code does is beyond any check' "AGENTS: the honest limit"
+# R4-15: an unreadable grants.json refuses
+has "$ST" 'Exit 6 `grants unreadable`: no deny can be ruled out' "$F: an unreadable grants.json refuses"
+has "$PSLT" '`grants unreadable — rsk grant recount / restore`' "procedure-slurm: the refusal's words"; has "$GP" 'grants unreadable — rsk grant recount / restore' "...grants.py says them"
+has "$DT" 'may hold a deny, so `rsk launch`, `rsk cancel` and `rsk watch --act/--approve` refuse (exit 6' "DESIGN: the same"
+has "$GP" 'raise RskError(why, CONFLICT)' "...check() refuses with exit 6"; has "$WP" 'raise RskError(bad, CONFLICT)' "...and rsk watch's row check"
+# R4-2 / R4-3 / R4-8 / R4-9 / R4-10
+has "$PSLT" 'else `not the configuration of aNN it resumes`' "procedure-slurm: a relaunch grant repeats the latest attempt that ran"; has "$GP" 'not the configuration of ' "...grants.py's refusal"
+has "$PSLT" 'or any one when the first attempt had none: exit 2, before any ssh' "procedure-slurm: a class only at the first attempt"; has "$LP" 'a run.s class is set only at its first attempt' "...launch.py refuses it"
+has "$PNOT" 'a launch.sh killed after its gate said go is launched' "procedure-nohup: the journal decides a killed launch"; has "$LP" 'launch.sh killed after its' "...launch.py reads it"
+has "$CKT" 'The lint parses the words as the scan does' "conf-keys: the lint reads SBATCH_EXTRA as the scan"; has "$SUB" 'w=${_cx\[$i\]}' "...submit.sh's lint walks the scan's words"
+has "$PNOT" '`nothing to cancel … had ended already`' "procedure-nohup: an ended run's pid is checked against its own receipt"; has "$CP" 'had ended already' "...cancel.py says it"
+has "$PNOT" '(several: exit 6 `ambiguous`)' "procedure-nohup: several receipts for one pid"; has "$CP" 'ambiguous receipts=' "...cancel.py's body"
+has "$PSLT" 'or no answer at all (a timeout, ssh.s own 255, a signal' "procedure-slurm: no answer at all may have been sent"; has "$CP" 'no answer at all: the job may have been cancelled' "...cancel.py"
 ET=$(tr '\n' ' ' < "$RS_HOME/$SK/references/experiment-conventions.md" | tr -s ' ')
 has "$ET" 'the exceptions are what the user authorised and a tool checks first: `run-watch --act`' "conventions: detect-only names its exceptions"
 has "$ET" 'your own judgment that a run should stop is the user.s call unless they authorised that kind of decision (`cancel_own`)' "conventions: the agent's own stop needs the user"
@@ -355,14 +432,17 @@ for f in "$RS_HOME"/bin/* "$RS_HOME"/lib/*.sh "$RS_HOME"/remote/* "$RS_HOME"/tar
 done
 budget() { [ -f "$RS_HOME/$1" ] || { bad "$1 exists"; return; }; local n; n=$(wc -l < "$RS_HOME/$1")
   [ "$n" -le "$2" ] && ok "$1 within $2 lines ($n)" || bad "$1 within $2 lines ($n)"; }
-budget lib/common.sh 141; budget remote/env.sh 170; budget remote/bootstrap.sh 100; budget remote/submit.sh 387; budget remote/job.sbatch 70   # common +3: rs_ref, rs_deploy_profile; +8: rs_legacy_routing (a legacy rule keeps its kind)
+budget lib/common.sh 141; budget remote/env.sh 170; budget remote/bootstrap.sh 100; budget remote/submit.sh 407; budget remote/job.sbatch 70   # common +3: rs_ref, rs_deploy_profile; +8: rs_legacy_routing (a legacy rule keeps its kind)
 # P2 (the attempt journal): submit.sh +75 (claim/replay, the body in a subshell, child-shell conf, duplicate guard, lint, receipt); bootstrap.sh +10, job.sbatch +5 (snapshots)
 # P3 (api=3): submit.sh +40 (the --rs-mode/--rs-expect/--rs-chain pre-scan, rs_bound + rs_plan = the block and the expect check, the chain conflict)
 # P3 review: submit.sh +25 (--rs-warnings + the recount, SBATCH_EXTRA --time vs MaxTime, env_hook/venv_dir/uv_sync_args bound, squeue fail-closed under --rs-expect)
 # round 3: submit.sh +60 lines (327 → 387) — D2 time checks (no limit of none, a parser without here-strings, EVERY --time/-t sbatch could read, a dangling
 # one), the D3 policy probe, warnings_id + `changed:`, conf_extra (+46), the sbatch value-option list and the bare-word / dangling refusal (+14)
+# round 4: submit.sh +20 (387 → 407) — R4-11/R4-12 rs_probe (t_policy AND t_partition probed without -y; a silent gate's output, digits
+# masked, joins warnings_id) +13, R4-9 the lint reads the scan's words (an option's value is never linted as an option) +2, R4-6 flags= +0,
+# the probe passes each gate's exit 1 (a function named exit) so a function's first -y gate hides none after it +5
 budget remote/status.sh 175   # generous on purpose: every lookup has an explicit failure branch; compressing them hides bugs
-budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 254; budget AGENTS.md 276; budget INSTALL.md 237 # AGENTS +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
+budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 257; budget AGENTS.md 294; budget INSTALL.md 237 # AGENTS +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
 # P3-P7 docs: AGENTS +25 (the rsk modules, tests/62, the authorisation model, the P7 nudge, the new rails); README +10 (what is asked and
 # what is not, the honest limit, the rsk launch step, src/); INSTALL +5 (doctor --legacy-refs, earlier permissions, standing words)
 # P3 review: AGENTS +8 (--rs-warnings, the plan skips launch.sh's env gate, the new bound fields, plan-scoped approvals, the review's never-covered list)
@@ -371,11 +451,20 @@ budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget RE
 # allowlist, derived actions, infra-end relaunches, bound cancel approvals, fail-closed records, NOT_SUBMITTED, rsk watch and denies, run-watch's
 # target column, fulltmp, no here-strings in remote parsing); README +4 (relaunch only after an infrastructure end, denies bind rsk watch,
 # cancel approvals bound, the -y rule with grant kinds)
-budget skills/remote-run/SKILL.md 126; budget bin/run-watch 997   # round 3: SKILL +11 (the -y rule with grant kinds, --allow-warnings availability|any,
+# round 4: AGENTS +18 (the t_partition probe, every gate passed, the posix fact; flags= and info_run_gpu in the block; the lint on the
+# scan's words; the RUN GPU rule and its limit; denies on unknown facts; unreadable grants; the class set at the first attempt; the
+# latest attempt a relaunch resumes; the nohup journal; cancel_own live only; run-watch's steer and exit 7); README +3 (the
+# workstation RUN rule with its honest limit: the payload is code)
+budget skills/remote-run/SKILL.md 131; budget bin/run-watch 1057   # round 3: SKILL +11 (the -y rule with grant kinds, --allow-warnings availability|any,
 # derived actions and the sticky class, relaunch only after an infrastructure end, cancel approvals bound / 1 h / used up, rsk watch --act vs
 # denies (also in §3), `plan <id> is free again`); run-watch +116 lines (881 → 997), D11 — target column and same-target inheritance, sticky unknowns from any state file
 # (foreign/settled/R_FU, the journal hands back the row's own status), fail-stop inherited with rows plus --release of a non-row trigger, pending
 # cancels gated on --act and an approved fail-stop, settle-path JobName check, base-10 numbers, lock exit 6, unreadable '#@ ok' and header messages.
+# round 4: SKILL +5 (rsk watch <table> --approve and --act only through rsk, denies match what they cannot rule out, policy flags never
+# grant-covered, the latest attempt a relaunch resumes, exit 6 grants unreadable, the run command never picks GPUs).
+# round 4: run-watch +60 (997 → 1057) — R4-7 the rsk steer for --act/--approve and RS_WATCH_PARENT (exit 7 once rsk watch is gone, checked
+# before every ssh that acts) with its header lines +38, R4-13 fail-stop looked up every round in every state file + #failstop-released +12,
+# R4-14 a pre-target state line's target inferred or unknown, the settle-path WorkDir and the submit ssh's identity re-check +10.
 # P3 review +55: a row's state across renamed/copied tables, fail-stop of a row once its unknown submit is tracked, no --rs-* row words; SKILL: one entry for both kinds (the two it replaced: 62 + 61) + the rsk reads; +20 (P3-P7): the rsk command set, the launch flow (card, exit codes), §3 authorisation (the user's table); run-watch +130 (P3): attempt nonces + the journal read, --adopt and fail-stop identity checks, conf= binding, lock holder, sticky unknowns across tables
 budget skills/remote-run/references/experiment-conventions.md 140;   # +4: the run-watch exception (§3, §6, §7); +1: a USR1 death is FAILED; +3: the authorised exceptions (§5, §6, §7)
 budget skills/remote-run/references/project-setup.md 100

@@ -7,14 +7,21 @@
 #     MaxMemPerCPU)  P_NOTE='printed before submitting'
 #     It may append sbatch flags (SB_ARGS+=(--nodelist=n1)) and must `return 1` for an unknown partition.
 #  t_policy          (optional) runs right after arg parsing, before t_partition, limits, MaxTime and sinfo.
-#     Reads PART PART_FROM_CLI NGPU GTYPE GTYPE_FROM_CLI TIME FORCE ACK T_FLAGS SB_ARGS SB_EXTRA NAME PROJ CLUSTER TAG;
+#     Reads PART PART_FROM_CLI NGPU GTYPE GTYPE_FROM_CLI TIME FORCE ACK T_FLAGS SB_ARGS SB_EXTRA NAME PROJ CLUSTER TAG PLAN;
 #     may rewrite SB_ARGS/PART/GTYPE or exit — its exit code propagates verbatim (use 3 for a policy refusal).
 #     Must end with `return 0`: its status is the verdict, so a trailing failed `&&` test would abort the submit.
-#     ACK=1 when an unknown --*-user-asked flag was passed; other unknown --flags are collected in T_FLAGS.
-#     For a plan (PLAN=1, FORCE=1) and an approved submit (--rs-expect) submit.sh first probes `( FORCE=0; t_policy )` in a
-#     subshell — as a submit without -y sees it, so a -y gate (`[ "$FORCE" -ne 1 ] && { echo "WARNING: …" >&2; exit 1; }`)
-#     reaches the card — then runs it for real: t_policy may run twice and must have no side effects. A probe exit 1 with
-#     no WARNING: line of its own gets a fixed one; any other non-zero exit ends the plan or submit with that code.
+#     ACK=1 when an unknown --*-user-asked flag was passed; every unknown --flag (that one too) is collected in T_FLAGS, which
+#     rsk binds into its plan (flags=): no standing grant covers a plan with one, only the user's approval of the card.
+#  The probe: for a plan (PLAN=1, FORCE=1) and an approved submit (--rs-expect) submit.sh first runs `( FORCE=0; t_policy )`
+#     in a subshell — as a submit without -y sees it, so a -y gate silent under FORCE=1 still reaches the card — then the real
+#     one, and probes t_partition the same way right before its real call, with the PART that is submitted (its `return 1`
+#     is an unknown partition, not a gate). So BOTH may run twice and must have no side effects (no files, nothing sent).
+#     Inside the probe every `exit 1` is a -y gate that is noted and passed — the function goes on, so a first gate hides none
+#     after it, and code after a gate must not assume the gate stopped the run; any other exit code is the verdict. Write a
+#     gate as one WARNING line, then exit 1 without -y: `echo "WARNING: … Re-run -y …" >&2; [ "$FORCE" = 1 ] || exit 1`. A
+#     gate that prints no WARNING: line gets a generic one, and all the probe printed (digit runs masked) joins the card's
+#     warnings_id. (The probe passes a gate by defining a function named exit; a policy that turns on `set -o posix`, where
+#     bash refuses such a function, makes every plan and approved submit fail closed with exit 2.)
 # submit.sh runs this code in a subshell after its journal claim: an EXIT trap or fds set here stay there (3/4 are closed).
 # An overlay ~/.config/run-skills/targets/<name>/policy.local.sh extends the shipped policy by wrapping t_policy:
 #   eval "$(declare -f t_policy | sed '1s/^t_policy/t_policy_shipped/')"

@@ -6,7 +6,8 @@
 # no payload without a confirmed gate, the conf cannot steer launch.sh, RUN's plain conf/hook variables (named ones only,
 # mode 600, deleted once read; the harness's CUDA env wins), nested launches, status.sh / rsk reading the run, api=3 (the
 # plan block, --rs-expect, the P2 launch.sh given its flags), busy GPUs (--query-compute-apps, --gpu-busy-ok, the occupants
-# bound), the plan's read-only env check (D10) and a full $TMPDIR under bash 4.2 heredocs (fulltmp).
+# bound), the plan's read-only env check (D10), a full $TMPDIR under bash 4.2 heredocs (fulltmp), and a RUN whose leading
+# words set or clear a GPU variable (exit 2 before the claim; once expanded, the wrapper refuses to start it).
 # Run by selftest.sh with RS_HOME set:  bash tests/61-launch-remote.sh
 set -u
 . "$RS_HOME/tests/lib.sh"
@@ -210,6 +211,56 @@ printf 'WS_REMOTE_DIR=projects/pv\nENV_KIND=none\nENV_HOOK=hook.sh\n' > "$V/.ws.
 O=$(L pv -N pv2 -d 2 -- "$RV"); E5=$V/$(kv log "$(latt "$V")/receipt"); waitfor "$E5.rc"
 has "$(cat "$E5")" '^cvd=2 order=PCI_BUS_ID unbuf=1 outer=2 ' "a plain CUDA_VISIBLE_DEVICES in the hook: the harness's ids still win"
 
+echo "-- R4-5: RUN never picks the GPUs: leading words that set or clear a GPU variable (also after a leading env) --"
+# the facts behind it (GNU env, as on the boxes: tests/vgate/local.sh env_facts=): env's argv = RUN's words; options end at the first
+# non-option, `--` ends them and a `-` then = -i, every word holding '=' before the command is an assignment — quoted or not
+if env --version 2>/dev/null | grep -q 'GNU coreutils'; then
+  fx() { CUDA_VISIBLE_DEVICES=5 env "$@" 2>/dev/null; }
+  [ "$(fx 'CUDA_VISIBLE_DEVICES=0' printenv CUDA_VISIBLE_DEVICES)" = 0 ] && ok "fact: a (quoted) NAME=VALUE word before env's command sets NAME" || bad "fact: NAME=VALUE word"
+  [ "$(fx A=1 env CUDA_VISIBLE_DEVICES=0 printenv CUDA_VISIBLE_DEVICES)" = 0 ] && ok "fact: ...also after a nested env" || bad "fact: nested env"
+  for o in '-u CUDA_VISIBLE_DEVICES' '--unset=CUDA_VISIBLE_DEVICES' '--uns CUDA_VISIBLE_DEVICES' '-' '-- -' '-i'; do
+    [ -z "$(fx $o printenv CUDA_VISIBLE_DEVICES)" ] && ok "fact: env $o clears it" || bad "fact: env $o clears it"; done
+  [ "$(fx -S 'CUDA_VISIBLE_DEVICES=0 printenv CUDA_VISIBLE_DEVICES')" = 0 ] && ok "fact: env -S splits a string into assignments too" || bad "fact: env -S"
+  fx A=1 -i printenv CUDA_VISIBLE_DEVICES; [ "$?" = 127 ] && ok "fact: options end at the first non-option (-i after A=1 is the command)" || bad "fact: options end at the first non-option"
+  [ "$(fx sh -c 'echo $CUDA_VISIBLE_DEVICES' CUDA_VISIBLE_DEVICES=0)" = 5 ] && ok "fact: after the command, NAME=VALUE is the payload's argument" || bad "fact: argument after the command"
+else echo "  SKIP: no GNU env here: the env facts behind R4-5 not reproduced"; fi
+printf 'GPU-aaaa0000-0001, 1\n' > "$T/apps"   # GPU 1: another user's process (the finding's setup)
+GV=$(mkp gv 'WS_REMOTE_DIR=projects/gv
+ENV_KIND=none
+PRE=CUDA_VISIBLE_DEVICES=0,1,2,3
+PRINT=printenv')
+i=0
+for r in 'CUDA_VISIBLE_DEVICES=0,1,2,3 printenv CUDA_VISIBLE_DEVICES' '"CUDA_VISIBLE_DEVICES=0,1" printenv CUDA_VISIBLE_DEVICES' \
+         "'CUDA_VISIBLE_DEVICES'=0 python t.py" 'C\UDA_VISIBLE_DEVICES=0 python t.py' 'OMP_NUM_THREADS=4 CUDA_DEVICE_ORDER=FASTEST_FIRST python t.py' \
+         'NVIDIA_VISIBLE_DEVICES=all python t.py' 'HIP_VISIBLE_DEVICES=1 python t.py' 'ROCR_VISIBLE_DEVICES=1 python t.py' \
+         'env CUDA_VISIBLE_DEVICES=0 python t.py' '/usr/bin/env -v A=1 env CUDA_VISIBLE_DEVICES=0 python t.py' 'env -u CUDA_VISIBLE_DEVICES python t.py' \
+         'env -uCUDA_DEVICE_ORDER python t.py' '-i python t.py' '- python t.py' 'env -- - python t.py' 'env -S "CUDA_VISIBLE_DEVICES=0 python t.py"' \
+         'env --uns CUDA_VISIBLE_DEVICES python t.py' 'CUDA_VISIBLE_DEVICES=$X python t.py' 'CUDA_VISIBLE_DEVICES={0,1} python t.py'; do
+  i=$((i + 1)); O=$(L gv --rs-attempt cv$i -N cv$i -n 1 -- "$r"); RC=$?
+  [ "$RC" = 2 ] && has "$O" "^ERROR: RUN .* — the GPUs are launch.sh's choice" "R4-5: RUN $r -> exit 2" || { bad "R4-5: RUN $r -> exit 2 (rc=$RC)"; printf '%s\n' "$O" | head -3 | sed 's/^/    | /'; }
+  [ ! -e "$GV/.rs/attempts/cv$i" ] && ! ls "$GV"/logs/cv$i-*.log >/dev/null 2>&1 && ok "...before the claim: no attempt dir, no log" || bad "...before the claim (cv$i)"
+done
+has "$O" "sets CUDA_VISIBLE_DEVICES before its command ('CUDA_VISIBLE_DEVICES=')" "...an assignment whose value expands is still one of that name"
+O=$(LC_ALL=C.UTF-8 L gv -N cvm -n 1 -- 'TAG="ünï code" CUDA_VISIBLE_DEVICES=ü python t.py "é"'); RC=$?   # read as bytes: multibyte text kept whole
+[ "$RC" = 2 ] && has "$O" "sets CUDA_VISIBLE_DEVICES before its command ('CUDA_VISIBLE_DEVICES=ü')" "R4-5: multibyte words around it: still found, quoted back intact" || bad "R4-5: multibyte RUN (rc=$RC)"
+O=$(L gv --rs-attempt cvp -N cvp --rs-mode plan -n 1 -- 'CUDA_VISIBLE_DEVICES=0,1,2,3 python t.py'); RC=$?
+[ "$RC" = 2 ] && hasnt "$O" '^@@plan' "R4-5: a plan of such a RUN: exit 2, no block (no card to approve)" || bad "R4-5: plan of such a RUN (rc=$RC)"
+O=$(L gv -N cvok -d 2 -- 'OMP_NUM_THREADS=4 sh -c "echo cvd=\$CUDA_VISIBLE_DEVICES omp=\$OMP_NUM_THREADS \$0" CUDA_VISIBLE_DEVICES=9'); RC=$?
+E6=$GV/$(kv log "$(latt "$GV")/receipt"); waitfor "$E6.rc"
+[ "$RC" = 0 ] && has "$(cat "$E6")" '^cvd=2 omp=4 CUDA_VISIBLE_DEVICES=9$' "R4-5: another leading assignment, and a NAME=VALUE argument AFTER the command: launched, the harness's ids" || bad "R4-5: plain RUN launched (rc=$RC)"
+O=$(L gv -N cvu -d 2 -- 'env -v -C . -u FOO printenv CUDA_VISIBLE_DEVICES'); E7=$GV/$(kv log "$(latt "$GV")/receipt"); waitfor "$E7.rc"
+has "$(cat "$E7")" '^2$' "R4-5: env -v -C DIR -u OTHER pass (they leave the GPU variables alone)"
+has "$(cat "$(latt "$GV")/run")" '^rs_gpuenv ()' "...the wrapper carries the same check (rs_gpuenv)"
+i=0; for r in '$PRE printenv CUDA_VISIBLE_DEVICES' '"$PRE" printenv CUDA_VISIBLE_DEVICES' 'env $PRE printenv CUDA_VISIBLE_DEVICES > rt.out'; do
+  i=$((i + 1)); O=$(L gv -N cvr$i -d 2 -- "$r"); RC=$?; A=$(latt "$GV"); E8=$GV/$(kv log "$A/receipt"); waitfor "$E8.rc"
+  [ "$RC" = 0 ] && has "$(cat "$E8")" "ERROR: RUN sets CUDA_VISIBLE_DEVICES before its command ('CUDA_VISIBLE_DEVICES=0,1,2,3') — not started" \
+    "R4-5: RUN $r (a conf variable: known only once expanded) — the wrapper refuses it" || bad "R4-5: runtime refusal of $r (rc=$RC)"
+  has "$(cat "$E8.rc")" '^rc=2 term=0 ' "...rc=2"; hasnt "$(cat "$E8" "$GV/rt.out" 2>/dev/null)" '^0,1,2,3$' "...and the payload never ran"
+done
+O=$(L gv -N cvd -d 2 -- '$PRINT CUDA_VISIBLE_DEVICES'); E9=$GV/$(kv log "$(latt "$GV")/receipt"); waitfor "$E9.rc"
+has "$(cat "$E9")" '^2$' "R4-5: an expanded word that sets nothing (the command): runs, with the harness's ids"
+rm -f "$T/apps"
+
 echo "-- api=3: plan mode (every check, the env gate read-only; nothing starts or is created), --rs-expect, busy GPUs --"
 blk() { printf '%s\n' "$1" | sed -n '/^@@plan v1$/,/^@@end$/p'; }   # the plan block
 bnd() { printf '%s\n' "$1" | sed -n '/^kind=/,/^env_name=/p'; }   # its bound lines, which bound_hash covers
@@ -218,7 +269,7 @@ nolog() { ! ls "$N"/logs/"$1"-*.log >/dev/null 2>&1; }
 rm -f "$T/apps" "$T/apps.fail"
 O=$(L n --rs-attempt pl1 --rs-mode plan -N pl1 -n 2 -x 1 --nice 3 -- "touch $T/plan-ran"); RC=$?; A=$N/.rs/attempts/pl1; B=$(blk "$O")
 [ "$RC" = 0 ] && ok "plan mode exits 0" || { bad "plan mode exits 0 (rc=$RC)"; printf '%s\n' "$O" | head -8 | sed 's/^/    | /'; }
-[ "$(printf '%s\n' "$B" | sed 's/=.*//' | tr '\n' ' ')" = "@@plan v1 api kind target name gpus_req exclude nice busy_ok payload env_kind env_hook venv_dir uv_sync_args env_name info_gpus info_uuids info_busy warnings warnings_avail warnings_id bound_hash @@end " ] \
+[ "$(printf '%s\n' "$B" | sed 's/=.*//' | tr '\n' ' ')" = "@@plan v1 api kind target name gpus_req exclude nice busy_ok payload env_kind env_hook venv_dir uv_sync_args env_name info_gpus info_uuids info_busy info_run_gpu warnings warnings_avail warnings_id bound_hash @@end " ] \
   && ok "ONE block, exactly these keys in this order" || { bad "plan block keys"; printf '%s\n' "$B" | sed 's/^/    | /'; }
 [ "$(printf '%s\n' "$O" | grep -c '^@@plan v1$')" = 1 ] && ok "...printed once" || bad "...printed once"
 has "$B" "^api=$(sed -n 's/^api=//p' "$N/.ws/API")\$" "api= is the deployed .ws/API's"; has "$B" '^kind=nohup$' "kind=nohup"; has "$B" '^target=ws-box$' "target="
@@ -226,7 +277,7 @@ has "$B" '^name=pl1$' "name="; has "$B" '^gpus_req=n=2$' "gpus_req=n=N"; has "$B
 has "$B" "^payload=touch\\\\ $T/plan-ran\$" "payload = RUN, %q-quoted"; has "$B" '^env_kind=none$' "env_kind (the conf's)"; has "$B" "^env_name=''\$" "env_name (empty: %q '')"
 has "$B" '^busy_ok=$' "busy_ok= (no --gpu-busy-ok: never a busy GPU)"; has "$B" "^env_hook=''\$" "env_hook='' (no ENV_HOOK)"; has "$B" "^venv_dir=''\$" "venv_dir"; has "$B" "^uv_sync_args=''\$" "uv_sync_args"
 has "$B" '^info_gpus=2,0$' "info_gpus = the pick (envelope)"; has "$B" '^info_uuids=GPU-aaaa0000-0002,GPU-aaaa0000-0000$' "info_uuids"
-has "$B" '^info_busy=$' "info_busy= (none busy)"; has "$B" '^warnings=0$' "warnings=0"
+has "$B" '^info_busy=$' "info_busy= (none busy)"; has "$B" '^info_run_gpu=checked$' "info_run_gpu=checked (R4-5: this launch.sh refuses a RUN that sets a GPU variable)"; has "$B" '^warnings=0$' "warnings=0"
 has "$B" '^warnings_avail=0$' "warnings_avail=0 (no availability -y gate on a box)"; has "$B" "^warnings_id=$(printf '' | sha256sum | cut -d' ' -f1)\$" "warnings_id = the digest of nothing"
 [ "$(grep -cx '# rs-api=3' "$N/.ws/launch.sh")" = 1 ] && ok "C: the deployed launch.sh carries the '# rs-api=3' line" || bad "launch.sh: the '# rs-api=3' line"
 H1=$(bh "$O"); [ "$(bnd "$O" | sha256sum | cut -d' ' -f1)" = "$H1" ] && ok "bound_hash = sha256 of the lines kind= … env_name= (each + newline)" || bad "bound_hash = sha256 of the bound lines"

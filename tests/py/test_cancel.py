@@ -23,6 +23,8 @@ SSH = """#!/usr/bin/env bash
 while [ $# -gt 0 ]; do case "$1" in -o) shift 2 ;; -*) shift ;; *) break ;; esac; done
 echo "$1" >> "$STUB/ssh.log"; shift
 [ -z "${SSH_FAIL:-}" ] || { echo "ssh: connect to host: Connection timed out" >&2; exit 255; }
+if [ -n "${SSH_HANG:-}" ]; then  # the body arrives and runs there, but nothing comes back before the deadline
+  cat > "$STUB/hang.body"; ( bash "$STUB/hang.body" > "$STUB/hang.out" 2>&1 & ); sleep "$SSH_HANG"; exit 0; fi
 if [ -n "${SSH_CUT:-}" ]; then   # the connection dies once the remote printed a line matching SSH_CUT (it ran to the end)
   bash -c "$*" > "$STUB/full.out" 2>&1; sed "/$SSH_CUT/,\\$d" "$STUB/full.out"; exit 255; fi
 exec bash -c "$*"
@@ -57,7 +59,7 @@ class Base(ScratchHome):
         os.environ["STUB"] = str(self.stub)
         os.environ["PATH"] = f"{self.stub / 'bin'}{os.pathsep}{os.environ['PATH']}"
         os.environ["USER"] = ME
-        for k in ("SSH_FAIL", "SQ_FAIL", "SC_RC", "SSH_CUT", "SC_SLEEP"):
+        for k in ("SSH_FAIL", "SQ_FAIL", "SC_RC", "SSH_CUT", "SC_SLEEP", "SSH_HANG"):
             os.environ.pop(k, None)
         for name, prof in (("fx", "T_KIND=slurm; T_HOST=fxhost\n"), ("ws", "T_KIND=nohup; T_HOST=wshost\n")):
             d = Path(os.environ["RS_USER_DIR"]) / "targets" / name
@@ -165,7 +167,7 @@ class Slurm(Base):
         rc, text = self.cancel("exp", "--approve", "cancel it")
         self.assertEqual(rc, FAILED, text)
         os.environ.pop("SC_RC")
-        os.environ["SSH_FAIL"] = "1"
+        os.environ["SQ_FAIL"] = "1"                   # squeue fails there: @@fail before any identity, ssh ends
         rc, text = self.cancel("exp", "--approve", "cancel it")
         self.assertEqual(rc, UNKNOWN, text)
         self.assertIn("nothing was cancelled", text)
@@ -175,6 +177,29 @@ class Slurm(Base):
         rc, text = self.cancel("exp")                                         # covered by cancel_own: refunded
         self.assertEqual(rc, UNKNOWN, text)
         self.assertEqual(next(r for r in self.led.state().grants if r["id"] == g["id"])["used"], [])
+        self.assertEqual(self.scancelled(), "101\n")                          # (the SC_RC=1 call above only)
+
+    def test_ssh_255_before_any_answer_is_no_proof_the_cancel_was_not_sent(self):
+        """not_fixed (round 4): ssh's own exit 255 with no @@start counted as proof that nothing was signalled — a
+        refunded cancel_own use and 'nothing was cancelled'. The connection may die after the body ran there (here:
+        cut before @@start arrived, scancel sent): exit 5, 'may have been sent', the use kept."""
+        g = G.add(self.led, G.new_grant("stop your own runs", {"targets": ["fx"]}, ["cancel_own"], max_live=None,
+                                        max_launches=3, expires=None))
+        self.launched("exp--a01", "101")
+        self.queue(f"101|exp--a01|{ME}|{self.remote}|RUNNING|")
+        os.environ["SSH_CUT"] = "^@@start"                       # the body ran to the end; nothing came back, ssh 255
+        rc, text = self.cancel("exp")
+        self.assertEqual(rc, UNKNOWN, text)
+        self.assertEqual(self.scancelled(), "101\n")             # it WAS cancelled
+        self.assertIn("the cancel may have been sent", text)
+        self.assertNotIn("nothing was cancelled", text)
+        self.assertEqual(len(next(r for r in self.led.state().grants if r["id"] == g["id"])["used"]), 1)   # kept
+        os.environ.pop("SSH_CUT")
+        os.environ["SSH_FAIL"] = "1"                             # no connection at all: the same (255 says no more)
+        rc, text = self.cancel("exp", "--approve", "cancel job 101")
+        self.assertEqual(rc, UNKNOWN, text)
+        self.assertIn("the cancel may have been sent", text)
+        self.assertEqual(len(self.approvals()[0]["used"]), 1)     # D6: an approval is used up whatever the outcome
 
     def test_l2_an_answer_cut_after_the_identity_passed_gives_nothing_back(self):
         self.launched("exp--a01", "101")
@@ -247,6 +272,51 @@ class Slurm(Base):
         self.assertEqual(rc, OK, text)
         self.assertEqual(self.scancelled(), "101 102\n")
         self.assertEqual(self.approvals()[0]["scope"]["jobs"], ["101", "102"])
+
+    def test_r4_10_a_timeout_with_no_answer_at_all_keeps_the_use(self):
+        """N4-cancel-zero-byte-timeout: the body ran there (scancel) while nothing came back; 'nothing was cancelled'
+        and a refunded cancel_own use were wrong. Now exit 5, 'may have been sent', the use kept."""
+        g = G.add(self.led, G.new_grant("stop your own runs", {"targets": ["fx"]}, ["cancel_own"], max_live=None,
+                                        max_launches=3, expires=None))
+        self.launched("exp--a01", "101")
+        self.queue(f"101|exp--a01|{ME}|{self.remote}|RUNNING|")
+        os.environ["SSH_HANG"] = "6"
+        rc, text = self.cancel("exp", "--deadline", "1.5")
+        self.assertEqual(rc, UNKNOWN, text)
+        self.assertIn("the cancel may have been sent: rsk status (no answer at all", text)
+        self.assertNotIn("nothing was cancelled", text)
+        self.assertEqual(len(next(r for r in self.led.state().grants if r["id"] == g["id"])["used"]), 1)
+        for _ in range(60):
+            if self.scancelled():
+                break
+            time.sleep(0.1)
+        self.assertEqual(self.scancelled(), "101\n")                 # it was cancelled after all
+
+    def test_r4_1_a_deny_of_the_runs_plan_stops_its_cancel(self):
+        """NEW-deny-run-failopen: `rsk grant deny --run H` ("do not touch that run") never matched rsk cancel."""
+        h = "c" * 64
+        G.add(self.led, G.new_grant("kill a broken smoke yourself", {"targets": ["fx"]}, ["launch", "cancel_own"],
+                                    max_live=None, max_launches=None, expires=None))
+        self.launched("exp--a01", "101", plan={"bound_hash": h, "partition": "gpu", "warnings": "0"})
+        self.queue(f"101|exp--a01|{ME}|{self.remote}|RUNNING|", f"555|stray|{ME}|{self.remote}|RUNNING|")
+        G.add(self.led, G.new_deny("do not touch that run, whatever happens", {"runs": [h]}))
+        rc, text = self.cancel("exp")
+        self.assertEqual(rc, REFUSED, text)
+        self.assertIn("do not touch that run", text)
+        rc, text = self.cancel("--job", "555", "-T", "fx", "--approve", "cancel job 555")
+        self.assertEqual(rc, REFUSED, text)                            # no plan to compare: it may be that one
+        self.assertEqual(self.scancelled(), "")
+        self.assertFalse((self.stub / "ssh.log").exists())
+
+    def test_r4_15_unreadable_grants_refuse_a_cancel(self):
+        self.launched("exp--a01", "101")
+        G.add(self.led, G.new_deny("never cancel exp", {"names": ["exp*"]}, ["cancel"]))
+        (self.led.dir / "grants.json").write_text('{"version": 1, "records": [')
+        (self.led.dir / "grants.json.prev").unlink(missing_ok=True)
+        rc, text = self.cancel("exp", "--approve", "cancel it")
+        self.assertEqual(rc, CONFLICT, text)
+        self.assertIn("grants unreadable", text)
+        self.assertFalse((self.stub / "ssh.log").exists())
 
     def test_usage(self):
         self.launched("exp--a01", "", submit="unknown")
@@ -332,6 +402,67 @@ class Nohup(Base):
         self.assertEqual(L.attempt_state(self.led.read_run("b").data["attempts"]["a01"]), "REBOOT")
         time.sleep(0.3)
         self.assertEqual([x.poll() for x in (p, q, o, b)], [None, None, None, None], "none of them was signalled")
+
+    # R4-10 on a workstation: the nohup identity always compares the receipt's start + boot_id, a ledger nonce is
+    # never answered by another receipt, and cancel_own never covers an attempt the ledger shows ended.
+    def receipt(self, nonce: str, pid: int, start: str, boot: str | None = None, gate: str = "go") -> None:
+        a = self.remote / ".rs" / "attempts" / nonce
+        a.mkdir(parents=True)
+        (a / "receipt").write_text(f"pid={pid}\npgid={pid}\nstart={start}\nboot_id={boot or self.boot}\n"
+                                   f"log=logs/{nonce}.log\nnonce={nonce}\n")
+        (a / "gate").symlink_to(gate)
+
+    def test_n1_an_ended_runs_reused_pid_is_never_signalled(self):
+        """N1-cancel-job-ended-pid-kills-unledgered-run: sw-x a01 ENDED; the box gave its pid to the user's own run
+        (launched by hand: a receipt whose digits-first nonce sorts first). `rsk cancel --job PID` under cancel_own
+        killed it. Now: not covered (ended), and with the user's words the ledger's own receipt decides (reused)."""
+        G.add(self.led, G.new_grant("stop your own sweep runs", {"targets": ["ws"]}, ["cancel_own"], max_live=None,
+                                    max_launches=None, expires=None))
+        p = subprocess.Popen(["bash", "-c", "sleep 30"], start_new_session=True)
+        self.procs.append(p)
+        time.sleep(0.2)
+        self.receipt("20261105T094245Z-20792-12675", p.pid, pstart(p.pid))           # the user's run, not ledgered
+        self.receipt("n-old", p.pid, "1")                                             # sw-x's, long ago
+        self.led.record_attempt(name="sw-x", target="ws", kind="nohup", nonce="n-old", submit="submitted",
+                                plan_id="p-1", action="launch",
+                                proc={"pid": str(p.pid), "pgid": str(p.pid), "start": "1", "boot_id": self.boot,
+                                      "log": "logs/n-old.log", "gpu_ids": "0"})
+        self.led.observe("sw-x", "a01", "logs/n-old.log", "ENDED", "pid", end={"state": "ENDED", "rc": "0",
+                                                                                "evidence": "x.rc"})
+        rc, text = self.cancel("--job", str(p.pid), "-T", "ws", "--grace", "1")
+        self.assertEqual(rc, NEEDS_USER, text)                         # cancel_own never covers an ended attempt
+        rc, text = self.cancel("--job", str(p.pid), "-T", "ws", "--approve", "stop sw-x", "--grace", "1")
+        self.assertEqual(rc, OK, text)
+        self.assertIn("nothing to cancel", text)
+        self.assertIn("its pid now belongs to another process", text)
+        self.assertIn("ledger: sw-x a01 had ended already", text)
+        end = self.led.read_run("sw-x").data["attempts"]["a01"]["result"]
+        self.assertEqual((end["state"], end["rc"]), ("ENDED", "0"))   # its recorded end is kept, never rewritten
+        time.sleep(0.3)
+        self.assertIsNone(p.poll(), "the user's own run was never signalled")
+
+    def test_the_receipts_start_and_boot_id_are_always_the_ledgers(self):
+        q = self.spawn(nonce="n1", name="q")
+        self.led.set_submission("q", "a01", "n1", proc={"pid": str(q.pid), "pgid": str(q.pid), "start": pstart(q.pid),
+                                                       "boot_id": "another-boot-id", "log": "logs/q.log"})
+        rc, text = self.cancel("q", "--approve", "stop q", "--grace", "1")
+        self.assertEqual(rc, CONFLICT, text)                           # the receipt's boot_id is not the ledger's
+        self.assertIn("ledger-boot=another-boot-id", text)
+        o = self.spawn(nonce="n2", name="o", receipt=False)             # the ledger's nonce has no receipt …
+        self.receipt("0-other", o.pid, pstart(o.pid))                   # … another one names the same pid: never used
+        rc, text = self.cancel("o", "--approve", "stop o", "--grace", "1")
+        self.assertEqual(rc, CONFLICT, text)
+        self.assertIn("noidentity", text)
+        u = subprocess.Popen(["bash", "-c", "sleep 30"], start_new_session=True)   # not ledgered, two receipts
+        self.procs.append(u)
+        time.sleep(0.2)
+        self.receipt("u1", u.pid, pstart(u.pid))
+        self.receipt("u2", u.pid, pstart(u.pid))
+        rc, text = self.cancel("--job", str(u.pid), "-T", "ws", "--approve", f"kill pid {u.pid}", "--grace", "1")
+        self.assertEqual(rc, CONFLICT, text)
+        self.assertIn("ambiguous", text)
+        time.sleep(0.3)
+        self.assertEqual([x.poll() for x in (q, o, u)], [None, None, None], "none of them was signalled")
 
 
 if __name__ == "__main__":
