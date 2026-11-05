@@ -114,7 +114,7 @@ availability gate's)`. Before any ssh it refuses (exit 6) a second live ledger r
 only when the user wants both; no grant covers it) — and a SUBMIT_UNKNOWN attempt of the run even with it. Exit: 0
 submitted (job id, log), 1 failed, 2 usage, 3 refused (policy or a deny: final, with its quote), 4 needs the user
 (`needs user: approval — plan <id>`), 5 reply lost (SUBMIT_UNKNOWN: never resubmit; `rsk status` settles it from the
-journal below) — or `<t> not reached — nothing sent: <ssh's line>` (NOT_SUBMITTED, below), 6 a used / superseded / expired plan, drift (`differs from the approved plan`, and what changed:
+journal below — whatever ssh's own words were, below), 6 a used / superseded / expired plan, drift (`differs from the approved plan`, and what changed:
 `time: 1-00:00:00 → 2-00:00:00`, or `the warnings differ from the approved card`) or `needs: sync` (the deployed
 `submit.sh` lacks the `# rs-api=3` line, an older one refused rsk's words, or its block lacks a field this rsk binds, such
 as `flags=`) — plan again and show the new card; also 6 `grants unreadable — rsk grant recount / restore` (the ledger's
@@ -122,15 +122,35 @@ as `flags=`) — plan again and show the new card; also 6 `grants unreadable —
 When the target proves nothing was submitted (verdict refused / failed with no receipt, or no attempt dir at all) the
 attempt is NOT_SUBMITTED, never SUBMIT_UNKNOWN: the use is given back and rsk says `plan <id> is free again` — once the
 cause is fixed, `rsk launch --plan <id>` resubmits it under the same record with no new words (`--rs-expect` still
-guards drift). So is a submit whose ssh never opened the session: ssh's own exit 255, no answer at all, and its own
-words for that (`Connection refused` / `Connection timed out` / `No route to host`, `Could not resolve hostname`,
-`Permission denied (…)`, `Host key verification failed`) — exit 5 `<t> not reached — nothing sent: <that line>`, the
-use given back, `plan <id> is free again`; any other 255 or silence stays SUBMIT_UNKNOWN.
+guards drift). ssh's own words never prove it: a submit's ssh exit 255 with no receipt — before the remote's first line
+(`@@api`) too — is `SUBMIT_UNKNOWN: <run> aNN (nonce …) — ssh exit 255 (<ssh's last line>) — ssh's own words are no
+proof that nothing was sent` (exit 5), whatever that line says: a ProxyCommand's fallback route or a login shell can
+print `Connection refused` / `Permission denied` on a session that did open and ran `submit.sh`. The use is kept and the
+plan stays used (`rsk launch --plan <id>` again: exit 6 `was used already`); `rsk status` reconciles it from the
+journal, and when the journal holds no attempt dir of that nonce, only the user decides it never went out: `rsk adopt
+-T <t> --not-submitted <NONCE> --approve "<their words>"`. Silence or a timeout is SUBMIT_UNKNOWN the same way.
 Denies: `rsk grant deny --job` is for cancels only (`--action cancel` / `cancel_own`; with a launch action: exit 2 — a
 run's launches are denied with `--name '<run>'`). `-T` of `rsk grant add|deny` and every scope target of `rsk grant
 import` must be a target the harness knows, spelled as INDEX lists it (else exit 2 `unknown target`, nothing recorded).
 A deny compares targets as normalised names (`fx/`, `./fx`, `FX` are `fx`); a spelling that is not one plain name
-matches every target deny (fail closed).
+matches every target deny (fail closed). `--partition` (import: `scope.partitions`) is checked against the scoped
+targets' `T_PARTITIONS` (every target the harness knows, without `-T`): when every scoped Slurm target lists them, one
+none lists is exit 2 `unknown partition 'P' (--partition): <targets> list <a, b> (T_PARTITIONS) — nothing recorded` (a
+workstation-only scope: `none (a workstation has no partitions)`); a scoped Slurm target without `T_PARTITIONS` leaves it
+unchecked (`NOTE: partition P is not checked on <t> …: the record matches only a plan whose partition is spelled exactly
+so`). A GPU type has no list anywhere: never checked, only echoed (`NOTE: GPU type X is not checked … — compare it with
+the target's reference`). `rsk grant list` flags every active record whose targets (or partitions, where every scoped
+Slurm target lists them) the harness does not know — `WARNING: <id> (<kind>): target X is not one the harness knows
+(<known>) — never matches[ there] (the user's deny is not enforced there | it covers nothing there) — fix or revoke: rsk
+grant revoke <id> --quote "<the user's words>", then record it again with a scope the harness knows` (`partition P is
+not one <t> lists (T_PARTITIONS: …)`; `--json`: `scope_problems`) — and `rsk doctor` does so for every project's ledger
+(`== grants ==`): tell the user. A deny that names a run (a `--name` glob matching the plan's name or run id) and lists
+`relaunch` or `resubmit` stops EVERY launch of that run, launch and chain included, on any target in its scope: the
+refusal adds `— a deny of relaunching a run stops every launch of it, on any target in its scope: rsk cannot see every
+earlier attempt (another target, run-watch, an older harness, another checkout)`, `rsk grant list` shows `DENY relaunch
+(it names a run: every launch of it too — …)`, and a launch grant recorded right after it gets a `FLAG`. A deny naming
+no run keeps the derived action. So a conditional wish ("if a fails, don't relaunch it") becomes a deny only once a has
+run: a deny always wins.
 Defaults: `-p`/`-G` ← `<TAG>_DEFAULT_PARTITION` / `<TAG>_DEFAULT_GPU_TYPE` else the profile's; `-g -c -m -t -n` ←
 `DEFAULT_GPUS/CPUS/MEM/TIME`, `JOB_NAME` (`<TAG>_` form wins); `ACCOUNT`, `SBATCH_EXTRA` are appended. CLI flags win.
 Unset cpus/mem fall back to the partition's per-GPU heuristics (policy.sh). `submit.sh` then, in order: runs the
@@ -245,14 +265,16 @@ answer proves nothing was signalled. A ledgered job squeue lists as ended is exi
 recorded in the ledger with that state. A cancel approval recorded before identities were bound covers nothing: ask
 again. An answer cut off after the cancel started, or no answer at all (a timeout, ssh's own 255, a signal: the body may
 have run there), says `the cancel may have been sent: rsk status` (exit 5; a `cancel_own` use is kept, the job may have
-been cancelled): read `rsk status` before anything else. The one exception: ssh's own exit 255, no answer at all, and its
-own words that the session never opened (`Connection refused` / `Connection timed out` / `No route to host`, `Could not
-resolve hostname`, `Permission denied (…)`, `Host key verification failed`) — `not reached — nothing sent` (exit 5): a
-`cancel_own` use is given back, a cancel approval stays used (it was for that one cancel).
+been cancelled): read `rsk status` before anything else. ssh's own exit 255 before the body's first line (`@@start`) is
+that too, whatever its stderr says (`… — ssh's own words are no proof that the body never ran; the use is kept`): a
+ProxyCommand's fallback route or a login shell can print `Connection refused` / `Permission denied` on a session that
+did open and ran the cancel.
 A non-zero `scancel` is `UNKNOWN: job J (<run> aNN): scancel exit N (…)` (exit 5): the use is kept and the ledger shows
-`CANCELLING?` (not confirmed: a timed-out request may still be applied) until `rsk status` sees the job end. The
-exception is scancel's own line for that id saying `Invalid job id` or `already completing or completed`: `nothing to
-cancel: … scancel exit N: …` (exit 0), a `cancel_own` use given back, the ledger `COMPLETING`. The reproduction of
+`CANCELLING?` (not confirmed: a timed-out request may still be applied) until `rsk status` sees the job end; its
+`(…)` quotes scancel's line naming job id J, else its last line naming no job id, else nothing — never another job's
+line (`UNKNOWN: job J (<run> aNN): scancel exit N (<that line>)`). The exception is scancel's own line for that id
+saying `Invalid job id` or `already completing or completed`: `nothing to cancel: … scancel exit N: …` (exit 0), a
+`cancel_own` use given back, the ledger `COMPLETING`. The reproduction of
 those words is `tests/vgate/slurm-remote.sh` (`scancel_ended=`: scancel's exit and words for its own ended job;
 `scancel_invalid=`: the same for id 4000000000, sent only after `squeue -j` lists none). Only those words give a use
 back: where scancel words it otherwise (until that reproduction has run on a cluster, no site's wording is confirmed)
@@ -277,10 +299,13 @@ with a NOTE, and no ledger deny is checked). Any later edit to those rows, the b
 carries `conf=`, and the submit ssh checks the deployed copy; an older line without it stays valid). `rsk watch --act`
 (and `rsk watch … --approve`) first checks every row — target, `-g`, `-t`, name / run id, class — against the user's
 denies for EVERY action run-watch could take on it (launch, relaunch, resubmit, chain on Slurm rows, cancel), whatever
-the table's `#@ allow` says (`--release` and an `SBATCH_EXTRA` singleton act outside it); what a row cannot show
+the table's `#@ allow` says (`--release` and an `SBATCH_EXTRA` singleton act outside it) — except a deny scoped by job
+ids (`rsk grant deny --job J --action cancel`), which counts only for a table whose `#@ allow` line has `fail-stop`, the
+one cancel run-watch makes, and there matches every row (the row's job is not known here); what a row cannot show
 matches: a GPU-type deny matches every row of its target and a partition deny every Slurm row of its target (the policy
 may force a type or rewrite `-p`), a deny of plans every row in its scope (a row has no bound hash), a class deny a row
-whose class is unknown. A match is exit 3 with the deny's words and why, nothing started and no `#@ ok` written; an
+whose class is unknown. A match is exit 3 with the deny's words and why (`<table>: row <name> on <t> (<action>): denied
+by …`; a deny naming the row's run with `relaunch` meets it at `(launch)`), nothing started and no `#@ ok` written; an
 unreadable `grants.json` is exit 6 (`grants unreadable`); a matching deny recorded while it runs stops run-watch (TERM)
 at the next lease refresh, exit 3. Honest limit: that check is static — it reads the row's words, never what the
 target's policy makes of them: a policy that rewrites `-p` (or forces a GPU type) is not seen by `rsk watch`'s row
@@ -306,7 +331,11 @@ table outside this watch keeps its own copy (an older run-watch drops that line,
 closed). While another stop remains, every row stays held, the trigger's own row too (`RELEASE table=… fail-stop=<name>
 held-by=<stops>`, and on that row `ATTENTION … reason=release-held held-by=…`): release each remaining trigger, each
 with the user's OK, then `--release <row>` again for the trigger row's one submit. A plain row's `--release` (a name
-that triggered no stop) is still that row's one submit past every hold. An installed run-watch from before a table
+that triggered no stop) is still that row's one submit past every hold — the holds that exist when the watch starts:
+a fail-stop that holds the row's table later in the same watch, before the release was used (a stop formed by a row
+failing, or one taken from another state file, e.g. a row of a stopped group added and approved mid-watch), withdraws
+it (`ATTENTION … reason=release-withdrawn fail-stop=<trigger>`), and nothing is submitted past that stop: `--release`
+again, with the user's OK (a release can wait a round: one submit per target per round). An installed run-watch from before a table
 could keep several stops reads only the LAST `#failstop` of a state file holding several (each is written with its own
 `#failstop-pending`, so the pair it reads is one stop's own) and writes the file back with that stop alone: run one
 harness version per project (`rsk update`, then `rsk setup`). A row is one run by its name: with no state in its

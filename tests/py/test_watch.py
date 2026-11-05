@@ -188,8 +188,9 @@ class Denies(ScratchHome):
                                          "a fx-slurm - -p gpu -g 1 -- python train.py\n")     # no `#@ allow` at all
         G.add(self.led, G.new_deny("do not run a again", {"names": ["a"]}, ["resubmit", "relaunch"]))
         why = Wt.deny_hit(self.led, self.proj, ["t.tsv", "--act", "--release", "a"], self.kinds)
-        self.assertIn("row a on fx-slurm (relaunch)", why)          # --release a: a resubmit of a run that ran
+        self.assertIn("row a on fx-slurm (launch)", why)            # R6-1: a relaunch deny naming a: every launch of a
         self.assertIn("do not run a again", why)
+        self.assertIn("rsk cannot see every earlier attempt", why)
 
     def test_r4_4_a_gpu_type_deny_matches_every_row_of_its_target(self):
         """N3-forced-gpu-type-evades-watch-deny: `-G a100` on a partition whose policy forces h100 is submitted as
@@ -234,6 +235,28 @@ class Denies(ScratchHome):
         self.assertEqual(Wt.kind_of({"ab": "slurm", "AB": "nohup"}, "Ab"), "")       # ambiguous: unknown
         (self.proj / "s.tsv").write_text("#@ run-watch v1\n#@ allow launch\na fx-other - -p gpu -g 1 -- python a.py\n")
         self.assertEqual(Wt.deny_hit(self.led, self.proj, ["s.tsv", "--act"], {**self.kinds, "fx-other": "slurm"}), "")
+
+    def test_r6_7_a_deny_by_job_id_counts_only_under_fail_stop(self):
+        """V5-watch-jobdeny: `rsk grant deny --job 555 --action cancel` ("do not cancel job 555", the form R5-1 asks
+        for) matched every row of every table for the cancel action (a row's job is not known: fail closed), so every
+        `rsk watch --act` refused (exit 3) — also a table that never cancels. Such a deny now counts only for a table
+        whose `#@ allow` line has fail-stop (the one cancel run-watch makes)."""
+        G.add(self.led, G.new_deny("do not cancel job 555 (the other project's eval)", {"jobs": ["555"]}, ["cancel"]))
+        self.assertEqual(self.guard()(), "")                         # `#@ allow launch preempt=2`: no cancel there
+        (self.proj / "f.tsv").write_text(self.TABLE.replace("preempt=2", "preempt=2 fail-stop"))
+        why = Wt.deny_hit(self.led, self.proj, ["f.tsv", "--act"], self.kinds)
+        self.assertIn("row a on fx-slurm (cancel)", why)             # fail-stop: the row's job is not known here
+        self.assertIn("do not cancel job 555", why)
+        self.assertIn("(cancel)", Wt.deny_hit(self.led, self.proj, ["t.tsv", "f.tsv", "--act"], self.kinds))
+        self.led.write_grants({"version": 1, "records": [], "budgets_unknown": None})
+        G.add(self.led, G.new_deny("leave the b smoke alone", {"names": ["exp--smoke--b"]}, ["cancel"]))
+        self.assertIn("row exp--smoke--b on fx-slurm (cancel)", self.guard()())   # a deny naming no job: as before
+        self.led.write_grants({"version": 1, "records": [], "budgets_unknown": None})
+        stored = {"id": "d-20261105-bbbbbb", "kind": "deny", "quote": "job 555 is broken: do not resubmit it",
+                  "created_at": L.now(), "created_via": "cli", "source": "", "scope": {"jobs": ["555"]},
+                  "actions": ["relaunch"], "limits": {}, "used": [], "revoked": None}   # R5-1: invalid → matches all
+        self.led.write_grants({"version": 1, "records": [stored], "budgets_unknown": None})
+        self.assertIn("matches everything", self.guard()())
 
     def test_r4_1_a_deny_of_a_plan_matches_every_row_in_its_scope(self):
         """N2-run-hash-deny-never-matches-watch-rows: a row has no bound hash — a deny of plans matches it."""

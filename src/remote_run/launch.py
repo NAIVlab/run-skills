@@ -20,15 +20,16 @@ submit — every step recorded in the project's ledger (ledger.py) and checked a
    `RS_VIA_RSK=1 bin/run-launch --rs-attempt <nonce> --rs-mode plan …` from the harness (cwd = the project, TARGET
    set; the block launch.sh prints is its own api= line). A deploy that does not speak api=3, an older parser's exit 2
    (`unknown arg …`), or a block that lacks a key this rsk needs (grants.NEEDED: env_hook venv_dir uv_sync_args,
-   warnings_avail warnings_id; slurm conf_extra flags; nohup busy_ok info_run_gpu) → exit 6 `needs: sync`. A plan never submits: its
-   refusal (policy 3, duplicate 6, usage 2, too few free GPUs 8, a nohup env that would fail the gate 1) is the exit
-   code, with the target's lines (a nohup plan creates nothing outside .rs/).
+   warnings_avail warnings_id; slurm conf_extra flags; nohup busy_ok info_run_gpu info_launchers) → exit 6 `needs:
+   sync`. A plan never submits: its refusal (policy 3, duplicate 6, usage 2, too few free GPUs 8, a nohup env that
+   would fail the gate 1) is the exit code, with the target's lines (a nohup plan creates nothing outside .rs/).
 3. The plan and its card are stored (plans/<id>.json, never rewritten). Its action is derived, never a flag: a run that
    already has attempts that may have run (any target; not this plan's own) in the ledger, or in the target's journal
    (the block's envelope info_prior > 0: receipts named <run> / <run>--aNN, Slurm also live jobs of this WorkDir —
    run-watch's runs never enter the ledger), or whose block does not say (no readable info_prior: fail closed) →
    relaunch, a chain=1 block → chain, else
-   launch — every one that applies is checked (a deny of any matches; a record must allow all). grants.check()
+   launch — every one that applies is checked (a deny of any matches; a record must allow all; a deny that names the
+   run and lists relaunch or resubmit matches every launch of it, launch included, R6-1: grants.run_deny). grants.check()
    decides: a deny → exit 3 with its quote; a record that covers the plan → submit now; else the card and `needs
    user: approval — plan <id>` → exit 4. A standing grant never covers a workstation plan that lands on a GPU in use
    (only the user's words naming it), a --<x>-user-asked policy flag, --same-name-ok, a plan with warnings its
@@ -54,13 +55,13 @@ submit — every step recorded in the project's ledger (ledger.py) and checked a
    `[<t>] started PID … ; log … ; pid file …` line, its fields taken from the end — a look-alike line a payload printed
    proves nothing); proof that nothing was sent = not submitted: the remote verdict refused/failed with no receipt,
    submit.sh's exit with no attempt dir (it claims one before anything else), launch.sh's exit with no attempt dir in
-   the journal read back (the same claim), run-launch failing before its launch ssh, a Slurm submit's ssh exit 255 with
-   no answer and ssh's own words that the session never opened (cancel.not_reached, R5-6: exit 5 "not reached —
-   nothing sent"); then the use is given back and,
+   the journal read back (the same claim), run-launch failing before its launch ssh; then the use is given back and,
    for the plan's first segment, its claim released — `rsk launch --plan <id>` retries it under the same approval
-   (--rs-expect still guards drift). ssh 255, a timeout, an exit the journal does not explain (nohup: it is always
-   read before deciding) or no receipt stays SUBMIT_UNKNOWN — `rsk status` reconciles it from the remote journal;
-   never resubmitted blind.
+   (--rs-expect still guards drift). A Slurm submit's ssh exit 255 without the remote's first marker (@@api) is
+   SUBMIT_UNKNOWN whatever ssh's stderr says (R6-4: a ProxyCommand's fallback route or a login shell can print
+   "Connection refused" / "Permission denied" lines on a session that did open), and so are a timeout, an exit the
+   journal does not explain (nohup: it is always read before deciding) or no receipt — `rsk status` reconciles it from
+   the remote journal; never resubmitted blind (the plan stays used).
 A record is bookkeeping, not proof that the user agreed: the card shown and the user's words are what make it theirs.
 The ledger lock is held for each check-then-record step, never across an ssh.
 Exit: 0 submitted · 1 failed on the target · 2 usage · 3 refused (policy, deny) · 4 needs the user · 5 unknown ·
@@ -82,7 +83,6 @@ from pathlib import Path
 
 from remote_run import grants, harness, observe, paths
 from remote_run import ledger as L
-from remote_run.cancel import not_reached
 from remote_run.errors import (CONFLICT, FAILED, NEEDS_USER, OK, PLACEMENT, REFUSED, UNKNOWN, USAGE, RskError)
 
 API = "api=3"                    # the protocol this rsk speaks (the deployed submit.sh / launch.sh: `# rs-api=3`)
@@ -965,12 +965,11 @@ def settle(led: L.Ledger, place: harness.Place, rec: dict, run: str, aid: str, n
             led.audit("submit_result", run=run, attempt=aid, nonce=nonce, to="submitted", job=job)
             out(f"submitted: {run} {aid} job {job} on {place.target} (nonce {nonce}, under {rid})")
             return OK
-        gone = not_reached(reply.rc, reply.out, reply.err)
-        if gone:                     # R5-6's proof, for a submit: ssh's own words that the session never opened
-            return refused(UNKNOWN, f"{place.target} not reached — nothing sent: {gone[:200]} (ssh exit 255 before "
-                                    "any answer)")
-        if reply.rc is None or reply.rc == 255:
-            out(unknown.replace("no receipt in the reply", f"ssh exit {reply.rc}" if reply.rc else reply.why))
+        if reply.rc is None or reply.rc == 255:   # R6-4: whatever ssh's stderr says (a fallback route's word may be
+            said = [ln.strip() for ln in reply.err.splitlines() if ln.strip()]   # in it): the journal is the only proof
+            out(unknown.replace("no receipt in the reply", (f"ssh exit {reply.rc}" if reply.rc else reply.why)
+                                + (f" ({said[-1][:160]})" if said else "")
+                                + " — ssh's own words are no proof that nothing was sent"))
             return UNKNOWN
         if reply.rc == 75:           # submit.sh's claim of the nonce failed: this call ran nothing
             return refused(CONFLICT, f"the attempt name {nonce} was taken on the target (exit 75): this call claimed "

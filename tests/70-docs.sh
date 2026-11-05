@@ -390,19 +390,27 @@ has "$PSLT" 'never a run only the journal shows (`the ledger has no earlier atte
 has "$GP" 'the ledger has no earlier attempt of the run that ran' "...grants.py's refusal"; has "$DT" 'it never resumes a run only the target.s journal shows' "DESIGN: the same"
 has "$PSLT" 'run-watch.s runs still never enter the ledger (`rsk status` lists them as `(run-watch.s)`)' "procedure-slurm: run-watch's runs: tagged, unledgered"
 has "$STP" "({tools\[k\]}'s)" "...status.py tags them with the tool"; has "$DT" 'run-watch.s runs never enter it' "DESIGN: the same, in the honest limits"
-# R5-6: ssh never opened the session = not reached, nothing sent (rsk launch: NOT_SUBMITTED; rsk cancel: a cancel_own use back)
-for w in 'Connection refused' 'Connection timed out' 'No route to host' 'Could not resolve hostname' 'Permission denied' 'Host key verification failed'; do
-  has "$PSLT" "\`$w" "procedure-slurm: ssh's never-opened words: $w"; has "$CP" "$w" "...cancel.not_reached: $w"; done
-has "$ST" 'unless it says `<t> not reached — nothing sent` (Slurm: ssh never opened the session) = NOT_SUBMITTED' "$F: exit 5 not reached after a submit"
-has "$PSLT" 'exit 5 `<t> not reached — nothing sent: <that line>`, the use given back, `plan <id> is free again`' "procedure-slurm: a submit not reached is NOT_SUBMITTED"
-has "$LP" 'not reached — nothing sent: {gone' "...launch.py's settle"; has "$LP" 'from remote_run.cancel import not_reached' "...with cancel's own test of ssh's words"
-has "$PSLT" '`not reached — nothing sent` (exit 5): a `cancel_own` use is given back, a cancel approval stays used' "procedure-slurm: a cancel not reached"
-has "$PNOT" '`not reached — nothing sent` (exit 5; a `cancel_own` use is given back, a cancel approval stays used)' "procedure-nohup: the same"
-has "$CP" 'not reached — nothing sent: {gone' "...cancel.py says it"; has "$DT" 'a cancel approval stays used even then' "DESIGN: approvals never come back (D6)"
-has "$DT" 'exit 5 `<t> not reached — nothing sent`' "DESIGN: a submit not reached"; has "$AT" 'exit 5 `not reached — nothing sent`' "AGENTS: the same"
-has "$DT" "\`tests/py/test_cancel.py\` \`SshWords\`, from the local ssh client; the submit: \`test_launch.py\` Round5 \`test_r5_6_a_submit…\`, \`tests/62\` 'R5-6 for rsk launch'" "DESIGN cites the reproductions"
-has "$(cat "$RS_HOME/tests/py/test_cancel.py")" '^class SshWords(' "...test_cancel.py has SshWords"; has "$(cat "$RS_HOME/tests/py/test_launch.py")" 'def test_r5_6_a_submit' "...test_launch.py the submit case"
-has "$(cat "$RS_HOME/tests/62-rsk-launch.sh")" 'R5-6 for rsk launch' "...tests/62 the end-to-end case"
+# R6-4 (R5-6 reverted): ssh's own words are no proof — a ProxyCommand's fallback route or a login shell prints "Connection refused"
+# on a session that ran: a submit's ssh 255 with no receipt is SUBMIT_UNKNOWN (the use kept, the plan used), a cancel's 255
+# before @@start "may have been sent" (the use kept)
+has "$LP" "ssh's own words are no proof that nothing was sent" "R6-4: launch.py's settle: a submit's 255 is SUBMIT_UNKNOWN whatever ssh's stderr says"
+has "$CP" "ssh's own words are no proof that the body never ran" "R6-4: cancel.py: a cancel's 255 before @@start may have been sent"
+hasnt "$LP" 'not_reached' "R6-4: launch.py no longer reads ssh's words as proof (no cancel.not_reached)"; hasnt "$CP" 'not_reached\|NOT_REACHED' "...nor cancel.py"
+has "$(cat "$RS_HOME/tests/py/test_cancel.py")" 'def test_r6_4_ssh_255_before_start_may_have_been_sent_whatever_its_stderr_says' "...test_cancel.py pins the cancel"
+has "$(cat "$RS_HOME/tests/py/test_cancel.py")" 'SSH_FALLBACK' "...with its fallback-route stub (the body runs, then 255)"
+has "$(cat "$RS_HOME/tests/py/test_launch.py")" 'def test_r6_4_a_slurm_submit_s_ssh_255_is_unknown_whatever_its_stderr_says' "...test_launch.py the submit"
+has "$(cat "$RS_HOME/tests/62-rsk-launch.sh")" 'R6-4 for rsk launch' "...tests/62 the end-to-end submit"; has "$(cat "$RS_HOME/tests/62-rsk-launch.sh")" "R6-4: a fallback route's" "...and the fallback route (\$T/ssh.fallback)"
+has "$ST" 'Exit 5 after a submit = SUBMIT_UNKNOWN, never resubmitted (it blocks that run until `rsk status` settles it), whatever ssh.s own words were' "$F: a submit's exit 5 is unknown whatever ssh said"
+has "$ST" 'the plan stays used' "$F: ...the plan stays used"
+has "$PSLT" "ssh's own words are no proof that nothing was sent" "procedure-slurm: a submit's 255 is SUBMIT_UNKNOWN"
+has "$PSLT" 'The use is kept and the plan stays used (`rsk launch --plan <id>` again: exit 6 `was used already`)' "procedure-slurm: ...the use kept, the plan used"; has "$LP" 'was used already' "...launch.py's refusal"
+has "$PSLT" '`rsk adopt -T <t> --not-submitted <NONCE> --approve "<their words>"`' "procedure-slurm: only the user's words close an attempt the journal never saw"
+has "$(cat "$RS_HOME/src/remote_run/adopt.py")" 'rsk adopt -T t --not-submitted NONCE --approve' "...rsk adopt takes them"
+for f in "$PSLT" "$PNOT"; do has "$f" "ssh's own words are no proof that the body never ran; the use is kept" "a procedure: a cancel's 255 before @@start may have been sent"; done
+has "$DT" "ssh's own words are never that proof" "DESIGN: ssh's words never prove a submit unsent"; has "$AT" "SUBMIT_UNKNOWN whatever ssh's stderr says" "AGENTS: the same"
+has "$DT" "\`tests/62\` with \`\$T/ssh.fallback\`" "DESIGN cites the end-to-end reproduction"; has "$DT" '`SSH_FALLBACK` stub' "DESIGN cites test_cancel's stub"
+has "$(cat "$RS_HOME/tests/62-rsk-launch.sh")" 'ssh.fallback' "...tests/62 has \$T/ssh.fallback"
+for f in "$ST" "$PSLT" "$PNOT" "$DT" "$AT" "$RT"; do hasnt "$f" 'not reached — nothing sent' "the R5-6 'not reached — nothing sent' proof is gone from the docs"; done
 # R5-5: a non-zero scancel is unknown, unless scancel's own line says there was nothing to cancel
 has "$PSLT" 'A non-zero `scancel` is `UNKNOWN: job J (<run> aNN): scancel exit N (…)` (exit 5): the use is kept and the ledger shows `CANCELLING?`' "procedure-slurm: a failing scancel is unknown"
 has "$CP" 'out(f"UNKNOWN: {what}: scancel exit {src}"' "...cancel.py prints it"; has "$CP" '"CANCELLING?"' "...and records CANCELLING?"
@@ -473,8 +481,14 @@ for f in "$PNOT" "$AT" "$DT"; do has "$f" 'tests/vgate/launchers.sh' "a doc cite
 has "$(cat "$RS_HOME/tests/88-vgate.sh")" 'launchers.sh' "...tests/88 checks its plumbing"
 has "$DT" "ssh <alias> .bash -s <dir>/.venv/bin/python. < tests/vgate/launchers.sh" "DESIGN: how it is run (with the user's OK)"; has "$VL" "ssh <alias> 'bash -s <dir>/.venv/bin/python' < tests/vgate/launchers.sh" "...as its header says"
 for k in ds_abbrev ds_short ds_alias ds_ignores_cvd ds_hostfile acc_hyphen acc_abbrev acc_sets_cvd; do has "$DT" "$k" "DESIGN lists launchers.sh's $k"; has "$VL" "$k=" "...launchers.sh prints $k="; done
-for w in '`/job/hostfile`' '`.deepspeed_env`' '`--config_file`' 'flags an expansion or a script supplies'; do has "$PNOT" "$w" "procedure-nohup honest limit: $w"; done
-has "$DT" '/job/hostfile' "DESIGN honest limit: the hostfile"; has "$VL" 'DLTS_HOSTFILE' "...launchers.sh reads its path from the installed runner"
+# round 6 (R6-3): accelerate's config and /job/hostfile are now CHECKED, so they left the honest limits; what is still not read is listed
+for w in 'launcher flags that only an expansion or a script supplies' 'an `HF_HOME` the `ENV_HOOK` sets' 'a relative `--config_file` after a `cd` in RUN' \
+         'docker `--env-file`' 'compose files' '`.deepspeed_env`' 'a docker daemon whose default runtime is nvidia' '`docker_default_runtime=`'; do
+  has "$PNOT" "$w" "procedure-nohup honest limit: $w"; has "$DT" "$w" "DESIGN honest limit: $w"; done
+hasnt "$PNOT" 'accelerate.s config file (`gpu_ids` in `--config_file` or its default config)' "procedure-nohup: accelerate's config is no longer an unchecked limit"
+hasnt "$DT" 'read accelerate.s config file or deepspeed.s `/job/hostfile`\|a launcher.s config file or hostfile' "DESIGN: nor the config / hostfile"
+has "$PNOT" '`deepspeed` without `--hostfile`/`-H` warns when `/job/hostfile` exists' "procedure-nohup: /job/hostfile is checked"
+has "$DT" 'deepspeed.s runner reads `/job/hostfile` when no `--hostfile` is given' "DESIGN: the same"; has "$VL" 'DLTS_HOSTFILE' "...launchers.sh reads its path from the installed runner"
 LA=$(sed -n '/^rs_launchers() {/,/^}/p' "$RS_HOME/remote/launch.sh"); la() { ( DEV=0; eval "$LA"; rs_launchers "$1" 2>&1 ); }
 for r in 'deepspeed --include localhost:1 t.py' 'deepspeed -i localhost:1 t.py' 'deepspeed --exclude localhost:0 t.py' 'deepspeed -e localhost:0 t.py' 'ds --num_gpus 2 t.py' \
          'deepspeed.pt --num_accelerators 2 t.py' 'python -m deepspeed.launcher.runner --num_nodes 1 t.py' 'deepspeed -H hf t.py' 'deepspeed --hostfile hf t.py' \
@@ -496,6 +510,134 @@ for f in "$PNOT" "$DT"; do has "$f" 'the payload is code — what it does once i
 has "$DT" '\*\*The honest limits\.\*\*.*the payload is code — what it does once it starts is outside what rsk can check' "...in DESIGN's honest limits"
 for f in "$PSLT" "$DT"; do has "$f" 'is not seen by `rsk watch`.s row check' "rsk watch's static row check misses a policy that rewrites -p (honest limit)"; done
 has "$PSLT" '(`--release` and an `SBATCH_EXTRA` singleton act outside it)' "procedure-slurm: denies are checked for --release too"; has "$WP" 'VALUE_FLAGS = (.*"--release"' "...rsk watch reads --release"
+echo "-- round 6: what the docs now promise, each beside the code that does it (docs @@ code) --"
+HP=$(cat "$RS_HOME/src/remote_run/harness.py"); VC=$(cat "$RS_HOME/tests/vgate/containers.sh" 2>/dev/null); VLO=$(cat "$RS_HOME/tests/vgate/local.sh" 2>/dev/null)
+T61=$(cat "$RS_HOME/tests/61-launch-remote.sh"); TG=$(cat "$RS_HOME/tests/py/test_grants.py"); TC=$(cat "$RS_HOME/tests/py/test_cancel.py")
+# info_launchers (envelope): this launch.sh has the round-6 checks; rsk needs it (an older card lacks those WARNINGs)
+has "$LSH" 'info_prior=%s\\ninfo_launchers=checked' "launch.sh prints info_launchers=checked right after info_prior"
+has "$GP" '"info_launchers")}' "...grants.NEEDED (nohup) needs it: needs: sync"; has "$LP" 'its plan block lacks {' "...launch.py's needs: sync names what is missing"
+has "$PNOT" 'as a relaunch) `info_launchers=checked` (above' "procedure-nohup: info_launchers in the envelope, after info_prior"
+has "$PNOT" '`needs: sync … lacks info_launchers`, a plan stored without it is refused at `--plan`' "procedure-nohup: a block / stored plan without it"
+has "$AT" 'after `info_prior`, `info_launchers=checked`' "AGENTS: the envelope key"; has "$DT" 'after `info_prior`, `info_launchers=checked`' "DESIGN: the envelope key"
+has "$DT" 'a grant would cover, say, `docker run --gpus all`' "DESIGN: why rsk needs it"
+has "$(cat "$RS_HOME/tests/py/test_launch.py")" 'def test_r6_a_box_whose_launch_sh_predates_the_launcher_and_container_checks_needs_a_sync' "...test_launch.py pins it"
+# R6-2 / R6-6 / exec -c: APPTAINERENV_ assignments and an emptied environment are refused (exit 2 before the claim)
+has "$LSH" '(APPTAINERENV_|SINGULARITYENV_)?' "launch.sh: APPTAINERENV_/SINGULARITYENV_ + a GPU name is an assignment"
+has "$LSH" 'empties the whole environment in its text' "launch.sh: an emptied environment is refused"
+has "$PNOT" '`APPTAINERENV_NAME=` / `SINGULARITYENV_NAME=` count as `NAME=` (apptainer sets NAME inside the container from it, `--cleanenv` or not)' "procedure-nohup: APPTAINERENV_ counts"
+has "$PNOT" 'Nor may RUN.s text empty the whole environment, anywhere' "procedure-nohup: the empty-environment rule"
+has "$PNOT" "ERROR: RUN empties the whole environment in its text ('env -i': the harness's CUDA_VISIBLE_DEVICES and CUDA_DEVICE_ORDER would go" "procedure-nohup: its message"
+has "$PNOT" "(env's options end at its command: \`env A=1 cmd -i\` and \`cmd -i\` are fine)" "procedure-nohup: env's options end at its command"
+has "$PNOT" "\`tests/61\` R6-6 and 'round-6 integration: bash's \`exec -c\`'" "procedure-nohup cites the facts' reproductions"; has "$T61" "round-6 integration: bash's \`exec -c\`" "...tests/61 reproduces them"
+for f in "$PNOT" "$DT" "$AT"; do has "$f" 'env_anywhere=' "a doc cites tests/vgate/local.sh env_anywhere="; done; has "$VLO" 'echo "env_anywhere=' "...local.sh prints it"
+has "$ST" 'as `APPTAINERENV_<name>=` too, and so is one emptying the environment (`env -i`, `exec -c`)' "$F rail: APPTAINERENV_ and an emptied environment"
+has "$RT" 'as is one that empties the environment (`env -i`, `exec -c`)' "README: the same"
+has "$CKT" '`APPTAINERENV_NAME=` / `SINGULARITYENV_NAME=` count as `NAME=`' "conf-keys RUN row: APPTAINERENV_"; has "$CKT" 'nor empty the whole environment anywhere' "conf-keys RUN row: the empty-environment rule"
+has "$PST" 'and so is one that empties the environment, `env -i` / `exec -c`' "project-setup: the same"
+has "$DT" 'Emptying the whole environment anywhere takes the harness.s `CUDA_VISIBLE_DEVICES` and `CUDA_DEVICE_ORDER` with it' "DESIGN: why env -i is refused"
+for r in 'APPTAINERENV_CUDA_VISIBLE_DEVICES=0 apptainer exec img p' 'SINGULARITYENV_NVIDIA_VISIBLE_DEVICES=all singularity run img' 'env -i PATH=/bin p' 'env -vi p' 'env -0i p' \
+         'env - p' 'env -- - p' 'x | env --ignore-environment y' 'x | env --i y' 'timeout 1h env -i p' 'nice -n 5 env -i p' 'env -v -i p' 'env -u NAME -i p' 'env -C /tmp -i p' \
+         "env -S'-i p'" 'exec -c p' 'x; exec -c p' 'x | exec -c p' '(exec -c p)' '{ exec -c p; }' '`exec -c p`' "'exec' -c p" 'if x; then exec -c p; fi' 'while x; do exec -c p; done' \
+         'if x; then y; else exec -c p; fi' 'time exec -c p' '! exec -c p' 'builtin exec -c p' 'command exec -c p' 'A=1 exec -c p' 'exec -l -c p' 'exec -a n -c p'; do
+  gt "$r" && bad "rs_gputext refuses the doc's example: $r" || ok "rs_gputext refuses the doc's example: $r"; done
+for r in 'env A=1 cmd -i' 'cmd -i' 'exec -ac y' 'exec -a -c y' 'exec -- -c' 'apptainer exec -c img p' 'singularity exec -c img p' 'kubectl exec -c ctr pod -- p'; do
+  gt "$r" && ok "rs_gputext lets through the doc's: $r" || bad "rs_gputext lets through the doc's: $r"; done
+# R6-2 / R6-3: container runtimes and launcher configs are counted WARNINGs
+has "$LSH" 'local dsh=/job/hostfile' "launch.sh looks for deepspeed's default hostfile at /job/hostfile"
+for w in "a container started so does not get this launch's CUDA_VISIBLE_DEVICES and may see GPUs its runtime picks" 'drop those flags and settings (it then uses these), or name the GPUs it will use to the user' \
+         'drop those flags (it then keeps these), or' '(present: its default hostfile, read without --hostfile)'; do
+  has "$PNOT" "$w" "procedure-nohup: the WARNING's words: $w"; has "$LSH" "$w" "...launch.sh's: $w"; done
+has "$PNOT" '`with a config it cannot read here (…)`' "procedure-nohup: the unreadable-config form"; has "$LSH" 'a config it cannot read here (' "...launch.sh's"
+has "$PNOT" '`--config_file FILE` (relative to the project dir), else `$PROJ/.cache/huggingface/accelerate/default_config.yaml`' "procedure-nohup: which config is read"
+has "$PNOT" 'no other grant covers a GPU container run' "procedure-nohup: only the card or an any grant covers a container run"
+has "$ST" 'a container runtime picking GPUs (`docker run --gpus`…, `apptainer --cleanenv`…)' "$F rail: containers"; has "$ST" '(accelerate.s `gpu_ids`, `/job/hostfile`)' "$F rail: launcher settings"
+has "$RT" 'a container started with GPUs of its own (`docker run --gpus`, `apptainer --cleanenv`)' "README: containers"
+has "$CKT" 'a container runtime that picks GPUs' "conf-keys RUN row: containers"; has "$PST" '`docker run --gpus` / `apptainer --cleanenv`' "project-setup: containers"
+has "$DT" 'A container does not inherit the landing at all' "DESIGN: containers"; has "$AT" '`rs_launchers`: deepspeed / accelerate launch' "AGENTS: rs_launchers"
+mkdir -p "$T/la6"; la6() { ( DEV=0; PROJ=$T/la6; eval "$LA"; rs_launchers "$1" 2>&1 ); }
+for r in 'docker run --gpus all img' 'docker run --gpus "device=$CUDA_VISIBLE_DEVICES" img' 'docker run --runtime=nvidia img' 'docker run --runtime runc img' \
+         'podman run --device nvidia.com/gpu=all img' 'docker run --device /dev/nvidia0 img' 'docker run --device $D img' 'docker run --privileged img' \
+         'docker run -e NVIDIA_VISIBLE_DEVICES img' 'docker run --env NVIDIA_VISIBLE_DEVICES img' 'nvidia-docker run img'; do
+  has "$(la6 "$r")" "^WARNING: RUN runs .* — a container started so does not get this launch's CUDA_VISIBLE_DEVICES .*: name the GPUs it will use to the user\$" "rs_launchers warns for the doc's container: $r"; done
+for r in 'apptainer exec --cleanenv img p' 'singularity exec -e img p' 'apptainer exec --containall img p' 'apptainer exec -C img p' 'apptainer exec -ce img p'; do
+  has "$(la6 "$r")" '^WARNING: RUN runs .* a container started so .*: drop those flags (it then keeps these), or name' "rs_launchers warns for the doc's: $r"; done
+for r in 'accelerate launch --config_file $X t.py' 'accelerate launch --config_file ~bob/c.yaml t.py' 'accelerate launch --config_file missing.yaml t.py' 'HF_HOME=/x accelerate launch t.py' 'unset HF_HOME; accelerate launch t.py'; do
+  has "$(la6 "$r")" '^WARNING: RUN runs accelerate launch with a .*config it cannot read here (.*drop those flags and settings' "rs_launchers warns (config not readable here): $r"; done
+for c in 'gpu_ids: 0,1' 'gpu_ids: "1"' 'gpu_ids:
+  - 0'; do printf '%s\n' "$c" > "$T/la6/c.yaml"
+  has "$(la6 'accelerate launch --config_file c.yaml t.py')" '^WARNING: RUN runs accelerate launch with gpu_ids: .* in c\.yaml' "rs_launchers warns for the doc's config: $(printf %s "$c" | tr '\n' ' ')"; done
+for c in 'gpu_ids: all' 'gpu_ids: null' 'gpu_ids: ~' 'gpu_ids:' 'gpu_ids: "all"'; do printf '%s\n' "$c" > "$T/la6/c.yaml"
+  hasnt "$(la6 'accelerate launch --config_file c.yaml t.py')" 'WARNING' "rs_launchers: no warning for the doc's config: $c"; done
+for r in 'docker run img' 'docker run -e CUDA_VISIBLE_DEVICES img' 'apptainer exec --nv img p' 'accelerate launch t.py'; do hasnt "$(la6 "$r")" 'WARNING' "rs_launchers: no warning for $r"; done
+[ -e /job/hostfile ] && ok "deepspeed's no-flag case: /job/hostfile exists on this machine (SKIP)" || hasnt "$(la6 'deepspeed t.py')" 'WARNING' "rs_launchers: deepspeed with no flags and no /job/hostfile: no warning"
+# tests/vgate: launchers.sh's round-6 keys, containers.sh, and how they are run
+for k in ds_pool_cvd acc_all acc_cfg_gpu_ids acc_cfg_hyphen acc_cfg_default acc_cfg_json_only; do has "$DT" "$k" "DESIGN lists launchers.sh's $k"; has "$VL" "$k=" "...launchers.sh prints $k="; done
+[ -f "$RS_HOME/tests/vgate/containers.sh" ] && ok "tests/vgate/containers.sh exists" || bad "tests/vgate/containers.sh exists"
+has "$(cat "$RS_HOME/tests/88-vgate.sh")" 'containers.sh' "...tests/88 checks its plumbing"
+has "$DT" "ssh <alias> .bash -s <docker-image|-> <apptainer-image|->. < tests/vgate/containers.sh" "DESIGN: how containers.sh is run (with the user's OK)"; has "$VC" "ssh <alias> 'bash -s <docker-image|-> <apptainer-image|->' < tests/vgate/containers.sh" "...as its header says"
+for k in '_version' '_gpus_flag' '_env_e' '_cleanenv' '_containall' '_prefix' 'docker_default_runtime'; do has "$DT" "$k" "DESIGN lists containers.sh's $k"; has "$VC" "$k=" "...containers.sh prints $k="; done
+for f in "$PNOT" "$AT"; do has "$f" 'containers.sh' "a doc cites tests/vgate/containers.sh"; done
+# R6-1: a deny that names a run and lists relaunch / resubmit stops every launch of it, on any target in its scope
+has "$GP" 'def run_deny(' "grants.run_deny"; has "$GP" 'RUN_DENY_NOTE = ("a deny of relaunching a run stops every launch of it, on any target in its scope: rsk cannot see "' "...its refusal's note"
+has "$PSLT" '— a deny of relaunching a run stops every launch of it, on any target in its scope: rsk cannot see every earlier attempt (another target, run-watch, an older harness, another checkout)' "procedure-slurm: the refusal's words"
+has "$GP" '"every earlier attempt (another target, run-watch, an older harness, another checkout)")' "...grants.py says them"
+has "$PSLT" '`DENY relaunch (it names a run: every launch of it too — …)`' "procedure-slurm: grant list's line"; has "$GP" '(it names a run: every launch of it too — rsk cannot see every earlier attempt)' "...grants.describe"
+has "$PSLT" 'a launch grant recorded right after it gets a `FLAG`' "procedure-slurm: a launch grant after it is flagged"
+has "$PSLT" 'A deny naming no run keeps the derived action' "procedure-slurm: a deny naming no run"
+has "$PSLT" 'becomes a deny only once a has run: a deny always wins' "procedure-slurm: a conditional wish waits"
+has "$PSLT" 'a deny naming the row.s run with `relaunch` meets it at `(launch)`' "procedure-slurm: rsk watch meets it at (launch)"; has "$WP" '({a}): {why}' "...watch.py names the action"
+has "$ST" 'A deny naming a run with `relaunch`/`resubmit` stops every launch of it on any target in its scope (rsk cannot see every earlier attempt)' "$F: the R6-1 rule"
+has "$ST" 'record "if a fails, don.t relaunch it" only once a has run' "$F: a conditional wish waits"
+has "$PNOT" 'A deny that names the run and lists `relaunch` or `resubmit` stops every launch of it' "procedure-nohup: the same"
+has "$DT" 'matches EVERY launch-type action of that run — launch and chain included — on any target in its scope' "DESIGN: the rule"
+has "$DT" 'becomes a deny only once a has run: a deny always wins' "DESIGN: the conditional wish"; has "$AT" '`grants.run_deny`' "AGENTS: run_deny"
+has "$RT" '"never relaunch a" stops every launch of a in its scope' "README: the same"
+has "$TG" 'def test_r6_1_a_relaunch_deny_that_names_a_run_stops_every_launch_of_it' "...test_grants.py pins it"; has "$(cat "$RS_HOME/tests/62-rsk-launch.sh")" 'round 6 R6-1' "...tests/62 end to end"
+# R6-5: --partition checked against T_PARTITIONS; a GPU type echoed, never checked
+has "$PSLT" "\`unknown partition 'P' (--partition): <targets> list <a, b> (T_PARTITIONS) — nothing recorded\`" "procedure-slurm: the refusal"
+has "$GP" 'raise RskError(f"unknown partition ' "...grants.check_scope"; has "$GP" "(T_PARTITIONS) — nothing \"$" "...its words"
+has "$PSLT" '`none (a workstation has no partitions)`' "procedure-slurm: a workstation-only scope"; has "$GP" 'none (a workstation has no partitions)' "...grants.py"
+has "$PSLT" '`NOTE: partition P is not checked on <t>' "procedure-slurm: unchecked where T_PARTITIONS is missing"; has "$GP" 'f"NOTE: partition {' "...grants.py"
+has "$PSLT" '`NOTE: GPU type X is not checked' "procedure-slurm: a GPU type is echoed"; has "$GP" 'f"NOTE: GPU type {' "...grants.py"
+has "$HP" 'partitions=tuple(f\[6\].split()) or None' "...harness.targets reads each profile's T_PARTITIONS"
+has "$ST" '`--partition` one their `T_PARTITIONS` list where they list them (`unknown partition`; GPU types are never checked)' "$F: --partition checked"
+has "$DT" 'They refuse a partition the same way where it can be checked' "DESIGN: the same"; has "$AT" '`unknown partition`' "AGENTS: the same"
+has "$(tr '\n' ' ' < "$RS_HOME/targets/_template-slurm/profile.sh")" 'what `rsk grant` checks a --partition against: list every partition the policy accepts' "slurm template: T_PARTITIONS is what rsk grant checks"
+has "$PKT" '`T_PARTITIONS` lists every partition the policy accepts' "packs.md: the same"; has "$I" '`T_PARTITIONS` lists every partition the policy accepts (`rsk grant` checks a `--partition` against it)' "INSTALL: the same"
+has "$TG" 'def test_r6_5_a_partition_no_scoped_target_lists_is_refused' "...test_grants.py pins it"
+# R6-9: rsk grant list and rsk doctor flag a stored record naming what the harness does not know
+has "$PSLT" '— never matches\[ there\] (the user.s deny is not enforced there | it covers nothing there) — fix or revoke: rsk grant revoke <id> --quote "<the user.s words>", then record it again with a scope the harness knows' "procedure-slurm: grant list's WARNING"
+has "$GP" "the user's deny is not enforced there" "...grants.scope_warning"; has "$GP" 'fix or revoke: rsk grant revoke {rid} --quote' "...its fix"
+has "$PSLT" '`--json`: `scope_problems`' "procedure-slurm: --json scope_problems"; has "$GP" '"scope_problems": scope_problems(r, tl)' "...grants.py's --json"
+has "$PSLT" '(`== grants ==`)' "procedure-slurm: rsk doctor's section"; has "$CLI" 'out("== grants ==")' "...cli.py's doctor"
+has "$ST" '`rsk grant list` and `rsk doctor` flag a record naming what the harness does not know (`never matches`)' "$F: the flag"
+has "$DT" '`== grants ==`; its exit code is unaffected' "DESIGN: doctor's section, exit code unaffected"; has "$CLI" 'fails += level == "FAIL"' "...doctor counts only FAIL lines"
+has "$RT" 'flags a recorded permission or "never" naming a target or partition the harness does not know' "README: rsk doctor flags them"
+has "$I" 'a `== grants ==` WARN' "INSTALL: the doctor section"; has "$AT" '`grants.scope_problems`' "AGENTS: scope_problems"
+has "$TG" 'def test_r6_9_list_and_doctor_flag_a_stored_record_naming_what_the_harness_does_not_know' "...test_grants.py pins it"
+# R6-7: a deny by job ids counts for rsk watch rows only under fail-stop
+has "$PSLT" 'except a deny scoped by job ids (`rsk grant deny --job J --action cancel`), which counts only for a table whose `#@ allow` line has `fail-stop`, the one cancel run-watch makes, and there matches every row' "procedure-slurm: R6-7"
+has "$WP" 'st if a != "cancel" or "cancel" in acts else no_jobs' "...watch.deny_hit"
+has "$DT" 'only a deny scoped by job ids, which is for cancels, counts just for a table whose `#@ allow` has `fail-stop`' "DESIGN: the same"
+has "$AT" 'a deny scoped by job ids only for a table whose `#@ allow` has `fail-stop`' "AGENTS: the same"
+has "$(cat "$RS_HOME/tests/py/test_watch.py")" 'def test_r6_7_a_deny_by_job_id_counts_only_under_fail_stop' "...test_watch.py pins it"
+# R6-8: the UNKNOWN cancel line quotes scancel's line for that job, never another job's
+has "$PSLT" 'quotes scancel.s line naming job id J, else its last line naming no job id, else nothing — never another job.s line' "procedure-slurm: R6-8"
+has "$CP" 'def scancel_line(' "...cancel.scancel_line"; has "$CP" 'said = scancel_line(' "...used for the UNKNOWN line"
+has "$DT" 'never another job.s (`cancel.scancel_line`)' "DESIGN: the same"; has "$AT" '`cancel.scancel_line`' "AGENTS: the same"
+has "$TC" 'def test_r6_8_the_unknown_message_quotes_scancel_s_line_for_that_job' "...test_cancel.py pins it"
+# run-watch: a --release not used yet is withdrawn once a fail-stop holds its table later in the same watch
+has "$PSLT" '(`ATTENTION … reason=release-withdrawn fail-stop=<trigger>`)' "procedure-slurm: release-withdrawn"; has "$RW" 'reason=release-withdrawn fail-stop=' "...bin/run-watch"
+has "$PSLT" 'the holds that exist when the watch starts' "procedure-slurm: a release covers the holds at the start"
+has "$DT" 'reason=release-withdrawn fail-stop=<trigger>' "DESIGN: the same"; has "$AT" 'reason=release-withdrawn' "AGENTS: the same"
+has "$(cat "$RS_HOME/tests/47-watch.sh")" 'round 6: a --release not used yet is withdrawn' "...tests/47 pins it"
+# the consolidated honest limits (R6-10)
+has "$DT" 'What rsk cannot check, in one place' "DESIGN: one honest-limits list"
+for w in 'the payload is code — what it does once it starts is outside what rsk can check' 'sudo.s `env_reset`, `systemd-run`' \
+         'a standing launch grant still covers the first launch, on another target, of a run whose earlier attempts rsk cannot see' \
+         'two detect-only run-watch processes started within the same instant over a stale `logs/run-watch/.lock`' \
+         'an older installed run-watch reads only the last `#failstop` of a state file'; do has "$DT" "$w" "DESIGN honest limit: $w"; done
+has "$PNOT" 'an `exec -c` the text does not show at a command start, sudo.s `env_reset`, `systemd-run`, ssh' "procedure-nohup honest limit: environment changes the text does not show"
 CK=$(cat "$RS_HOME/$CKF" 2>/dev/null)
 has "$CK" 'T_XFER_HOST.*profile' "conf-keys: the transfer host is a profile fact"
 hasnt "$CK" '^| `XFER_HOST`' "conf-keys: no XFER_HOST conf key (one per conf would misroute other targets)"
@@ -574,7 +716,7 @@ budget lib/common.sh 141; budget remote/env.sh 170; budget remote/bootstrap.sh 1
 # counts journal receipts named the run id or <run id>--aNN plus this WorkDir's squeue rows no receipt names, says unknown when squeue failed or a
 # receipt is unreadable, and undoes a policy's set -f / failglob (+15); the block line (+1)
 budget remote/status.sh 175   # generous on purpose: every lookup has an explicit failure branch; compressing them hides bugs
-budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 258; budget AGENTS.md 310; budget INSTALL.md 237 # AGENTS +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
+budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 262; budget AGENTS.md 327; budget INSTALL.md 238 # AGENTS +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
 # P3-P7 docs: AGENTS +25 (the rsk modules, tests/62, the authorisation model, the P7 nudge, the new rails); README +10 (what is asked and
 # what is not, the honest limit, the rsk launch step, src/); INSTALL +5 (doctor --legacy-refs, earlier permissions, standing words)
 # P3 review: AGENTS +8 (--rs-warnings, the plan skips launch.sh's env gate, the new bound fields, plan-scoped approvals, the review's never-covered list)
@@ -591,7 +733,11 @@ budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget RE
 # (rs_launchers, tests/vgate/launchers.sh); denies: target_key names, scope.jobs for cancels only, unknown targets; a submit or cancel
 # not reached, a non-zero scancel unknown (scancel_ended= / scancel_invalid=); every fail-stop kept, --release its own, exact row targets;
 # the gate idiom); README +1 (the workstation RUN rule on the whole text, the launcher warning)
-budget skills/remote-run/SKILL.md 137; budget bin/run-watch 1092   # round 3: SKILL +11 (the -y rule with grant kinds, --allow-warnings availability|any,
+# round 6: AGENTS +17 (info_launchers in the block; APPTAINERENV_ and the emptied environment in rs_gputext; rs_launchers' configs and
+# container runtimes with tests/vgate/containers.sh; release-withdrawn; denies: T_PARTITIONS, scope_problems in list/doctor, run_deny;
+# a submit's / cancel's ssh 255 unknown whatever ssh says, scancel_line; job-id denies under fail-stop only); README +4 (a run-naming
+# relaunch deny, the emptied environment, launcher configs and containers, rsk doctor's grants check); INSTALL +1 (doctor's grants WARN)
+budget skills/remote-run/SKILL.md 143; budget bin/run-watch 1097   # round 3: SKILL +11 (the -y rule with grant kinds, --allow-warnings availability|any,
 # derived actions and the sticky class, relaunch only after an infrastructure end, cancel approvals bound / 1 h / used up, rsk watch --act vs
 # denies (also in §3), `plan <id> is free again`); run-watch +116 lines (881 → 997), D11 — target column and same-target inheritance, sticky unknowns from any state file
 # (foreign/settled/R_FU, the journal hands back the row's own status), fail-stop inherited with rows plus --release of a non-row trigger, pending
@@ -601,12 +747,17 @@ budget skills/remote-run/SKILL.md 137; budget bin/run-watch 1092   # round 3: SK
 # round 5: SKILL +6 (exit 5 `not reached — nothing sent` after a submit = NOT_SUBMITTED; `rsk grant deny --job` for cancels only, a run's
 # launches by --name, -T a known target; a run only the journal shows is a relaunch (info_prior), fail closed; RUN's text anywhere and the
 # launcher WARNING in the GPU rail).
+# round 6: SKILL +6 (a submit's exit 5 stays unknown whatever ssh said, the plan used (+0); --partition checked against T_PARTITIONS, a
+# deny naming a run stops every launch of it (and a conditional wish waits), grant list / doctor flag what never matches (+4);
+# APPTAINERENV_, env -i / exec -c, launcher configs and container runtimes in the GPU rail (+2)).
 # round 4: run-watch +60 (997 → 1057) — R4-7 the rsk steer for --act/--approve and RS_WATCH_PARENT (exit 7 once rsk watch is gone, checked
 # before every ssh that acts) with its header lines +38, R4-13 fail-stop looked up every round in every state file + #failstop-released +12,
 # R4-14 a pre-target state line's target inferred or unknown, the settle-path WorkDir and the submit ssh's identity re-check +10.
 # round 5: run-watch +35 (1057 → 1092) — R5-7 a table's fail-stops as a set (fs_sid fs_has fs_trig fs_own fs_list fs_trigs fsp_add fsp_keep
 # fs_lines), pending cancels tagged per stop, fs_others one entry per stop, --release clears only its trigger's stops (release-held / held-by),
 # a table's own stop beside another group's (+31); R5-8 a row target is a plain name rs_targets lists, at parse and in load_targets (+2); header +2.
+# round 6: run-watch +5 (1092 → 1097) — rel_drop: a fail-stop that holds a table only later in the watch (formed there, or taken from another
+# state file) withdraws its rows' --release not used yet, ATTENTION reason=release-withdrawn (+3), its call at the end of reconcile (+1); header +1.
 # P3 review +55: a row's state across renamed/copied tables, fail-stop of a row once its unknown submit is tracked, no --rs-* row words; SKILL: one entry for both kinds (the two it replaced: 62 + 61) + the rsk reads; +20 (P3-P7): the rsk command set, the launch flow (card, exit codes), §3 authorisation (the user's table); run-watch +130 (P3): attempt nonces + the journal read, --adopt and fail-stop identity checks, conf= binding, lock holder, sticky unknowns across tables
 budget skills/remote-run/references/experiment-conventions.md 140;   # +4: the run-watch exception (§3, §6, §7); +1: a USR1 death is FAILED; +3: the authorised exceptions (§5, §6, §7)
 budget skills/remote-run/references/project-setup.md 100

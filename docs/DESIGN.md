@@ -148,11 +148,21 @@ word `-t1` and of a bare word — which it runs as the batch script) was reprodu
 (`slurm-remote.sh` submits 8 tiny jobs, five of them held and cancelled unrun). It also prints scancel's exit and words
 for its own ended job (`scancel_ended=`) and for an id no job can have (`scancel_invalid=`, 4000000000, sent only after
 `squeue -j` lists none) — the words `rsk cancel` reads as "nothing to cancel" (below; not yet run on a cluster, so any
-other wording stays unknown: fail closed); and `launchers.sh` reads the
+other wording stays unknown: fail closed); `launchers.sh` reads the
 launcher facts behind the workstation's launcher WARNING back from an installed deepspeed / accelerate, launching
-nothing (`ds_abbrev ds_short ds_alias ds_ignores_cvd ds_hostfile`, `acc_hyphen acc_abbrev acc_sets_cvd`). Both run only
-with the user's OK, e.g. `ssh <alias> 'bash -s <dir>/.venv/bin/python' < tests/vgate/launchers.sh`; `tests/88-vgate.sh`
-checks their plumbing on stubs and fake modules.
+nothing (`ds_abbrev ds_short ds_alias ds_ignores_cvd ds_hostfile`, `ds_pool_cvd` — yes: the runner turns
+`CUDA_VISIBLE_DEVICES` into `--include` only when no hostfile gave it a resource pool —, `acc_hyphen acc_abbrev
+acc_sets_cvd`, `acc_all`, `acc_cfg_gpu_ids` — the config's `gpu_ids` is taken when `--gpu_ids` is absent —,
+`acc_cfg_hyphen`, `acc_cfg_default` — want `$HF_HOME/accelerate/default_config.yaml` — and `acc_cfg_json_only` — want
+`default_config.json`); and `containers.sh` starts throwaway containers that only `printenv` (no GPU is asked for:
+`ssh <alias> 'bash -s <docker-image|-> <apptainer-image|->' < tests/vgate/containers.sh`) and prints `<rt>_version`,
+`<rt>_gpus_flag`, `<rt>_env` (docker / podman: want `unset`, no host environment goes in), `<rt>_env_e` (a bare `-e`:
+want 5), `docker_default_runtime`, and for apptainer / singularity `<rt>_env` (want 5: it does go in),
+`<rt>_cleanenv` / `<rt>_containall` (want `unset`) and `<rt>_prefix` (`APPTAINERENV_CUDA_VISIBLE_DEVICES=7` with
+`--cleanenv`: want 7). `local.sh` adds `env_anywhere=` (GNU env after a wrapper and its other options: want `rc=1` four
+times, then 125 — `--i` is ambiguous — or 1 on an older env). All of them run only with the user's OK, e.g. `ssh <alias>
+'bash -s <dir>/.venv/bin/python' < tests/vgate/launchers.sh`; `tests/88-vgate.sh` checks their plumbing on stubs and
+fake modules.
 
 A requeued job re-runs its stored batch script with the submit-time environment, but it re-reads `env.sh`, the profile
 and the conf from disk at each start — so a re-sync or an upgrade between submit and restart would silently change a
@@ -198,7 +208,8 @@ handed to the site's policy (`flags=`: the policy may turn them into any sbatch 
 plan with one), the payload argv, the env — kind, name, the `ENV_HOOK` file by its sha256, `VENV_DIR`, `UV_SYNC_ARGS`;
 for a workstation the GPU request rather than the ids picked, and the occupants of the busy GPUs its landing accepts,
 `busy_ok=<id>:<uuid>:<user>,…`) with `bound_hash`, the sha256 of those lines. The envelope (free GPUs now, which ids a
-pick chose, file hashes, the source commit, the warnings; on a workstation `info_run_gpu=checked`, below; and
+pick chose, file hashes, the source commit, the warnings; on a workstation `info_run_gpu=checked` and, after
+`info_prior`, `info_launchers=checked`, below; and
 `info_prior=<n|unknown>` — after `info_source_dirty` on Slurm, after `info_run_gpu` on a workstation —, the run's earlier
 attempts the target can see: journal receipts named the run id or `<run id>--aNN`, on Slurm also squeue's rows of such a
 name with this WorkDir, live or ended and still listed, that no receipt names; `unknown` when squeue failed or a receipt
@@ -234,7 +245,16 @@ wrapper such as `timeout` before `env`, a container's `--env NAME=`. `launch.sh`
 nothing created) a RUN whose leading words do so (or carry any `env` option but `-v`/`--debug`, `-C DIR`, `-u` of
 another name), and a RUN whose TEXT, anywhere, assigns or clears one of them — `NAME=` / `NAME+=`, `-u NAME`,
 `--unset[= ]NAME`, `unset … NAME`, `export -n NAME`, `declare` / `typeset +x NAME`, read as written and again with quotes
-and backslashes removed. A rule on the text cannot tell code from data, so a mention as data (`--note
+and backslashes removed; `APPTAINERENV_NAME=` / `SINGULARITYENV_NAME=` count as `NAME=`, since apptainer sets NAME inside
+the container from them, `--cleanenv` or not (`containers.sh` `<rt>_prefix=`). Emptying the whole environment anywhere
+takes the harness's `CUDA_VISIBLE_DEVICES` and `CUDA_DEVICE_ORDER` with it, so it is refused the same way: `env -i`
+(`-vi`, `-0i`), `env -`, `env -- -`, `--ignore-environment` or any abbreviation of it from `--i` on — after a wrapper,
+after env's other options (`-v`, `-u NAME`, `-C DIR`), inside `-S`'s string —, read with GNU env's own rule that its
+options end at its command (`env A=1 cmd -i` is fine), and bash's `exec -c` where a command starts (`-l` / `-a NAME`
+may come first; never `exec -ac`, `exec -a -c`, `exec -- -c` or a subcommand's `exec -c`, such as apptainer's): `ERROR:
+RUN empties the whole environment in its text ('env -i': …)`. The env facts are `tests/61` R6-6 (and `tests/vgate/local.sh`
+`env_anywhere=` on a box), the `exec -c` ones `tests/61` 'round-6 integration', with the local bash. A rule on the text
+cannot tell code from data, so a mention as data (`--note
 "CUDA_VISIBLE_DEVICES=0"`) is refused too; reading them (`$NAME`, `printenv NAME`) is fine. When the first command shows
 it only after expansion, the wrapper checks the expanded words and never starts the payload. The plan says so with
 `info_run_gpu=checked`, and rsk requires that line (an older deploy: `needs: sync`). Launchers that pick GPUs from their
@@ -244,9 +264,25 @@ from `--gpu_ids` (their source; `tests/vgate/launchers.sh` reads it back from an
 commands, so `launch.sh` does not refuse them: their GPU flags (deepspeed's also as argparse prefixes, `-H`,
 `--master_addr`, `--num_accelerators`; accelerate's `--num_processes` too, both spellings) print a counted WARNING naming
 the launcher, the flags and the landing — on the card, so only the user's approval of it, or a grant of kind `any`, covers
-it. This is a check of RUN's words, not of the payload: the payload is code, and what it does once it starts — set its
-own environment from a script it runs, take a value only an expansion inside a later command supplies (`x | env $PRE
-y`), read accelerate's config file or deepspeed's `/job/hostfile` and `.deepspeed_env` — is outside what rsk can check.
+it. Their configs, and container runtimes, are the same way past the landing. accelerate takes `gpu_ids` from its config
+when `--gpu_ids` is absent (`acc_cfg_gpu_ids=`), so launch.sh reads that config, read-only — `--config_file` (relative to
+the project dir), else `$PROJ/.cache/huggingface/accelerate/default_config.yaml`, where env.sh's `HF_HOME` puts it
+(`.json` when only that is a file: `acc_cfg_default=`, `acc_cfg_json_only=`) — and warns on a `gpu_ids` other than `all` /
+`null` / `~` / empty, on a config it cannot read (missing, unreadable, named by an expansion or `~user`, over 64 KiB) and
+on a RUN that sets or unsets `HF_HOME`; deepspeed's runner reads `/job/hostfile` when no `--hostfile` is given and then
+ignores `CUDA_VISIBLE_DEVICES` (it turns that into `--include` only without a hostfile's resource pool: `ds_hostfile=`,
+`ds_pool_cvd=`), so that file's presence warns. A container does not inherit the landing at all: docker and podman
+pass no host environment in (only `-e`), and `--gpus` (any value), `--runtime`,
+`--device nvidia.com/…` or `/dev/nvidia…`, `--privileged` or a bare `-e NVIDIA_VISIBLE_DEVICES` hand it GPUs its runtime
+picks — `nvidia-docker run` always —, while apptainer / singularity pass the environment in unless `--cleanenv` /
+`--containall` (`containers.sh`). Each is a counted WARNING (`… a container started so does not get this launch's
+CUDA_VISIBLE_DEVICES and may see GPUs its runtime picks …`), so a GPU container run is covered only by the user's
+approval of its card or a grant of kind `any`. A plan says it has these checks with `info_launchers=checked`, which rsk
+requires: an older deploy's card would lack those WARNINGs and a grant would cover, say, `docker run --gpus all`, so a
+block without it is `needs: sync`, and a nohup plan stored without it is refused at `--plan`. This is a check of RUN's
+words, not of the payload: the payload is code, and what it does once it starts — set its own environment from a script
+it runs, take a value only an expansion inside a later command supplies (`x | env $PRE y`), read a config rsk does not
+read — is outside what rsk can check (the honest limits, below).
 
 ## Authorization: check first, ask only outside scope
 
@@ -278,12 +314,15 @@ wins). Covered → act and record the use; not covered → `needs user:` with th
 receipt, no attempt dir at all, `run-launch` failing before its launch ssh) the attempt is `NOT_SUBMITTED`, not
 unknown: the use is given back and the plan's claim released, so once the cause is fixed (a venv built, a policy
 satisfied) `rsk launch --plan <id>` submits the same card under the same record with no new question — `--rs-expect`
-still refuses drift. A Slurm submit whose ssh never opened the session is the same proof from the other side: ssh's own
-exit 255, no answer at all, and ssh's own words for it (`Connection refused` / `timed out`, `No route to host`, `Could not
-resolve hostname`, `Permission denied (…)`, `Host key verification failed`) — exit 5 `<t> not reached — nothing sent`,
-`NOT_SUBMITTED`, the use back and the plan free again; any other 255 may have run there and stays unknown (the words:
-`tests/py/test_cancel.py` `SshWords`, from the local ssh client; the submit: `test_launch.py` Round5
-`test_r5_6_a_submit…`, `tests/62` 'R5-6 for rsk launch'). On a workstation rsk reads the journal before deciding, whatever the exit: a receipt whose gate
+still refuses drift. ssh's own words are never that proof: a Slurm submit whose ssh exits 255 with no receipt — before
+the remote's first line (`@@api`) too — is `SUBMIT_UNKNOWN` whatever its stderr says (`… — ssh exit 255 (<its last line>)
+— ssh's own words are no proof that nothing was sent`), because a ProxyCommand's fallback route or a login shell prints
+`Connection refused` / `Permission denied` on a session that did open and ran `submit.sh` (round 5 took those words as
+proof and released the plan, and the retry submitted the job again). The use is kept, the plan stays used (`rsk launch
+--plan <id>` again: exit 6), and `rsk status` reconciles the attempt from the journal — or, when the journal holds no
+attempt dir of that nonce, `rsk adopt --not-submitted` with the user's words (the reproductions: `tests/py/test_launch.py`
+Round5 `test_r6_4_…`, `tests/62` with `$T/ssh.fallback`, whose first route refuses and whose second runs the body).
+On a workstation rsk reads the journal before deciding, whatever the exit: a receipt whose gate
 said go is a launch (a `launch.sh` killed after that point still started the run, and the use is kept); only the
 journal's refusal or failure with no receipt, `launch.sh`'s own exit with no attempt dir (it claims one first) or a
 taken attempt name (75), or `run-launch` ending before its launch ssh proves nothing started; anything else (ssh 255, a
@@ -322,7 +361,16 @@ user's approval of the card covers any — so it never resumes a run only the ta
 end of it to rely on (`the ledger has no earlier attempt of the run that ran`), and that is the user's call. A run's class is the one its name carries (`--class` only labels a name
 without one) and is set only at its first attempt: another one later is exit 2, and so is any class for a run whose
 first attempt had none (a grant scoped by class never covers that run); a deny of `launch` stops relaunches and chains
-too, and its name globs also match the run id. A deny fails closed on facts it cannot see: a deny of plans (bound
+too, and its name globs also match the run id. A deny that names a run (a names glob matching the plan's name or run
+id) and lists `relaunch` or `resubmit` matches EVERY launch-type action of that run — launch and chain included — on any
+target in its scope: the derived action rests on the history rsk can see, and a run's earlier attempts may be where it
+cannot look (another target's journal, run-watch's state, a harness from before the journal, another checkout), so "do
+not relaunch a" must also stop a plain launch of a on a target whose journal never saw it. The refusal says so (`… — a
+deny of relaunching a run stops every launch of it, on any target in its scope: rsk cannot see every earlier attempt
+(…)`), `rsk grant list` shows `DENY relaunch (it names a run: every launch of it too — …)`, a launch grant recorded
+right after such a deny is FLAGged, and `rsk watch` meets it on a row at `(launch)`. A deny naming no run keeps the
+derived action. A conditional wish ("if a fails, don't relaunch it") therefore becomes a deny only once a has run: a deny
+always wins. A deny fails closed on facts it cannot see: a deny of plans (bound
 hashes), names, classes, partitions or GPU types matches whenever that fact is unknown — a cancel of a job the ledger
 has no plan for, an `rsk watch` row (no bound hash; its partition and GPU type are not certain, since the policy may
 rewrite or force them), a run with an attempt recorded without a class. Targets are compared as normalised names
@@ -331,7 +379,17 @@ same profile directory —; a spelling that is not one plain name may be any tar
 compared with: `scope.jobs` (a job id or pid) exists only at a cancel, so a deny by job id is for cancels only — `rsk
 grant deny --job` with a launch action is exit 2 (a run's launches are denied by `--name '<run>'`), and such a record
 already stored is invalid. `rsk grant add|deny|import` refuse a target the harness does not list (exit 2 `unknown
-target`): a misspelt one would make a deny match nothing. A record that may be a deny but cannot be
+target`): a misspelt one would make a deny match nothing. They refuse a partition the same way where it can be
+checked: when every scoped Slurm target's profile lists `T_PARTITIONS` (every target the harness knows, without
+`-T`), a partition none of them lists is exit 2 `unknown partition 'P' (--partition): <targets> list <…> (T_PARTITIONS) — nothing recorded` (a
+workstation-only scope: `none (a workstation has no partitions)`), and a scoped Slurm target without the list leaves it
+unchecked, with a NOTE that the record matches only a plan whose partition is spelled exactly so. A GPU type has no list
+anywhere: it is echoed in a NOTE, never checked. A record stored before these checks, or whose target was removed since,
+would still be inert, so `rsk grant list` flags every active record whose targets (or checkable partitions) the harness
+does not know — `WARNING: <id> (<kind>): target X is not one the harness knows (…) — never matches[ there] (the user's
+deny is not enforced there | it covers nothing there) — fix or revoke: …` (`--json`: `scope_problems`) — and `rsk
+doctor` does the same for every ledger under the state dir (`== grants ==`; its exit code is unaffected).
+A record that may be a deny but cannot be
 read as one — a deny `validate()` rejects (a stored jobs + launch deny included), an id starting `d-`, a missing or damaged `kind` — is taken as a deny
 matching everything until it is fixed by hand or revoked (`rsk grant list` then shows `revoked: matches nothing`); an
 entry that is not an object at all, until it is removed by hand: fail closed. The same holds for the file: a `grants.json` that cannot be read at all (corrupt, no good `.prev`) may hold a
@@ -350,17 +408,18 @@ pid the ledger shows ended is checked against that run's own receipt, so a pid t
 process is never taken for it. A ledgered run that already ended — Slurm: ended in squeue; workstation: pid gone,
 reused by another process, or the box rebooted — is exit 0 "nothing to cancel … ended", its end recorded now. A
 non-zero `scancel` proves nothing by itself (a request that timed out may still be applied): it is exit 5 `UNKNOWN: job
-J (<run> aNN): scancel exit N (…)`, the use kept, the ledger `CANCELLING?` until `rsk status` sees the end — unless
+J (<run> aNN): scancel exit N (…)` — quoting scancel's line naming job id J, else its last line naming no job id, never
+another job's (`cancel.scancel_line`) —, the use kept, the ledger `CANCELLING?` until `rsk status` sees the end — unless
 scancel's own line for that id says `Invalid job id` or `already completing or completed`: then there was nothing to
 cancel (exit 0, the ledger `COMPLETING`, a `cancel_own` use given back). `tests/vgate/slurm-remote.sh` is the
 reproduction of those words (`scancel_ended=`, `scancel_invalid=`); other words stay unknown.
 "Stop the rest of the group": run-watch's `#@ allow fail-stop`. The agent's own judgment: a grant with `cancel_own`,
 which covers only live runs rsk launched for this project (never adopted ones, never one the ledger shows ended), its
 cancels counted against `max_launches` (given back only when the answer proves nothing was signalled — never after a
-timeout, an ssh failure or a signal with no answer at all, since the cancel may have run there; ssh's own 255 with no
-answer and its words that the session never opened — `Connection refused` / `timed out`, `No route to host`, `Could
-not resolve hostname`, `Permission denied (…)`, `Host key verification failed` — is that proof: `not reached — nothing
-sent`, exit 5, the use back; a cancel approval stays used even then, the user's words were for that one cancel). Some decisions are never a
+timeout, an ssh failure or a signal with no answer at all, since the cancel may have run there, and that holds for ssh's
+own 255 before the body's `@@start` whatever its stderr says: exit 5 `… ssh's own words are no proof that the body never
+ran; the use is kept` — `tests/py/test_cancel.py` `test_r6_4_…`, whose `SSH_FALLBACK` stub runs the body behind a
+refused first route). Some decisions are never a
 grant's, only the user's words at the time: a GPU another job is using, a policy flag the user must ask for
 (`--*-user-asked`), a second live copy of a run (`--same-name-ok`), a remote delete (`rsk sync -D`, read with
 run-sync's own grammar: `--also -n` is a path, not a dry run) and a job no card showed (`rsk bootstrap --job`) — those
@@ -388,7 +447,9 @@ GPU count, time, name / run id, class; its partition and GPU type are never cert
 force a type), so a deny scoped by them matches every row of its target, and a deny of plans every row in its scope (a
 row has no bound hash) — is checked against them for every action run-watch could take on it (launch, relaunch,
 resubmit, chain, cancel), whatever the table's `#@ allow` says (`--release` and an `SBATCH_EXTRA` singleton act outside
-it), before anything starts and again at every lease refresh (a new matching deny stops run-watch with TERM, exit 3).
+it) — only a deny scoped by job ids, which is for cancels, counts just for a table whose `#@ allow` has `fail-stop` (the
+one cancel run-watch makes), and there it matches every row, the row's job not being known —, before anything starts and
+again at every lease refresh (a new matching deny stops run-watch with TERM, exit 3).
 That row check is static: it reads the row's words, never what the target's policy makes of them, so a policy that
 rewrites `-p` (or forces a GPU type) is not seen by `rsk watch`'s row check — which is why such denies match every row of
 the target, and what a job really got is squeue's. A row's target is compared as a normalised name too, and run-watch
@@ -398,10 +459,33 @@ round, after each read and before each submit or cancel ssh), so an orphan whose
 further — its lease and its deny checks went with it; until it notices, its lock makes `rsk watch` exit 6. A bare
 `run-watch` (installs without rsk) reads no ledger, and run-watch's runs never enter it: `rsk status` lists them as
 run-watch's, and `rsk launch` sees them only through a plan's `info_prior` (which makes a plan of the same run a
-`relaunch`, so a deny of relaunches holds) — a relaunch grant still never resumes one. The workstation check of RUN is a
-check of its words, not of the payload: the payload is code — what it does once it starts is outside what rsk can check
-(a script it runs, a value an expansion supplies to a later command, a launcher's config file or hostfile), and a
-launcher's GPU flags are only a warning. Nothing here guarantees that an agent complies. What it does guarantee is
+`relaunch`, so a deny of relaunches holds) — a relaunch grant still never resumes one.
+
+What rsk cannot check, in one place (each is also said where it applies):
+- **the payload is code — what it does once it starts is outside what rsk can check**: the workstation check of RUN is
+  a check of its words, not of the payload — a script it runs, its own environment changes (an `exec -c` the text does
+  not show at a command start, sudo's `env_reset`, `systemd-run`, an ssh), a value only an expansion inside a later
+  command supplies (`x | env $PRE y`);
+- a GPU value or launcher flags that only an expansion or a script supplies (the wrapper re-checks only the first
+  command's expanded leading words, for the GPU variables);
+- configs rsk does not read: an `HF_HOME` the `ENV_HOOK` sets, a relative `--config_file` after a `cd` in RUN (it is
+  read from the project dir), docker `--env-file`, compose files, deepspeed's `.deepspeed_env`;
+- a docker daemon whose default runtime is nvidia: an image's own `NVIDIA_VISIBLE_DEVICES` then hands the container GPUs
+  with no flag at all (`tests/vgate/containers.sh` prints `docker_default_runtime=`);
+- the launcher, config and container checks are warnings: the user's approval of the card, or a grant of kind `any`,
+  lets such a run through;
+- a standing launch grant still covers the first launch, on another target, of a run whose earlier attempts rsk cannot
+  see (run-watch's on another target, a history from before the journal or only in sacct) unless a deny names that run:
+  the cross-target rule is the deny's, not the grant's;
+- `rsk watch`'s row check is static (above), and a table's `#@ ok` is checked by run-watch (bash), never by the ledger;
+- two detect-only run-watch processes started within the same instant over a stale `logs/run-watch/.lock` (its holder
+  dead) can both take it; acting ones go through `rsk watch`, whose lease serialises them — run one watcher per project,
+  through `rsk watch`;
+- an older installed run-watch reads only the last `#failstop` of a state file (and drops `#failstop-released`): one
+  harness version per project;
+- anything that does not go through rsk: a raw `sbatch`, `scancel` or `kill`, a `run-watch` installed without rsk.
+
+Nothing here guarantees that an agent complies. What it does guarantee is
 narrower and checkable: an action that goes through rsk is checked against the recorded decisions before it happens,
 every use is counted against its limits under a lock, denies win, a lost reply is never resubmitted blind, and the
 ledger shows what was done under which words.
@@ -517,6 +601,11 @@ is the one shared watcher:
   trigger is not one of its rows, and records `#failstop-released` so the same stop is not taken again from another file
   (an older run-watch drops that line and may take it again: fail closed); while another stop remains every row stays
   held, the trigger's own too (`held-by=`, `reason=release-held`), so one release never resumes rows another stop holds.
+  A `--release` is the user's OK for one submit past the holds that exist when the watch starts: a fail-stop that holds
+  the row's table later in the same watch, before the release was used — formed by a row failing, or taken from another
+  state file (a row of a stopped group added and approved mid-watch) — withdraws it (`ATTENTION …
+  reason=release-withdrawn fail-stop=<trigger>`), and nothing is submitted past that stop: `--release` again, with the
+  user's OK. A release can wait a round (one submit per target per round), so a stop can come first.
   A run-watch from before stop sets reads only the last `#failstop` of a file (each stop is written with its own
   `#failstop-pending`, so the pair it reads is one stop's own) and writes the file back with that one: one harness
   version per project. A row whose submit was unknown at the stop is cancelled once it is tracked, but only by an `--act` run and only

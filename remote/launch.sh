@@ -17,17 +17,21 @@
 # distinct WARNING: lines, digit runs masked) is the approved card's (--rs-warnings ID; default: no warning), else the
 # block, `changed: <keys>` (from the approved plan's journal, when here) and ERROR, exit 6, before the wrapper exists.
 # The block's envelope (not bound) has info_prior=<n|unknown>: this project's journal receipts named the run id (NAME minus
-# a trailing --aNN) or <run id>--aNN, i.e. the run's earlier attempts — rsk reads n > 0, or no number, as a relaunch.
+# a trailing --aNN) or <run id>--aNN, i.e. the run's earlier attempts — rsk reads n > 0, or no number, as a relaunch; and
+# info_launchers=checked: the launcher / container WARNINGs and the env -i refusal below are this launch.sh's (rsk needs it).
 # rs-api=3
 # The run is setsid'd under a wrapper (pid = pgid = <log>.pid) that starts the payload only after the receipt is on disk
 # (.rs/attempts/<NONCE>/gate -> go; anything else = never started), forwards TERM/INT once and ends the log with
 # `[<date>] EXIT rc=N term=0|1 …` + <log>.rc (`rc= term= at=`). RUN is one shell string, parsed once (as before), and
 # never picks the GPUs: leading words (before its command, also after a leading `env`) that set or clear CUDA_VISIBLE_DEVICES,
 # CUDA_DEVICE_ORDER, NVIDIA_/HIP_/ROCR_VISIBLE_DEVICES, or an env option that may (-i, -S, …), and RUN's text assigning or
-# clearing one of them ANYWHERE (a later command, a pipeline element, `bash -c '…'`, a container's --env NAME=…) = exit 2
+# clearing one of them ANYWHERE (a later command, a pipeline element, `bash -c '…'`, a container's --env NAME=… or
+# APPTAINERENV_NAME=…) or emptying the whole environment anywhere (env -i / env - / --ignore-environment, exec -c) = exit 2
 # before the claim; else (an expansion) the wrapper checks the first command's expanded words and never starts it (rc 2,
-# ERROR in the log). A launcher that picks GPUs from its own flags (deepspeed --num_gpus/--include/…, accelerate launch
-# --gpu_ids/--num_processes) gets a counted WARNING naming it, the flag and the landing (a grant covers it only as `any`).
+# ERROR in the log). A launcher that picks GPUs itself — its flags (deepspeed --num_gpus/--include/…, accelerate launch
+# --gpu_ids/--num_processes), its config (accelerate's gpu_ids, read here; deepspeed's /job/hostfile) or a container's
+# (docker/podman --gpus/--device …, apptainer --cleanenv/--containall) — gets a counted WARNING naming it, what, and the
+# landing (a grant covers it only as `any`).
 # Exit: 0 launched (planned), 1 failed (env gate, nvidia-smi, start) or too few free GPUs, 2 usage/data (RUN setting a GPU
 # variable: before the claim, no .rs/attempts/<NONCE>/), 6 NAME still
 # running, a busy -d GPU, or not the --rs-expect plan; 75 NONCE claimed.
@@ -126,19 +130,55 @@ rs_runwords() {   # rs_runwords RUN -> RS_W: RUN's first words as env gets them 
 }
 rs_gputext() {   # rs_gputext RUN: 1 and why (stdout) when RUN's TEXT, anywhere — a later command, a pipeline element, a
   # `bash -c` string, a container's `--env NAME=` — assigns or clears a GPU variable: NAME= / NAME+= after the start, a
-  # blank, ; | & ( ` ' " or =; `-u NAME` / `--unset[= ]NAME` (env, abbreviations too); `unset … NAME`, `export -n NAME`.
-  # Read as written and again with quotes and backslashes removed (`'NAME'=0`, `N\AME=0`). Text only: a value that an
-  # expansion supplies is seen by the wrapper (first command) or not at all — the payload is code.
+  # blank, ; | & ( ` ' " or =, also as APPTAINERENV_NAME= / SINGULARITYENV_NAME= (apptainer sets NAME inside the container
+  # from it, --cleanenv or not: tests/vgate/containers.sh); `-u NAME` / `--unset[= ]NAME` (env, abbreviations too);
+  # `unset … NAME`, `export -n NAME`. Read as written and again with quotes and backslashes removed (`'NAME'=0`, `N\AME=0`).
+  # And (R6-6) a command that empties the whole environment, anywhere: `env -i`, `env -`, `env -- -`, --ignore-environment
+  # or an abbreviation (--i…: ambiguous in a newer env, the option in an older one); bash's `exec -c` where a command
+  # starts (after ; | & ( ` { a quote, then/do/else/time/!/builtin/command, NAME=VALUE words; -l and -a NAME before it:
+  # `exec -ac` is -a c) — never `apptainer exec -c`. Text only: a value that an expansion supplies is seen by the wrapper
+  # (first command) or not at all — the payload is code.
   local LC_ALL=C; local s t n='(CUDA_VISIBLE_DEVICES|CUDA_DEVICE_ORDER|NVIDIA_VISIBLE_DEVICES|HIP_VISIBLE_DEVICES|ROCR_VISIBLE_DEVICES)'
-  local nl=$'\n' a u c
-  a='(^|[[:space:];|&(`'\''"=])'"$n"'[+]?='
+  local nl=$'\n' a u c e w o r v y k=0 m IFS=$' \t\n'; local -a W
+  a='(^|[[:space:];|&(`'\''"=])(APPTAINERENV_|SINGULARITYENV_)?'"$n"'[+]?='
   u='(^|[[:space:];|&(`'\''"])(-u|--u|--un|--uns|--unse|--unset)([[:space:]]+|=)?'"$n"'([^[:alnum:]_]|$)'
   c='(^|[^[:alnum:]_])(unset|export[[:space:]]+-n|declare[[:space:]]+[+]x|typeset[[:space:]]+[+]x)[[:space:]]([^;|&()'"$nl"']*[[:space:]])?'"$n"'([^[:alnum:]_]|$)'
+  e='(^|[;|&(`{'\''"'"$nl"']|(^|[[:space:];|&(`{])(then|do|else|time|!|builtin|command)[[:space:]])([[:space:]]*[[:alpha:]_][[:alnum:]_]*=[^[:space:]]*)*[[:space:]]*exec([[:space:]]+-l*(a[[:space:]]*[^[:space:]]+)?)*[[:space:]]+-l*c'
   for s in "$1" "$(printf %s "$1" | tr -d "\\\\'\"")"; do
     if [[ $s =~ $a ]]; then t=${BASH_REMATCH[0]}; t=${t#"${BASH_REMATCH[1]}"}
-      echo "sets ${BASH_REMATCH[2]} in its text ('$t' — anywhere in RUN, not only before its command)"; return 1; fi
+      echo "sets ${BASH_REMATCH[3]} in its text ('$t' — anywhere in RUN, not only before its command)"; return 1; fi
     if [[ $s =~ $u ]]; then echo "clears ${BASH_REMATCH[4]} in its text ('${BASH_REMATCH[2]}${BASH_REMATCH[3]}${BASH_REMATCH[4]}': env -u)"; return 1; fi
     if [[ $s =~ $c ]]; then echo "clears ${BASH_REMATCH[4]} in its text ('${BASH_REMATCH[2]} … ${BASH_REMATCH[4]}')"; return 1; fi
+    if [[ $s =~ $e ]]; then echo "empties the whole environment in its text ('exec -c': the harness's CUDA_VISIBLE_DEVICES and CUDA_DEVICE_ORDER would go — anywhere in RUN, not only before its command)"; return 1; fi
+  done
+  # each `env` word (quotes and backslashes removed, separators split words): its options as GNU env reads them — they end
+  # at the first other word; -u -C -a take the next word; -S's string is read on as options
+  set -f; W=($(printf %s "$1" | tr -d "\\\\'\"" | tr ';|&()<>`' '        ')); set +f; m=${#W[@]}
+  while [ "$k" -lt "$m" ]; do
+    c=${W[k]}; k=$((k + 1)); case "$c" in env|*/env) ;; *) continue ;; esac
+    r=""; y=""
+    while [ -n "$r" ] || [ "$k" -lt "$m" ]; do
+      if [ -n "$r" ]; then w=$r; r=""; else w=${W[k]}; k=$((k + 1)); fi
+      case "$w" in
+        -) y=$w ;;
+        --) [ "$k" -lt "$m" ] && [ "${W[k]}" = - ] && y='-- -'; [ -n "$y" ] || break ;;
+        --?*) v=${w%%=*}; case --ignore-environment in "$v"*) y=$w ;; esac
+          case "$w" in *=*) case --split-string in "$v"*) r=${w#*=}; case "$r" in -*) ;; *) r="" ;; esac ;; esac ;;
+            *) case --unset:--chdir:--argv0 in "$v"*|*":$v"*) k=$((k + 1)) ;; esac ;; esac ;;
+        -?*) o=${w#-}
+          while [ -n "$o" ]; do
+            case "${o:0:1}" in
+              i) y=$w; break ;;
+              0|v) ;;
+              S) r=${o:1}; case "$r" in -*) ;; *) r="" ;; esac; break ;;   # -S'-i …': its string is read on
+              u|C|a) [ -n "${o:1}" ] || k=$((k + 1)); break ;;
+              *) break ;;
+            esac; o=${o:1}
+          done ;;
+        *) break ;;
+      esac
+      [ -z "$y" ] || { echo "empties the whole environment in its text ('env $y': the harness's CUDA_VISIBLE_DEVICES and CUDA_DEVICE_ORDER would go — anywhere in RUN, not only before its command)"; return 1; }
+    done
   done
   return 0
 }
@@ -297,34 +337,91 @@ elif [ -n "$b" ]; then
     | LC_ALL=C sort -t: -k1,1n -k3,3 -u | paste -sd, -) && [ -n "$BUSYOK" ] || BUSYOK=unknown
 fi
 
-# ---- launchers that pick the GPUs from their own flags (R5-2): deepspeed's runner ignores CUDA_VISIBLE_DEVICES once
-#      --include/--exclude/--num_gpus/--num_nodes is given (or a hostfile: -H) and numbers the GPUs itself; accelerate launch
-#      sets CUDA_VISIBLE_DEVICES from --gpu_ids. A counted WARNING (on the card; no grant covers it unless its kind is `any`),
-#      one per launcher in RUN's text (quotes and backslashes removed, separators split words): every word after it counts —
-#      the script's own too (fail closed); deepspeed's long flags also as argparse abbreviations (--num_g), -H/-i/-e attached
-#      or not; accelerate's with - or _ (it takes both, no abbreviations). A flag an expansion or a script supplies is not seen.
+# ---- launchers that pick the GPUs themselves (R5-2, R6-2, R6-3): deepspeed's runner ignores CUDA_VISIBLE_DEVICES once
+#      --include/--exclude/--num_gpus/--num_nodes is given, or a hostfile (-H, or without it its default /job/hostfile when
+#      that exists), and numbers the GPUs itself; accelerate launch sets CUDA_VISIBLE_DEVICES from --gpu_ids, else from its
+#      config's gpu_ids (--config_file FILE, else $HF_HOME/accelerate/default_config.yaml — .json when only that exists —
+#      with env.sh's HF_HOME, $PROJ/.cache/huggingface), read here read-only: a gpu_ids other than all / null / empty, or a
+#      config this cannot read, warns; a container does not get the landing: docker / podman / nvidia-docker with --gpus,
+#      --runtime, --device nvidia.com/… or /dev/nvidia…, --privileged or a bare -e NVIDIA_VISIBLE_DEVICES (nvidia-docker run:
+#      always), apptainer / singularity with --cleanenv / -e or --containall / -C (they drop the landing's variable). A counted
+#      WARNING (on the card; no grant covers it unless its kind is `any`), one per launcher in RUN's text (quotes and
+#      backslashes removed, separators split words): every word after it counts — the script's own too (fail closed);
+#      deepspeed's long flags also as argparse abbreviations (--num_g), -H/-i/-e attached or not; accelerate's with - or _
+#      (it takes both, no abbreviations). A flag an expansion or a script supplies is not seen (a config named by one warns).
 rs_launchers() {   # rs_launchers RUN -> the WARNING lines (stderr)
-  local LC_ALL=C; local s t o x l="" n="" w="" f="" p=""
+  local LC_ALL=C IFS=$' \t\n'; local s t o x v g d y l="" n="" w="" f="" p="" k="" cf="" cfs=0 gi=0 hf=0 xs=0
+  local hr='(^|[^[:alnum:]_${])HF_HOME([^[:alnum:]_]|$)' gr='(^|[^[:alnum:]_])["'\'']?gpu_ids["'\'']?[[:space:]]*:[[:space:]]*(.*)$'
+  local lr='^[[:space:]]*-([[:space:]]|$)' cr='^[[:space:]]*#'   # (regexes in variables: the same in every bash)
+  local dsh=/job/hostfile   # deepspeed's default hostfile: its runner's DLTS_HOSTFILE (tests/vgate/launchers.sh ds_hostfile=)
   s=$(printf %s "$1" | tr -d "\\\\'\"" | tr ';|&()<>`' '        ') || return 0
   set -f
   for t in $s ""; do   # (the last, empty word ends the text)
-    n=""; case "$t" in
+    n=""; x=""
+    if [ -n "$k" ] && [ -n "$t" ]; then   # the value of the flag just before (accelerate --config_file F, docker --device D)
+      case "$k:$t" in cf:*) cf=$t ;; dev:nvidia.com/*|dev:/dev/nvidia*|dev:*'$'*) x="--device $t" ;; esac; k=""
+    else case "$t" in
       '') n=- ;;
       deepspeed|*/deepspeed|deepspeed.pt|*/deepspeed.pt|ds|*/ds|deepspeed.launcher.runner|-mdeepspeed.launcher.runner) n=d ;;
       accelerate-launch|*/accelerate-launch|accelerate.commands.launch|-maccelerate.commands.launch) n=a ;;
       launch) case "$p" in accelerate|*/accelerate) n=a; t="$p launch" ;; esac ;;
-    esac
-    if [ -n "$n" ]; then   # a launcher starts (or the text ends): the previous one's flags, if any
-      [ -z "$f" ] || echo "WARNING: RUN runs $w with$f — such a launcher may ignore CUDA_VISIBLE_DEVICES and pick GPUs itself (any on the box, another user's too), not only this launch's GPU(s) [$DEV]: drop those flags (it then uses these), or name the GPUs it will use to the user" >&2
-      f=""; w=$t; l=$n
-    else x=""
+      docker|*/docker|podman|*/podman|nvidia-docker|*/nvidia-docker) n=c ;;
+      apptainer|*/apptainer|singularity|*/singularity) n=s ;;
+    esac; fi
+    if [ -n "$n" ]; then   # a launcher starts (or the text ends): the previous one's flags and settings, if any
+      if [ "$l" = a ] && [ "$gi" = 0 ]; then   # accelerate without --gpu_ids: its config's gpu_ids
+        y=""; d=""
+        if [ "$cfs" = 1 ]; then case "$cf" in ''|*'$'*|'~'[!/]*|'~') ;; '~/'*) d=${HOME:-/nonexistent}/${cf#'~/'} ;; /*) d=$cf ;; *) d=${PROJ:-.}/$cf ;; esac
+          [ -n "$d" ] && [ -f "$d" ] && [ -r "$d" ] || y=" a config it cannot read here (--config_file ${cf:-''})"
+        elif [[ $1 =~ $hr ]]; then y=" a default config it cannot read here (RUN sets HF_HOME)"
+        else d=${PROJ:-}/.cache/huggingface/accelerate/default_config   # as accelerate picks it: .yaml unless only .json is a file
+          if [ -f "$d.yaml" ] || [ ! -f "$d.json" ]; then d=$d.yaml; else d=$d.json; fi
+          [ -f "$d" ] || d=""; [ -z "$d" ] || [ -r "$d" ] || y=" a config it cannot read here (${d#"${PROJ:-}/"})"; fi
+        if [ -z "$y" ] && [ -n "$d" ]; then   # its `gpu_ids:` lines (YAML or JSON; # comments skipped), 64 KiB at most
+          { v=$(head -c 65537 -- "$d") && [ "${#v}" -le 65536 ]; } 2>/dev/null || y=" a config it cannot read here (${d#"${PROJ:-}/"}: unreadable or over 64 KiB)"
+          [ -n "$y" ] || { IFS=$'\n'; o=0
+            for g in $v; do   # an empty value followed by a `- …` line is a YAML list: a value
+              if [ "$o" = 1 ]; then o=0; [[ $g =~ $lr ]] && { y=" gpu_ids: a list in ${d#"${PROJ:-}/"}"; break; }; fi
+              [[ $g =~ $cr ]] && continue
+              [[ $g =~ $gr ]] || continue
+              x=${BASH_REMATCH[2]}; x=${x%"${x##*[![:space:]]}"}
+              case "$x" in \"*) v=${x#\"}; v=${v%%\"*}; x=\"$v\"; case "$v" in all|'') v=ok ;; esac ;;
+                \'*) v=${x#\'}; v=${v%%\'*}; x=\'$v\'; case "$v" in all|'') v=ok ;; esac ;;
+                *) v=${x%%[,\}#]*}; v=${v%"${v##*[![:space:]]}"}; case "$v" in '') v=ok; o=1 ;; all|null|Null|NULL|'~') v=ok ;; esac ;; esac
+              [ "$v" = ok ] || { y=" gpu_ids: ${x:0:40} in ${d#"${PROJ:-}/"}"; break; }
+            done; IFS=$' \t\n'; x=""; }
+        fi
+        [ -z "$y" ] || { f="$f$y"; xs=1; }
+      fi
+      [ "$l" != d ] || [ "$hf" = 1 ] || [ ! -e "$dsh" ] || { f="$f $dsh (present: its default hostfile, read without --hostfile)"; xs=1; }
+      if [ -z "$f" ]; then :
+      elif [ "$l" = c ] || [ "$l" = s ]; then
+        y="name the GPUs it will use to the user"; [ "$l" = c ] || y="drop those flags (it then keeps these), or $y"
+        echo "WARNING: RUN runs $w with$f — a container started so does not get this launch's CUDA_VISIBLE_DEVICES and may see GPUs its runtime picks (any on the box, another user's too), not only this launch's GPU(s) [$DEV]: $y" >&2
+      elif [ "$xs" = 0 ]; then
+        echo "WARNING: RUN runs $w with$f — such a launcher may ignore CUDA_VISIBLE_DEVICES and pick GPUs itself (any on the box, another user's too), not only this launch's GPU(s) [$DEV]: drop those flags (it then uses these), or name the GPUs it will use to the user" >&2
+      else echo "WARNING: RUN runs $w with$f — such a launcher may ignore CUDA_VISIBLE_DEVICES and pick GPUs itself (any on the box, another user's too), not only this launch's GPU(s) [$DEV]: drop those flags and settings (it then uses these), or name the GPUs it will use to the user" >&2; fi
+      f=""; w=$t; l=$n; k=""; cf=""; cfs=0; gi=0; hf=0; xs=0
+    elif [ -z "$x" ]; then
       case "$l:$t" in
-        d:--?*) x=${t%%=*}; o=${x#--}; case " include exclude num_gpus num_accelerators num_nodes hostfile master_addr" in *" $o"*) ;; *) x="" ;; esac ;;
-        d:-[Hie]*) x=${t:0:2} ;;
-        a:--gpu_ids|a:--gpu_ids=*|a:--gpu-ids|a:--gpu-ids=*|a:--num_processes|a:--num_processes=*|a:--num-processes|a:--num-processes=*) x=${t%%=*} ;;
+        d:--?*) x=${t%%=*}; o=${x#--}; case " include exclude num_gpus num_accelerators num_nodes hostfile master_addr" in *" $o"*) ;; *) x="" ;; esac
+          [ -z "$x" ] || case hostfile in "$o"*) hf=1 ;; esac ;;
+        d:-[Hie]*) x=${t:0:2}; [ "$x" != -H ] || hf=1 ;;
+        a:--gpu_ids|a:--gpu_ids=*|a:--gpu-ids|a:--gpu-ids=*) x=${t%%=*}; gi=1 ;;
+        a:--num_processes|a:--num_processes=*|a:--num-processes|a:--num-processes=*) x=${t%%=*} ;;
+        a:--config_file|a:--config-file) cfs=1; k=cf ;;
+        a:--config_file=*|a:--config-file=*) cfs=1; cf=${t#*=} ;;
+        c:--gpus|c:--gpus=*|c:--runtime|c:--runtime=*|c:--privileged|c:--privileged=*) x=${t%%=*} ;;
+        c:--device) k=dev ;;
+        c:--device=*) v=${t#*=}; case "$v" in nvidia.com/*|/dev/nvidia*|*'$'*) x="--device $v" ;; esac ;;
+        c:NVIDIA_VISIBLE_DEVICES) case "$p" in -e|--env) x="$p $t" ;; esac ;;
+        c:--env=NVIDIA_VISIBLE_DEVICES|c:-eNVIDIA_VISIBLE_DEVICES) x=$t ;;
+        c:run|c:create) case "$w" in nvidia-docker|*/nvidia-docker) x="$t (its nvidia runtime)" ;; esac ;;
+        s:--cleanenv|s:--cleanenv=*|s:--containall|s:--containall=*) x=${t%%=*} ;;
+        s:-[A-Za-z]*) case "$t" in -*[!A-Za-z]*) ;; *[eC]*) x=$t ;; esac ;;
       esac
-      [ -z "$x" ] || case "$f " in *" $x "*) ;; *) f="$f $x" ;; esac
     fi
+    [ -z "$x" ] || case "$f " in *" $x "*) ;; *) f="$f $x" ;; esac
     p=$t
   done
   set +f
@@ -361,10 +458,12 @@ rs_plan() {   # rs_plan check|print: `check` (--rs-expect) returns when the hash
   if [ "$1" = check ]; then   # both modes, before the payload is echoed) match; else the block, changed:, ERROR, exit 6
     [ "$h" != "$EXPECT" ] || [ "$W_ID" != "$RS_WARN" ] || { echo "plan: bound_hash=$h = --rs-expect (the approved plan); its $W_N warning(s) = the approved card's (warnings_id)"; return 0; }
     stage expect; ch=$(rs_changed "$b" "$h"); fi
-  printf '@@plan v1\napi=3\n%s\ninfo_gpus=%s\ninfo_uuids=%s\ninfo_busy=%s\ninfo_run_gpu=checked\ninfo_prior=%s\nwarnings=%s\nwarnings_avail=0\nwarnings_id=%s\nbound_hash=%s\n@@end\n' \
+  printf '@@plan v1\napi=3\n%s\ninfo_gpus=%s\ninfo_uuids=%s\ninfo_busy=%s\ninfo_run_gpu=checked\ninfo_prior=%s\ninfo_launchers=checked\nwarnings=%s\nwarnings_avail=0\nwarnings_id=%s\nbound_hash=%s\n@@end\n' \
     "$b" "$DEV" "$UUIDS" "$BUSY" "$PRIOR" "$W_N" "$W_ID" "$h"   # warnings_avail=0: a nohup box has no availability -y gate (too few free = exit 1);
   # info_run_gpu=checked: this launch.sh refuses a RUN that sets or clears a GPU variable (an older api=3 one lacks the line);
-  # info_prior: the run's earlier attempts in this project's journal (rs_prior; an older launch.sh lacks the line)
+  # info_prior: the run's earlier attempts in this project's journal (rs_prior; an older launch.sh lacks the line);
+  # info_launchers=checked: rs_launchers warns on a launcher's config (accelerate gpu_ids, /job/hostfile) and on container
+  # runtimes, rs_gputext refuses env -i / APPTAINERENV_<name> anywhere (an older launch.sh lacks the line: rsk needs: sync)
   [ "$1" = print ] || { VERDICT=refused; [ -z "$ch" ] || echo "$ch" >&2
     if [ "$h" != "$EXPECT" ]; then echo "ERROR: the resolved submission differs from the approved plan (bound_hash $h, --rs-expect $EXPECT) — nothing launched; plan it again" >&2
     else echo "ERROR: the resolved submission differs from the approved plan: its $W_N warning(s) are not the approved card's (warnings_id) — nothing launched; plan it again" >&2; fi

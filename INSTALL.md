@@ -153,7 +153,7 @@ Fill `profile.sh` from the probe (every key is commented in the template):
 | `T_TRIGGERS` | the name plus the nicknames the user says for this machine (ask) |
 | `T_CUDA_ARCH` | `compute capability` (workstations); for Slurm, from the GPU model (A100 `8.0`, H100/H200 `9.0`) or empty |
 | `T_CONDA_INIT` | the probe's `conda.sh:` line as `source <path>`; none found → `''` (only `ENV_KIND=conda` projects use it) |
-| `T_DEFAULT_PARTITION`, `T_PARTITIONS`, `T_MAXTIME` | partition lines: `*` marks the site default; `timelimit` column; the user's choice wins |
+| `T_DEFAULT_PARTITION`, `T_PARTITIONS`, `T_MAXTIME` | partition lines: `*` marks the site default; `timelimit` column; the user's choice wins; `T_PARTITIONS` lists every partition the policy accepts (`rsk grant` checks a `--partition` against it) |
 | `T_DEFAULT_GPU_TYPE` | `any`, unless the user wants a specific gres type by default |
 | `T_ENV_ROOT`, `T_TMPDIR`, `T_COMPILE_CACHE` | the storage questions below; keep the template values when nothing argues otherwise |
 | `T_SUFFIX`, `T_REMOTE_DIR_REQUIRED` | another registered target mounts the same project filesystem → `T_SUFFIX='-<name>'` (separate venvs); this target shares none → `T_REMOTE_DIR_REQUIRED=1` |
@@ -200,7 +200,7 @@ the file can later move into a pack), every unprobed fact marked "(user)". Menti
 ## Step 6 — Install and verify
 
 ```bash
-rsk setup && rsk doctor      # doctor: install, the skill, packs, targets, ssh aliases — offline
+rsk setup && rsk doctor      # doctor: install, the skill, packs, targets, recorded grants, ssh aliases — offline
 ```
 
 `rsk` as in Step 0 ("Which rsk"). Installed without rsk (`$H` but no `rsk` at all, e.g. a pack's `install.sh` without
@@ -208,7 +208,8 @@ uv): re-run `bash ~/.local/share/run-skills/install.sh` or the pack's `install.s
 
 Check, and fix before reporting:
 
-- the `targets:` line names every registered target; the skill line says `INDEX: N target row(s)`; doctor ends `== no failures ==`;
+- the `targets:` line names every registered target; the skill line says `INDEX: N target row(s)`; doctor ends `== no failures ==`
+  (a `== grants ==` WARN = a recorded permission or deny naming a target or partition the harness does not know: show it to the user);
 - `== ssh aliases ==` says `all target aliases found.`;
 - `===== RESULT: N pass, 0 fail =====`;
 - per target: `ssh -o BatchMode=yes -o ConnectTimeout=15 <alias> true` exits 0.

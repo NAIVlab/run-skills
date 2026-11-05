@@ -16,7 +16,9 @@ last round never outlives its lease); `rsk status` shows the lease and a live ru
 Denies bind run-watch too: with --act (and --approve), every row of every table (target, -p, -g, -t, name / run id,
 class) is checked against the ledger's denies for EVERY action run-watch could take on it — launch, relaunch,
 resubmit, chain, cancel — whatever its `#@ allow` line says (--release launches or resubmits a row outside it, a conf
-SBATCH_EXTRA singleton makes a launch a chain): a match → exit 3 with the deny's quote, nothing started (--approve: no
+SBATCH_EXTRA singleton makes a launch a chain); only a deny scoped by job ids ("do not cancel job 555": cancels only)
+counts just for a table whose `#@ allow` line has fail-stop, the one cancel run-watch makes (R6-7; there the row's job
+is not known here, so it matches): a match → exit 3 with the deny's quote, nothing started (--approve: no
 `#@ ok` written); and again on every lease refresh — a new matching deny → run-watch gets TERM, exit 3. What a row
 cannot show counts as matching (fail closed): its GPU type (the partition's policy may force one: a GPU-type deny
 matches every row of its target), its partition (the target's t_policy may rewrite -p: a partition deny matches every
@@ -38,6 +40,7 @@ reads them: base 10, leading zeros dropped, at most 9 significant digits.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import os
 import re
 import signal
@@ -169,14 +172,21 @@ def deny_hit(led: L.Ledger, proj: Path, argv: list[str], kinds: dict[str, str]) 
     bad = grants.unreadable(st)
     if bad:
         raise RskError(bad, CONFLICT)
+    # R6-7: a deny scoped by job ids ("do not cancel job 555") is about the cancels run-watch makes, and it makes one
+    # only under its table's `#@ allow … fail-stop`: without fail-stop it counts for no row (a record that may be a
+    # damaged deny still matches everything: fail_closed)
+    no_jobs = dataclasses.replace(st, grants=[r for r in st.grants if not (
+        isinstance(r, dict) and r.get("kind") == "deny" and not grants.fail_closed(r)
+        and (r.get("scope") or {}).get("jobs"))])
     for t in tables(argv):
-        _acts, rows = table_rows(proj / t, kinds)
+        acts, rows = table_rows(proj / t, kinds)
         for row in rows:
             row = {**row, "classes_recorded": grants.run_classes(st.runs.get(L.run_id(row["name"])))}
             for a in ROW_ACTIONS:
                 if a == "chain" and row["kind"] == "nohup":   # a workstation launch is never a singleton chain
                     continue
-                d, why, _own = grants.deny_match(row, (a,), st, job=None)
+                d, why, _own = grants.deny_match(row, (a,), st if a != "cancel" or "cancel" in acts else no_jobs,
+                                                 job=None)
                 if d:
                     sc = d.get("scope") or {}
                     notes = []

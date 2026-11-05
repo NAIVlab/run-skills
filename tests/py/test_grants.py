@@ -857,6 +857,45 @@ class Round5(unittest.TestCase):
         self.assertTrue(G.check(state(g), "launch", plan=plan(target="fx-slurm")).covered)
 
 
+class Round6(unittest.TestCase):
+    """The round-6 decisions on grants.py (R6-1), each pinned with the round-5 recheck's reproduction."""
+
+    def test_r6_1_a_relaunch_deny_that_names_a_run_stops_every_launch_of_it(self):
+        """V5-prior-xtarget / NF-relaunch-deny-history-elsewhere: run-watch ran `a` on fx (never in the ledger), the
+        user said "do not relaunch a, it is broken", and `rsk launch -T fx2 -n a` was a plain launch (fx2's journal
+        has no receipt of a) that a launch grant on fx2 covered. A deny that names a run and lists relaunch or
+        resubmit now matches every launch-type action of that run id — launch included — on any target in its scope;
+        a deny naming no run keeps the derived action."""
+        g = grant({"targets": ["fx", "fx2"], "names": ["a*"]})
+        for acts in (["relaunch"], ["resubmit"], ["relaunch", "resubmit"]):
+            d = G.new_deny("do not relaunch a, it is broken", {"names": ["a"]}, acts)
+            for tgt in ("fx", "fx2"):
+                for name, action in (("a", "launch"), ("a--a03", "launch"), ("a", "chain")):
+                    dec = G.check(state(g, d), action, plan=plan(name=name, target=tgt))
+                    self.assertTrue(dec.denied, (acts, tgt, name, action, dec.reasons))
+                    self.assertIn("do not relaunch a, it is broken", dec.reasons[0])
+                    self.assertIn("rsk cannot see every earlier attempt", dec.reasons[0])
+            self.assertTrue(G.check(state(g, d), "launch", plan=plan(name="a2", target="fx2")).covered)   # another run
+            self.assertIsNone(G.deny_match(plan(name="a"), ("cancel",), state(d), job="1")[0])   # cancels: untouched
+            self.assertIn("every launch of it too", G.describe(d))
+            self.assertTrue(G.run_deny(d))
+        scoped = G.new_deny("do not relaunch a on fx", {"names": ["a"], "targets": ["fx"]}, ["relaunch"])
+        self.assertTrue(G.check(state(g, scoped), "launch", plan=plan(name="a", target="fx")).denied)
+        self.assertTrue(G.check(state(g, scoped), "launch", plan=plan(name="a", target="fx2")).covered)   # its scope
+        unnamed = G.new_deny("never relaunch anything on fx2", {"targets": ["fx2"]}, ["relaunch"])
+        self.assertFalse(G.run_deny(unnamed))                         # names no run: the derived action decides
+        self.assertTrue(G.check(state(g, unnamed), "launch", plan=plan(name="a", target="fx2")).covered)
+        self.assertNotIn("every launch of it too", G.describe(unnamed))
+        d = G.new_deny("do not relaunch a, it is broken", {"names": ["a"]}, ["relaunch"])
+        later = grant({"targets": ["fx2"], "names": ["a*"]})            # a launch grant right after it: flagged
+        self.assertTrue(G.after_deny(later, [d, later]))
+        self.assertEqual(G.after_deny(later, [unnamed, later]), [])      # an unnamed relaunch deny: launches untouched
+        launch_deny = G.new_deny("never launch a", {"names": ["a"]}, ["launch"])
+        dec = G.check(state(g, launch_deny), "launch", plan=plan(name="a", target="fx2"))
+        self.assertTrue(dec.denied)
+        self.assertNotIn("rsk cannot see every earlier attempt", dec.reasons[0])   # a launch deny needs no widening
+
+
 class Store(ScratchHome):
     def setUp(self) -> None:
         super().setUp()
@@ -1070,6 +1109,84 @@ class Store(ScratchHome):
         rc, text = run("grant", "deny", "-C", str(self.proj), "--quote", "job 101 is broken: do not resubmit it",
                        "--name", "exp--train--a", "--action", "relaunch")
         self.assertEqual(rc, OK, text)
+
+    def fxp(self) -> None:
+        """A third fixture target whose profile lists its partitions (T_PARTITIONS)."""
+        d = self.home / "cfg" / "targets" / "fxp"
+        d.mkdir(parents=True)
+        (d / "profile.sh").write_text("T_KIND=slurm; T_HOST=fxhost; T_PARTITIONS='gpu paid'\n")
+
+    def test_r6_5_a_partition_no_scoped_target_lists_is_refused(self):
+        """V5-deny-partition-typo: `rsk grant deny -T fx-paid --partition piad` was stored and matched nothing, so a
+        grant that allows the paid partition covered it. A partition is now checked against the scoped targets'
+        T_PARTITIONS when every scoped Slurm target lists them (exit 2 'unknown partition', nothing recorded); else a
+        NOTE says it is not checked there. A GPU type has no list: echoed in a NOTE."""
+        self.fxp()
+        deny = ("grant", "deny", "-C", str(self.proj), "--quote", "never use the paid partition again")
+        add = ("grant", "add", "-C", str(self.proj), "--quote", "run the sweep on fxp, charges are fine", "--action",
+               "launch", "--max-live", "1", "--max-launches", "1", "--expires", "none")
+        for argv in ((*deny, "-T", "fxp", "--partition", "piad"), (*add, "-T", "fxp", "--partition", "gpu,piad"),
+                     (*deny, "-T", "ws", "--partition", "paid")):
+            rc, text = run(*argv)
+            self.assertEqual(rc, USAGE, (argv, text))
+            self.assertIn("unknown partition", text)
+        self.assertIn("fxp list gpu, paid (T_PARTITIONS)", run(*deny, "-T", "fxp", "--partition", "piad")[1])
+        self.assertIn("none (a workstation has no partitions)", run(*deny, "-T", "ws", "--partition", "paid")[1])
+        self.assertEqual(self.led.state().grants, [])                    # nothing recorded
+        f = self.home / "auth.json"
+        rec = {"kind": "deny", "quote": "never the paid partition", "source": "a note",
+               "scope": {"targets": ["fxp"], "partitions": ["piad"]}, "actions": ["launch"], "limits": {}}
+        f.write_text(json.dumps([rec]))
+        rc, text = run("grant", "import", str(f), "-C", str(self.proj))
+        self.assertEqual(rc, USAGE, text)
+        self.assertIn("unknown partition 'piad' (scope.partitions of #0 in", text)
+        self.assertEqual(self.led.state().grants, [])
+        rc, text = run(*deny, "-T", "fxp", "--partition", "paid")       # spelled as the profile lists it
+        self.assertEqual(rc, OK, text)
+        self.assertNotIn("NOTE", text)
+        rc, text = run(*deny, "--partition", "piad")                    # every target: fx lists none — not checked
+        self.assertEqual(rc, OK, text)
+        self.assertIn("NOTE: partition piad is not checked on fx (its profile lists no T_PARTITIONS)", text)
+        rc, text = run(*deny, "-T", "fxp", "--gpu-type", "gt-zz")
+        self.assertEqual(rc, OK, text)
+        self.assertIn("NOTE: GPU type gt-zz is not checked", text)
+        f.write_text(json.dumps([{**rec, "scope": {"targets": ["fxp"], "partitions": ["paid"]}}]))
+        self.assertEqual(run("grant", "import", str(f), "-C", str(self.proj))[0], OK)
+
+    def test_r6_9_list_and_doctor_flag_a_stored_record_naming_what_the_harness_does_not_know(self):
+        """NF-stored-deny-unknown-target: a deny stored before R5-9 with a misspelt target (or a target removed since)
+        matched nothing, and neither `rsk grant list` nor `rsk doctor` said so. Both now flag every active record
+        whose targets — or partitions, where the profiles list them — the harness does not know."""
+        self.fxp()
+        typo = G.add(self.led, G.new_deny("never launch anything on fx again", {"targets": ["fx-slrum"]}))
+        part = G.add(self.led, G.new_deny("never launch on fx or fx-old", {"targets": ["fx", "fx-old"]}))
+        fine = G.add(self.led, G.new_deny("never on FX", {"targets": ["FX"]}))       # a deny compares FX as fx
+        piad = G.add(self.led, G.new_deny("never the paid partition", {"targets": ["fxp"], "partitions": ["piad"]}))
+        old = G.add(self.led, grant({"targets": ["fx-gone"]}))
+        gone = G.add(self.led, G.new_deny("never on fx-slrum", {"targets": ["fx-slrum"]}))
+        G.revoke(self.led, gone["id"], "recorded wrongly")                 # revoked: nothing to flag
+        rc, text = run("grant", "list", "-C", str(self.proj))
+        self.assertEqual(rc, OK, text)
+        warn = [ln.strip() for ln in text.splitlines() if "WARNING:" in ln]
+        self.assertEqual(len(warn), 4, text)
+        self.assertIn(f"WARNING: {typo['id']} (deny): target fx-slrum is not one the harness knows (fx, fxp, ws) — "
+                      "never matches (the user's deny is not enforced there) — fix or revoke", text)
+        self.assertIn(f"WARNING: {part['id']} (deny): target fx-old is not one the harness knows", text)
+        self.assertIn("never matches there", next(w for w in warn if part["id"] in w))        # fx still counts
+        self.assertIn(f"WARNING: {piad['id']} (deny): partition piad is not one fxp lists (T_PARTITIONS: gpu, paid) "
+                      "— never matches", text)
+        self.assertIn(f"WARNING: {old['id']} (grant): target fx-gone", text)
+        self.assertIn("(it covers nothing there)", next(w for w in warn if old["id"] in w))
+        self.assertNotIn(fine["id"] + " (deny)", " ".join(warn))
+        self.assertNotIn(gone["id"], " ".join(warn))
+        doc = json.loads(run("grant", "list", "-C", str(self.proj), "--json")[1])
+        probs = {r.get("id"): r.get("scope_problems") for r in doc["records"]}
+        self.assertEqual(probs[fine["id"]], [])
+        self.assertTrue(probs[typo["id"]])
+        rc, text = run("doctor")
+        for r in (typo, part, piad, old):
+            self.assertRegex(text, rf"WARN .*{self.proj}: {r['id']} \((deny|grant)\): .* never matches")
+        self.assertNotIn(fine["id"] + " (deny)", text)
 
 
 if __name__ == "__main__":

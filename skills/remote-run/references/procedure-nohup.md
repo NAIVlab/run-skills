@@ -58,7 +58,8 @@ command / `ref: <reference path>`) and wait for their go. Never launch onto a GP
 user's words naming it: with `-d <ids> --gpu-busy-ok` (rsk takes it only with `-d`), a card that lands on one (`ON A BUSY GPU`) is never grant-covered.
 Its `busy ok` row binds who is on each accepted busy GPU (`<id>:<uuid>:<user>`): their approval is for those occupants.
 The GPUs are `-d` / `-g`'s choice, never the run command's: RUN's text that sets or clears `CUDA_VISIBLE_DEVICES` (or a
-sibling) anywhere is refused, and a launcher given its own GPU flags is a WARNING on the card (§4).
+sibling) anywhere, or empties the whole environment, is refused, and a launcher given its own GPU flags or settings, or a
+container runtime that picks GPUs, is a WARNING on the card (§4).
 Classify and name the run per `experiment-conventions.md` (run class, structured `-N` name, wandb mapping). A smoke
 goes out with `WANDB_MODE=disabled` (prepend `env WANDB_MODE=disabled` to the payload). A pilot/train/ablate must
 checkpoint and resume: nothing restarts a nohup run after a crash or reboot. A relaunch must use the logical run's
@@ -79,17 +80,19 @@ No word before `--` may contain `--rs-`, not even as an option's value, and a va
 starts with `-` (exit 2). The action is the plan's: a run that already has attempts that may have run is a `relaunch`
 — in the ledger, or only in the box's journal: the block's `info_prior` (receipts named `<run>` or `<run>--aNN`, e.g. a
 `run-launch` rsk never saw); a block without it, or `unknown`, counts as one too (fail closed; the card's `prior` line
-says which). A relaunch grant covers it only after a REBOOT ended the run's latest attempt that ran in the ledger, and
-only for a plan that repeats that attempt's configuration — else `not the configuration of aNN it resumes`; the user's
+says which). A deny that names the run and lists `relaunch` or `resubmit` stops every launch of it, a first one too, on
+any target in its scope (rsk cannot see every earlier attempt: procedure-slurm §4, Denies). A relaunch grant covers it
+only after a REBOOT ended the run's latest attempt that ran in the ledger, and only for a plan that repeats that attempt's
+configuration — else `not the configuration of aNN it resumes`; the user's
 approval of the card after any end. Exit as for Slurm (procedure-slurm §4: 0 launched, 1 failed — also a plan whose env would fail the gate —,
 2 usage — also a RUN that picks GPUs, below —, 3 refused, 4 needs the user, 5 reply lost = SUBMIT_UNKNOWN, 6 stale plan /
 drift / a live ledger run of that name / a busy `-d` GPU / `grants unreadable` / `needs: sync`, e.g. a box deployed
-before `info_run_gpu=checked`), plus 8: too few free GPUs now. rsk reads the box's journal before it decides: a launch
+before `info_run_gpu=checked` or `info_launchers=checked`), plus 8: too few free GPUs now. rsk reads the box's journal before it decides: a launch
 the target proves never started — verdict refused or failed with no receipt, launch.sh's exit 75 (the attempt name was
 taken: this call claimed nothing), no attempt dir after launch.sh itself exited (1–127), or `run-launch` ending before
 its launch ssh — is NOT_SUBMITTED: the use comes back and `plan <id> is free again`; a launch.sh killed after its gate
-said go is launched (its receipt decides; the use is kept); anything else — ssh 255, a signal, a journal it cannot
-read — is SUBMIT_UNKNOWN (`rsk status` settles it). `run-launch` called directly while rsk is installed (on PATH, or in `uv tool dir --bin`)
+said go is launched (its receipt decides; the use is kept); anything else — ssh 255 whatever its stderr says, a signal,
+a journal it cannot read — is SUBMIT_UNKNOWN (`rsk status` settles it). `run-launch` called directly while rsk is installed (on PATH, or in `uv tool dir --bin`)
 prints `use: rsk launch -T <t> …` and exits 2; installed without rsk it launches as below, with a one-line NOTE. That steers; it is not a guard.
 `-d ids` uses exactly those GPUs (bypasses `GPU_EXCLUDE`); `-n N` picks the N idlest free ones (no compute process),
 skipping `GPU_EXCLUDE` (default `DEFAULT_NGPU`, 1; positive integer; fewer than N free is a hard error, exit 1, never a
@@ -111,32 +114,65 @@ plan. RUN's TEXT, anywhere — its leading words, a later command, a pipeline el
 `timeout` / `nice` before `env`, a container's `--env NAME=` / `-e NAME=` — must not assign or clear
 `CUDA_VISIBLE_DEVICES`, `CUDA_DEVICE_ORDER`, `NVIDIA_VISIBLE_DEVICES`, `HIP_VISIBLE_DEVICES` or `ROCR_VISIBLE_DEVICES`:
 `NAME=` and `NAME+=`; `-u NAME` and `--unset[= ]NAME`; `unset … NAME`; `export -n NAME`; `declare` / `typeset +x NAME`
-— also quoted or backslashed (`'NAME'=0`, `N\AME=0`). A mention as data counts too (`--note "CUDA_VISIBLE_DEVICES=0"`
-is refused); reading them is fine (`$NAME`, `printenv NAME`). Among the leading words an `env` option other than
+— also quoted or backslashed (`'NAME'=0`, `N\AME=0`); `APPTAINERENV_NAME=` / `SINGULARITYENV_NAME=` count as
+`NAME=` (apptainer sets NAME inside the container from it, `--cleanenv` or not). A mention as data counts too (`--note
+"CUDA_VISIBLE_DEVICES=0"` is refused); reading them is fine (`$NAME`, `printenv NAME`). Nor may RUN's text empty the
+whole environment, anywhere (the harness's `CUDA_VISIBLE_DEVICES` and `CUDA_DEVICE_ORDER` would go with it): `env -i`
+(also `-vi`, `-0i`), `env -`, `env -- -`, `--ignore-environment` or any abbreviation of it from `--i` on — after a wrapper
+(`timeout`, `nice`), after env's other options (`-v`, `-u NAME`, `-C DIR`) or inside `-S`'s string too (env's options end
+at its command: `env A=1 cmd -i` and `cmd -i` are fine) — and bash's `exec -c` where a command starts (at the start;
+after `;` `|` `&` `(` `{`, a backquote, a quote or a newline; after `then` / `do` / `else` / `time` / `!` / `builtin` /
+`command` or `NAME=VALUE` words; `-l` and `-a NAME` may come first), never `exec -ac` (`-a` with the name `c`), `exec -a
+-c`, `exec -- -c` or a subcommand's (`apptainer` / `singularity` / `kubectl exec -c`): `ERROR: RUN empties the whole
+environment in its text ('env -i': the harness's CUDA_VISIBLE_DEVICES and CUDA_DEVICE_ORDER would go …)` (or `'exec
+-c'`). The env facts are GNU env's and the `exec` ones this bash's (`tests/61` R6-6 and 'round-6 integration: bash's
+`exec -c`'; on a box `tests/vgate/local.sh` `env_anywhere=`). Among the leading words an `env` option other than
 `-v`/`--debug`, `-C DIR` or `-u OTHER` is refused too (it may set or clear them). When RUN's text shows it: exit 2 before
 the claim (`ERROR: RUN … — the GPUs are launch.sh's choice`), nothing launched, no card, no attempt dir. When it shows
 only after expansion (a conf variable) in the first command: the launch is reported, but the wrapper never starts the
 payload (`ERROR: RUN … — not started` in the log, `<log>.rc` rc=2). The plan block's `info_run_gpu=checked` says the
-deployed `launch.sh` checks RUN's words; rsk refuses a deploy without it (`needs: sync`); one from before the
-whole-text check also lacks `info_prior=` (its every plan is a relaunch, its card says `rsk sync`). Honest limit: the
-payload is code — what it does once it starts is outside what rsk can check: a value only an expansion inside a later
-command supplies (`x | env $PRE y`), a script it runs, its own environment changes; RUN is a command, not a GPU choice.
+deployed `launch.sh` checks RUN's words, and `info_launchers=checked` that it has the checks of this paragraph and the
+next (the `APPTAINERENV_` and empty-environment refusals, the config and container WARNINGs); rsk refuses a deploy
+without either (`needs: sync`); one from before the whole-text check also lacks `info_prior=` (its every plan is a
+relaunch, its card says `rsk sync`). Honest limit: the payload is code — what it does once it starts is outside what
+rsk can check: a value only an expansion inside a later command supplies (`x | env $PRE y`), a script it runs, its own
+environment changes (an `exec -c` the text does not show at a command start, sudo's `env_reset`, `systemd-run`, ssh);
+RUN is a command, not a GPU choice.
 **Launchers that pick GPUs from their own flags** MAY ignore `CUDA_VISIBLE_DEVICES`: `deepspeed` (also `ds`,
 `deepspeed.pt`, `python -m deepspeed.launcher.runner`) with `--include`/`-i`, `--exclude`/`-e`,
 `--num_gpus`/`--num_accelerators`, `--num_nodes`, `-H`/`--hostfile` or `--master_addr` (argparse prefixes too, `--num_g`;
 a short flag's value attached or not), and `accelerate launch` (also `accelerate-launch`, `python -m
-accelerate.commands.launch`) with `--gpu_ids`/`--gpu-ids` or `--num_processes`/`--num-processes`. launch.sh never
-refuses them: it prints a counted `WARNING: RUN runs <launcher> with <flags> — such a launcher may ignore
-CUDA_VISIBLE_DEVICES and pick GPUs itself …, not only this launch's GPU(s) [<landing ids>]` (one per launcher in RUN's
-text; every word after it counts, the script's own too). Only the user's approval of that card, or a grant whose
-`--allow-warnings` is `any`, covers it. Let the launcher use the landing (no GPU flags: it then uses the ids launch.sh
-picked, unless a file below says otherwise), or name the GPUs it will use to the user. The spellings rest on argparse
-(`tests/61` 'R5-2': unique prefixes and attached short values for deepspeed's runner, no abbreviations for
-accelerate's); what the launchers do with the variable is their source, read back from an installed copy by
-`tests/vgate/launchers.sh` (only with the user's OK). Honest limits — launch.sh sees none of these: flags an expansion
-or a script supplies; accelerate's config file (`gpu_ids` in `--config_file` or its default config); deepspeed's
-default hostfile `/job/hostfile` (present: the runner reads it and ignores `CUDA_VISIBLE_DEVICES` even without flags;
-`launchers.sh` prints `ds_hostfile=`) and its `.deepspeed_env`.
+accelerate.commands.launch`) with `--gpu_ids`/`--gpu-ids` or `--num_processes`/`--num-processes`. So may their configs.
+`accelerate launch` without `--gpu_ids` takes `gpu_ids` from its config, which launch.sh reads, read-only: `--config_file
+FILE` (relative to the project dir), else `$PROJ/.cache/huggingface/accelerate/default_config.yaml` (env.sh's `HF_HOME`;
+`.json` when only that is a file); a `gpu_ids` other than `all` / `null` / `~` / empty (a YAML list under it is a value) warns, and so do a `--config_file`
+it cannot read (missing, unreadable, named by an expansion or `~user`), a config over 64 KiB or an unreadable default one,
+and a RUN that sets or unsets `HF_HOME` (any mention but a read, `$HF_HOME`: its default config is then not the one read
+here). `deepspeed` without `--hostfile`/`-H` warns when `/job/hostfile` exists (its runner's default hostfile: read
+without the flag, it ignores `CUDA_VISIBLE_DEVICES`). A container does not get the landing at all: `docker` / `podman` /
+`nvidia-docker` with `--gpus` (any value, even `device=$CUDA_VISIBLE_DEVICES`), `--runtime` (any value), `--device
+nvidia.com/…` or `/dev/nvidia…` (or a value from an expansion), `--privileged` or a bare `-e`/`--env
+NVIDIA_VISIBLE_DEVICES`; `nvidia-docker run` always; `apptainer` / `singularity` with `--cleanenv`/`-e` or
+`--containall`/`-C` (short clusters such as `-ce` too; without them they pass the landing in). launch.sh never refuses
+any of these: it prints a counted WARNING, one per launcher in RUN's text (every word after it counts, the script's own
+too) — `WARNING: RUN runs <launcher> with <flags> — such a launcher may ignore CUDA_VISIBLE_DEVICES and pick GPUs itself
+…, not only this launch's GPU(s) [<landing ids>]: drop those flags (it then uses these), or name the GPUs it will use to
+the user`; for a config, `with gpu_ids: … in <file>`, `with a config it cannot read here (…)` or `with /job/hostfile
+(present: its default hostfile, read without --hostfile)` … `drop those flags and settings (it then uses these), or name
+the GPUs it will use to the user`; for a container, `WARNING: RUN runs <rt> with … — a container started so does not get
+this launch's CUDA_VISIBLE_DEVICES and may see GPUs its runtime picks (any on the box, another user's too), not only this
+launch's GPU(s) [<ids>]: name the GPUs it will use to the user` (apptainer / singularity: `drop those flags (it then
+keeps these), or …`). Only the user's approval of that card, or a grant whose `--allow-warnings` is `any`, covers it —
+no other grant covers a GPU container run (`docker run --gpus …`). Let the launcher use the landing (no GPU flags or
+settings: it then uses the ids launch.sh picked), or name the GPUs it will use to the user. The spellings rest on
+argparse (`tests/61` 'R5-2': unique prefixes and attached short values for deepspeed's runner, no abbreviations for
+accelerate's); what the launchers do with the variable and where accelerate finds its config is their source, read back
+from an installed copy by `tests/vgate/launchers.sh`, and the container facts are read on a box by
+`tests/vgate/containers.sh` (both only with the user's OK). Honest limits — launch.sh sees none of these: a GPU value
+or launcher flags that only an expansion or a script supplies; configs it does not read (an `HF_HOME` the `ENV_HOOK`
+sets, a relative `--config_file` after a `cd` in RUN — read from the project dir —, docker `--env-file`, compose files,
+deepspeed's `.deepspeed_env`); a docker daemon whose default runtime is nvidia (an image's own `NVIDIA_VISIBLE_DEVICES`
+then hands the container GPUs with no flag at all: `containers.sh` prints `docker_default_runtime=`).
 rsk's protocol (api=3: the line `# rs-api=3` inside the deployed `.ws/launch.sh`; with any `--rs-` word, run-launch's one
 ssh checks that line first and, on an older `launch.sh`, exits 2 `does not speak rs-api=3`, nothing run — rsk: `needs:
 sync`): `--rs-mode plan` runs every step above and checks the env gate read-only — the venv's `python` must be
@@ -148,7 +184,9 @@ uv_sync_args env_name` — `busy_ok` = `<id>:<uuid>:<user>` of each busy GPU the
 (sorted by id; empty, or `unknown`), `env_hook` = `<ENV_HOOK>:<sha256 of the file>`; `info_gpus=` `info_uuids=`
 `info_busy=<id:user:pid,…>|unknown` `info_run_gpu=checked` (above) `info_prior=<n|unknown>` (the run's earlier attempts in
 the box's journal: receipts named the run id — the name minus `--aNN` — or `<run id>--aNN`; `unknown` when one cannot be
-read; envelope, not bound: rsk reads n > 0, or no number, as a relaunch); `warnings=N` (the distinct `WARNING:` lines) `warnings_avail=0` (a box has no
+read; envelope, not bound: rsk reads n > 0, or no number, as a relaunch) `info_launchers=checked` (above: this launch.sh
+warns on launcher configs and container runtimes and refuses `env -i` / `exec -c` / `APPTAINERENV_` — a block without
+it is exit 6 `needs: sync … lacks info_launchers`, a plan stored without it is refused at `--plan`: plan again); `warnings=N` (the distinct `WARNING:` lines) `warnings_avail=0` (a box has no
 availability `-y` gate: too few free GPUs is exit 1) `warnings_id=` (their sha256, digit runs masked) `bound_hash=`;
 result `verdict=planned`). `--rs-expect <bound_hash> [--rs-warnings <warnings_id>]` launches only while the request
 still hashes the same and the call's `WARNING:` lines give the same `warnings_id` (none given = no warning at all) —
@@ -203,11 +241,10 @@ approval bound to its identity (target, pid, start, boot id), for 1 h, used up b
 — or, for your own judgment that it should stop, on a `cancel_own` grant (runs rsk launched only); else exit 4: ask.
 A `cancel_own` grant's cancels count against its `max_launches`; a deny of plans (`rsk grant deny --run <hash>`, one that
 covers cancels) matches every cancel of a run the ledger has no plan for. An answer cut off after the cancel started, or none at all (a timeout,
-ssh's own 255, a signal), says `the cancel may have been sent: rsk status` (exit 5; a use is kept) — except ssh's own
-255 with no answer and its words that the session never opened (`Connection refused` / `Connection timed out` / `No
-route to host`, `Could not resolve hostname`, `Permission denied (…)`, `Host key verification failed`): `not reached —
-nothing sent` (exit 5; a `cancel_own` use is given back, a cancel approval stays used). Exit 1 = processes left in the
-run's group (`FAILED: … process(es) still in its group after TERM …`). Without
+ssh's own 255, a signal), says `the cancel may have been sent: rsk status` (exit 5; a use is kept) — and so does ssh's
+own 255 before `@@start`, whatever its stderr says (`… — ssh's own words are no proof that the body never ran; the use
+is kept`: a fallback route or a login shell can print `Connection refused` on a session that ran). Exit 1 = processes
+left in the run's group (`FAILED: … process(es) still in its group after TERM …`). Without
 rsk, on the same terms: `ssh <host> "kill <pid>"` (the `<log>.pid` wrapper: it forwards TERM to the run once and records
 `term=1`), and only if the run's group outlives that, `ssh <host> "kill -- -<pid>"` (the whole process group).
 
