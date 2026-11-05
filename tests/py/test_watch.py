@@ -17,9 +17,10 @@ from pathlib import Path
 from helpers import ScratchHome
 
 from remote_run import cli
+from remote_run import grants as G
 from remote_run import ledger as L
 from remote_run import watch as Wt
-from remote_run.errors import CONFLICT, LEASE_ENDED, OK, USAGE, RskError
+from remote_run.errors import CONFLICT, LEASE_ENDED, OK, REFUSED, USAGE, RskError
 
 
 def run(*argv: str) -> tuple[int, str]:
@@ -46,6 +47,15 @@ class Lease(ScratchHome):
         self.assertEqual(Wt.until_of(["t", "--for", "600", "--every", "60"], 0), 600 + 60 + Wt.SLACK)
         self.assertEqual(Wt.until_of(["t", "--once"], 0), Wt.SLACK + Wt.EVERY_DEFAULT)
         self.assertEqual(Wt.until_of(["t", "--approve", "ok"], 0), 300)
+
+    def test_numbers_are_read_as_run_watch_reads_them(self):
+        """Base 10, leading zeros dropped, <= 9 significant digits (run-watch's dec10); anything else (a non-ASCII
+        digit included, which int() would crash on or misread) is run-watch's usage error: the default here."""
+        self.assertEqual(Wt.last(["--every", "0060"], "--every", 300), 60)
+        self.assertEqual(Wt.last(["--for", "000999999999"], "--for", 7200), 999999999)
+        for bad in ("1234567890", "\u00b2", "\u0664\u0662", "0x10", "-5", "+5", ""):
+            self.assertEqual(Wt.last(["--for", bad], "--for", 7200), 7200, repr(bad))
+        self.assertEqual(Wt.until_of(["t", "--for", "0600", "--every", "060"], 0), 600 + 60 + Wt.SLACK)
 
     def test_l8_the_last_for_wins_and_the_lease_moves_forward_while_it_runs(self):
         self.assertEqual(Wt.until_of(["t", "--for", "60", "--for", "86400"], 0), 86400 + Wt.EVERY_DEFAULT + Wt.SLACK)
@@ -119,6 +129,95 @@ class Lease(ScratchHome):
                                str(Path(cli.__file__).parent.parent), *argv], capture_output=True, text=True,
                               env=os.environ)
         return done.returncode, done.stdout + done.stderr
+
+
+class Denies(ScratchHome):
+    """D8 / r1-policy-docs-1: a deny binds rsk watch --act (before it starts, and on every refresh) and --approve;
+    G4-5: an orphaned run-watch's lock refuses a second watcher (exit 6)."""
+
+    TABLE = ("#@ run-watch v1\n#@ allow launch preempt=2\n#@ ok 2026-11-05 sum=1 \"go\"\n"
+             "a fx-slurm - -p gpu -g 1 -t 1:00:00 -- python train.py\n"
+             "exp--smoke--b fx-slurm - -p gpu -G gt-a -g 2 -- python b.py\n")
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.proj = self.home / "proj"
+        self.proj.mkdir()
+        (self.proj / ".hpc.conf").write_text("REMOTE_DIR=/r\n")
+        (self.proj / "t.tsv").write_text(self.TABLE)
+        self.led = L.Ledger(self.proj)
+        self.kinds = {"fx-slurm": "slurm"}
+
+    def guard(self):
+        return lambda: Wt.deny_hit(self.led, self.proj, ["t.tsv", "--act"], self.kinds)
+
+    def test_table_rows_and_actions(self):
+        acts, rows = Wt.table_rows(self.proj / "t.tsv", self.kinds)
+        self.assertEqual(acts, {"launch", "resubmit", "relaunch"})
+        self.assertEqual([(r["name"], r.get("partition"), r.get("gres"), r.get("time")) for r in rows],
+                         [("a", "gpu", "gpu:1", "1:00:00"), ("exp--smoke--b", "gpu", "gpu:gt-a:2", None)])
+        self.assertEqual(Wt.tables(["t.tsv", "--every", "60", "--act", "u.tsv", "--release", "x"]), ["t.tsv", "u.tsv"])
+
+    def test_a_deny_stops_act_before_anything_starts(self):
+        self.assertEqual(self.guard()(), "")
+        G.add(self.led, G.new_deny("never launch anything on fx-slurm any more", {"targets": ["fx-slurm"]}))
+        seen = self.home / "seen"
+        with self.assertRaises(RskError) as c:
+            Wt.run_watch(self.led, ["t.tsv", "--act"], str(self.proj), dict(os.environ),
+                         ["bash", "-c", f"touch {seen}"], guard=self.guard())
+        self.assertEqual(c.exception.code, REFUSED)
+        self.assertIn("never launch anything on fx-slurm", str(c.exception))
+        self.assertFalse(seen.exists())
+        self.assertIsNone(self.led.lease().data)
+
+    def test_a_deny_of_a_class_or_name_matches_its_row_only_for_what_the_table_may_do(self):
+        G.add(self.led, G.new_deny("leave the smokes alone", {"classes": ["smoke"]}, ["cancel"]))
+        self.assertEqual(self.guard()(), "")                         # the table has no fail-stop: no cancel
+        G.add(self.led, G.new_deny("no relaunch of b", {"names": ["exp--smoke--b"]}, ["relaunch"]))
+        self.assertIn("row exp--smoke--b", self.guard()())          # preempt=2: run-watch may resubmit it
+
+    def test_a_new_deny_terms_run_watch_and_exits_3(self):
+        def later():
+            time.sleep(0.4)
+            G.add(self.led, G.new_deny("stop now", {"names": ["a"]}))
+        t = threading.Thread(target=later)
+        t.start()
+        try:
+            with mock.patch.object(Wt, "REFRESH_S", 0.2), self.assertRaises(RskError) as c:
+                Wt.run_watch(self.led, ["t.tsv", "--act"], str(self.proj), dict(os.environ),
+                             ["bash", "-c", "trap 'exit 0' TERM; sleep 20 & wait"], guard=self.guard())
+        finally:
+            t.join()
+        self.assertEqual(c.exception.code, REFUSED)
+        self.assertIn("run-watch was stopped (TERM)", str(c.exception))
+        self.assertIsNone(self.led.lease().data)
+
+    def test_approve_refuses_rows_a_deny_matches(self):
+        G.add(self.led, G.new_deny("never launch a", {"names": ["a"]}, ["launch"]))
+        rc, text = run("watch", "-C", str(self.proj), "t.tsv", "--approve", "ok")
+        self.assertEqual(rc, REFUSED, text)
+        self.assertIn("never launch a", text)
+        self.assertEqual((self.proj / "t.tsv").read_text(), self.TABLE)
+
+    def test_g4_5_an_orphaned_run_watch_lock_is_a_conflict(self):
+        lock = self.proj / "logs" / "run-watch" / ".lock"
+        lock.mkdir(parents=True)
+        other = subprocess.Popen(["sleep", "30"])
+        try:
+            (lock / "pid").write_text(f"{other.pid}\n")
+            (lock / "info").write_text(f"{os.uname().nodename} 2026-11-05T00:00:00+0000 1\n")
+            with self.assertRaises(RskError) as c:
+                Wt.run_watch(self.led, ["t.tsv", "--once"], str(self.proj), dict(os.environ), ["true"])
+            self.assertEqual(c.exception.code, CONFLICT)
+            self.assertIn(f"pid {other.pid}", str(c.exception))
+            self.assertIn("an orphan", str(c.exception))
+            self.assertIsNone(self.led.lease().data)
+        finally:
+            other.kill()
+            other.wait()
+        self.assertEqual(Wt.run_watch(self.led, ["t.tsv", "--once"], str(self.proj), dict(os.environ), ["true"]), OK)
+        (lock / "info").write_text("elsewhere 2026-11-05T00:00:00+0000 1\n")    # another host: run-watch decides
+        self.assertIsNone(Wt.lock_holder(self.proj)["alive"])
 
 
 if __name__ == "__main__":

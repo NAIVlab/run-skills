@@ -41,7 +41,7 @@ TS='\[[^]]{0,60}[0-9][0-9][^]0-9]+[0-9][0-9][^]]{0,20}\] '   # the `[<date>] ` a
 _t=${TMPDIR:-/tmp}; { [ -d "$_t" ] && [ -w "$_t" ]; } || _t=/tmp   # a login node's TMPDIR is often a purged scratch path
 tmp=$(mktemp -d "$_t/rs-status.XXXXXX" 2>/dev/null) || { _t=/tmp; tmp=$(mktemp -d "$_t/rs-status.XXXXXX" 2>/dev/null); } \
   || { echo "status=unknown (no usable temp dir: tried '${TMPDIR:-/tmp}' and /tmp)"; exit 1; }
-trap 'rm -rf "$tmp"' EXIT; export TMPDIR="$_t"; E="$tmp/e"; WIN="$tmp/w"   # exported: bash herestrings need a writable one
+trap 'rm -rf "$tmp"' EXIT; export TMPDIR="$_t"; E="$tmp/e"; WIN="$tmp/w"   # exported: what it runs (sort, …) gets a usable one
 amb=""; lastm=""
 case "$ID" in
   *[!0-9]*) JID=""; LOG=$ID ;;
@@ -67,7 +67,7 @@ if [ -n "$JID" ]; then
   q=$(squeue -h -j "$JID" --Format='State:0|,Reason:0|,TimeUsed:0|,TimeLeft:0|,RestartCnt:0|,NodeList:0' 2>"$E"); qrc=$?
   row=$(printf '%s\n' "$q" | grep -a -m 1 '|.*|.*|.*|.*|'); err=$(head -n 1 "$E" | clip 100)   # the first row-shaped line (-a: a NUL in it is no 'binary file')
   ok=0; if [ "$qrc" = 0 ] && [ -n "$row" ]; then
-    IFS='|' read -r st rs tu tl rc nl <<<"$row"; ok=1
+    st=${row%%|*}; r=${row#*|}; rs=${r%%|*}; r=${r#*|}; tu=${r%%|*}; r=${r#*|}; tl=${r%%|*}; r=${r#*|}; rc=${r%%|*}; nl=${r#*|}; ok=1   # split by expansion (no here-string: bash <= 5.0 needs $TMPDIR for one)
     case "$st" in ''|*[!A-Z_]*) ok=0 ;; esac; case "$rc" in ''|*[!0-9]*) ok=0 ;; esac   # a state word and a restart count, else not a row
   fi
   if [ "$ok" = 1 ]; then echo "job=$JID state=$st reason=$rs elapsed=$tu left=$tl restarts=$rc nodes=${nl:-none}"
@@ -75,7 +75,7 @@ if [ -n "$JID" ]; then
     case "$qrc:$err:$q" in *"Invalid job id"*) why="gone from the queue" ;; 0::) why="not in the queue" ;; 0:*) why="unparsable squeue output, queue state unverified" ;; *) why="squeue FAILED (exit $qrc${err:+: $err})" ;; esac
     a=$(sacct -j "$JID" -X -n -P -o State,ExitCode,Elapsed,End 2>"$E"); arc=$?   # status captured BEFORE parsing
     row=$(printf '%s\n' "$a" | grep -a -m 1 -E '^[A-Z_]+(\+| by [0-9]+)?\|[0-9]+:[0-9]+\|[0-9:-]+\|[^|]+$')
-    if [ "$arc" = 0 ] && [ -n "$row" ]; then IFS='|' read -r st ec el en <<<"$row"; echo "job=$JID state=$st exit=$ec elapsed=$el end=$en (sacct; $why)"
+    if [ "$arc" = 0 ] && [ -n "$row" ]; then st=${row%%|*}; r=${row#*|}; ec=${r%%|*}; r=${r#*|}; el=${r%%|*}; en=${r#*|}; echo "job=$JID state=$st exit=$ec elapsed=$el end=$en (sacct; $why)"
     else
       if [ "$arc" != 0 ]; then detail="sacct FAILED (exit $arc)"; elif [ -n "$a" ]; then detail="unparsable sacct output"; else detail="sacct has no record"; fi
       echo "job=$JID state=unknown ($why; $detail)"

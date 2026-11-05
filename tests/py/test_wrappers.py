@@ -89,6 +89,22 @@ class Wrappers(ScratchHome):
                          [("sync", ["-D"], "yes, delete what I removed"), ("bootstrap", ["--job", "-p", "cpu"], "build it")])
         self.assertEqual(self._rsk("bootstrap", "-C", str(self.proj), "-T", "fx").returncode, 7)   # plain: unchanged
 
+    def test_d7_g3_flow_3_the_gate_reads_run_syncs_grammar(self):
+        self.assertEqual(wrappers.sync_modes(["-D", "--also", "-n"]), (False, True))     # -n is --also's PATH
+        self.assertEqual(wrappers.sync_modes(["-D", "--also", "--dry-run"]), (False, True))
+        self.assertEqual(wrappers.sync_modes(["--also", "-D"]), (False, False))           # -D is a path here
+        self.assertEqual(wrappers.sync_modes(["-n", "--also", "x", "-D"]), (True, True))
+        self.assertEqual(wrappers.sync_modes(["--also=-n", "--delete"]), (False, True))
+        for argv in (("-D", "--also", "-n"), ("-D", "--also", "--dry-run"), ("--delete", "--also", "-n")):
+            done = self._rsk("sync", "-C", str(self.proj), "-T", "fx", *argv)
+            self.assertEqual(done.returncode, 4, (argv, done.stdout, done.stderr))
+            self.assertIn("needs user: approval (remote deletion", done.stdout)
+            self.assertNotIn("ARGS=", done.stdout)
+        done = self._rsk("sync", "-C", str(self.proj), "-T", "fx", "--also", "-D")      # no deletion: runs
+        self.assertEqual(done.returncode, 7, done.stderr)
+        done = self._rsk("bootstrap", "-C", str(self.proj), "-T", "fx", "-p", "cpu", "--job")   # any --job: gated
+        self.assertEqual(done.returncode, 4, done.stderr)
+
     def test_unknown_arguments_still_refused_elsewhere(self):
         buf = io.StringIO()
         with contextlib.redirect_stderr(buf), self.assertRaises(SystemExit) as cm:

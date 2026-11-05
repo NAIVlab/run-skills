@@ -2,7 +2,7 @@
 # run-skills remote/submit.sh — generic Slurm submit. Runs ON the login node from <REMOTE_DIR>/.<target>/ (deployed
 # by run-sync next to profile.sh, policy.sh, job.sbatch). Partition limits and gates come from the target's policy.sh
 # (t_partition / t_policy, contract in targets/_template-slurm/policy.sh); this file names no cluster.
-#   submit.sh [--rs-attempt NONCE] [--rs-mode plan] [--rs-expect HASH [--rs-warnings N]] [--rs-chain] [-p partition] [-g ngpu] [-G gputype]
+#   submit.sh [--rs-attempt NONCE] [--rs-mode plan] [--rs-expect HASH [--rs-warnings ID]] [--rs-chain] [-p partition] [-g ngpu] [-G gputype]
 #             [-t time] [-m mem] [-c cpus] [-n name] [-y] [--same-name-ok] [--<policy-flag>] -- <cmd...>
 # Defaults from ../.hpc.conf: <TAG>_KEY beats KEY (DEFAULT_GPUS/CPUS/MEM/TIME ACCOUNT SBATCH_EXTRA JOB_NAME); CLI beats both.
 # -y queues past an availability/occupancy warning. Exit 1 = warning, 2 = usage/data error, 3 = policy refusal,
@@ -10,20 +10,25 @@
 # Attempt journal: <PROJ>/.rs/attempts/<NONCE>/ (mkdir = the claim; NONCE generated without --rs-attempt) gets out, err,
 # stage, result, the submit-time snapshots (conf, hook, profile.sh, env.sh) and, once the job exists, its receipt —
 # all written BEFORE anything reaches the caller (the EXIT trap replays out/err), so a dead ssh loses nothing.
-# Protocol api=3 (../API): --rs-mode plan runs every check (-y gates count as acknowledged: WARNING, go on), prints ONE
-# `@@plan v1` … `@@end` block (the bound fields + bound_hash) and stops before the snapshots and sbatch; --rs-expect HASH
-# submits only if that hash is still the one rs_bound gives AND this call printed as many `WARNING:` lines as the approved
-# card counted (--rs-warnings N, default 0: -y never passes a new one) — else the block + ERROR, exit 6; under --rs-expect a
-# failed squeue is exit 1, never a -y gate. --rs-chain = a singleton segment. An SBATCH_EXTRA --time / -t (sbatch takes
-# the last one) is held to MaxTime like -t.
+# Protocol api=3 (the `# rs-api=3` line below, which rsk reads in this file): --rs-mode plan runs every check (-y gates
+# count as acknowledged: WARNING, go on; t_policy is probed first as a submit WITHOUT -y, so a gate silent under -y prints
+# too), prints ONE `@@plan v1` … `@@end` block (bound fields + bound_hash; warnings = the distinct WARNING: lines,
+# warnings_id = their digest, digit runs masked) and stops before the snapshots and sbatch; --rs-expect HASH submits only
+# if rs_bound still gives that hash AND this call's warnings_id is the approved card's (--rs-warnings ID; default: no
+# warning at all, so -y never passes another one) — else the block, `changed: <keys>` (from the approved plan's own
+# journal, when it is here), ERROR, exit 6; under --rs-expect a failed squeue is exit 1. --rs-chain = a singleton segment.
+# Every time limit sbatch could read (-t, the conf, the policy's or SBATCH_EXTRA's --time / -t in any value form; sbatch
+# keeps the last) must be explicit — never 0, UNLIMITED or INFINITE — and within MaxTime. Parsing uses no here-string or
+# heredoc (bash <= 5.0 writes them to $TMPDIR: a full one would fail a parse silently).
+# rs-api=3
 set -euo pipefail
 unset RS_ATTEMPT RS_CONF_FILE RS_RUN RS_ACKS     # a submit from inside a job (--export=ALL) never inherits its attempt
 trap '' HUP                                      # a session that hangs up (ssh -t) cannot stop it between decide and record
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJ="$(cd "$SELF/.." && pwd)"
-NONCE=""; _ra=0; _dd=0; _av=(); PLAN=0; EXPECT=""; CHAIN=0; RS_WARN=""   # pre-scan, before --: each value a SEPARATE word (an old
-while [ "$#" -gt 0 ]; do                                      # parser exits 2 on the bare word: unknown arg, nothing submitted)
-  case "$_dd:$1" in
+NONCE=""; _ra=0; _dd=0; _av=(); PLAN=0; EXPECT=""; CHAIN=0; RS_WARN=""; _v=""   # pre-scan, before --: each value a SEPARATE word (an
+while [ "$#" -gt 0 ]; do                                      # old parser exits 2 on the bare word: unknown arg, nothing submitted)
+  case "$_dd$_v:$1" in   # _v=v: this word is the value of -p -g -G -t -m -c -n (an --rs- word there is refused, never taken as a flag)
     0:--rs-attempt) [ "$_ra" = 0 ] && [ "$#" -ge 2 ] || { echo "ERROR: --rs-attempt takes one NONCE, once" >&2; exit 2; }
                     NONCE=$2; _ra=1; shift 2; continue ;;
     0:--rs-mode) [ "$PLAN" = 0 ] && [ "$#" -ge 2 ] && [ "$2" = plan ] || { echo "ERROR: --rs-mode takes one value, plan, once" >&2; exit 2; }
@@ -31,16 +36,16 @@ while [ "$#" -gt 0 ]; do                                      # parser exits 2 o
     0:--rs-expect) [ -z "$EXPECT" ] && [ "$#" -ge 2 ] && [ "${#2}" = 64 ] && [ -n "${2##*[!0123456789abcdef]*}" ] \
                      || { echo "ERROR: --rs-expect takes one bound_hash (64 lowercase hex), once" >&2; exit 2; }
                    EXPECT=$2; shift 2; continue ;;
-    0:--rs-warnings) [ -z "$RS_WARN" ] && [ "$#" -ge 2 ] && [ -n "$2" ] && [ -n "${2##*[!0123456789]*}" ] && [ "${#2}" -le 4 ] \
-                       || { echo "ERROR: --rs-warnings takes one count (digits), once" >&2; exit 2; }
+    0:--rs-warnings) [ -z "$RS_WARN" ] && [ "$#" -ge 2 ] && [ "${#2}" = 64 ] && [ -n "${2##*[!0123456789abcdef]*}" ] \
+                       || { echo "ERROR: --rs-warnings takes one warnings_id (64 lowercase hex: the approved card's), once" >&2; exit 2; }
                      RS_WARN=$2; shift 2; continue ;;
     0:--rs-chain) CHAIN=1; shift; continue ;;
-    0:--rs-*) echo "ERROR: '$1' is not a flag of this submit.sh (api=3: --rs-attempt NONCE, --rs-mode plan, --rs-expect HASH, --rs-warnings N, --rs-chain; values as separate words)" >&2; exit 2 ;;
+    0*:*--rs-*) echo "ERROR: '$1' is not a flag of this submit.sh here (api=3: --rs-attempt NONCE, --rs-mode plan, --rs-expect HASH, --rs-warnings ID, --rs-chain; values as separate words; never an option's value)" >&2; exit 2 ;;
     0:--) _dd=1 ;;
-  esac; _av+=("$1"); shift
+  esac; _v=""; [ "$_dd" = 1 ] || case "$1" in -[pgGtmcn]) _v=v ;; esac; _av+=("$1"); shift
 done
 set -- ${_av[@]+"${_av[@]}"}
-[ -z "$RS_WARN" ] || [ -n "$EXPECT" ] || { echo "ERROR: --rs-warnings goes with --rs-expect (the approved card's count)" >&2; exit 2; }
+[ -z "$RS_WARN" ] || [ -n "$EXPECT" ] || { echo "ERROR: --rs-warnings goes with --rs-expect (the approved card's warnings_id)" >&2; exit 2; }
 AN=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789   # spelled out: [A-Z] ranges follow the locale
 if [ "$_ra" = 1 ]; then case "$NONCE" in [$AN]*) ;; *) NONCE=/ ;; esac   # never '.', '..' or a leading '-' (an old parser's flag)
   case "$NONCE" in *[!$AN._-]*) echo "ERROR: --rs-attempt NONCE must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}" >&2; exit 2 ;; esac
@@ -93,11 +98,11 @@ _k="${TAG}_DEFAULT_GPU_TYPE";  GTYPE="${!_k:-${T_DEFAULT_GPU_TYPE:-any}}"  # (a 
 NGPU=$(ovr DEFAULT_GPUS 1); DEF_CPUS=$(ovr DEFAULT_CPUS); DEF_MEM=$(ovr DEFAULT_MEM)
 TIME=$(ovr DEFAULT_TIME 1-00:00:00); ACCOUNT=$(ovr ACCOUNT); SB_EXTRA=$(ovr SBATCH_EXTRA)
 NAME=$(ovr JOB_NAME "$(basename "$PROJ")")
-MEM=""; NCPU=""; FORCE=0; ACK=0; SAME_OK=0; PART_FROM_CLI=""; GTYPE_FROM_CLI=""; T_FLAGS=()
+MEM=""; NCPU=""; FORCE=0; ACK=0; SAME_OK=0; PART_FROM_CLI=""; GTYPE_FROM_CLI=""; T_FLAGS=(); _tl=DEFAULT_TIME
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -p) PART="$2"; PART_FROM_CLI=1; shift 2 ;; -g) NGPU="$2"; shift 2 ;; -G) GTYPE="$2"; GTYPE_FROM_CLI=1; shift 2 ;;
-    -t) TIME="$2"; shift 2 ;; -m) MEM="$2"; shift 2 ;; -c) NCPU="$2"; shift 2 ;;
+    -t) TIME="$2"; _tl=-t; shift 2 ;; -m) MEM="$2"; shift 2 ;; -c) NCPU="$2"; shift 2 ;;
     -n) NAME="$2"; shift 2 ;; -y|--force) FORCE=1; shift ;; --same-name-ok) SAME_OK=1; shift ;;
     --) shift; break ;;
     --partition*|--gres*|--time*|--mem*|--cpus*|--job-name*|--account*|--qos*|--nodelist*|--exclude*)   # sbatch spellings
@@ -109,14 +114,21 @@ while [ "$#" -gt 0 ]; do
 done
 [ "$#" -ge 1 ] || { echo "ERROR: no run command after --" >&2; exit 2; }
 case "$NGPU" in ''|*[!0-9]*) echo "ERROR: -g '$NGPU' must be a positive integer" >&2; exit 2 ;; esac
-[ "$PLAN" = 0 ] || FORCE=1   # plan mode: every -y gate (the policy's too: PLAN=1 is visible) prints its WARNING and goes on
 # --requeue FIRST so SBATCH_EXTRA may override it with --no-requeue (sbatch: the last of the pair wins)
 SB_ARGS=(--job-name="$NAME" --chdir="$PROJ" --time="$TIME" --requeue --export=ALL,PROJ="$PROJ",CLUSTER="$CLUSTER",TARGET="$CLUSTER")
 [ -z "$ACCOUNT" ] || SB_ARGS+=(--account="$ACCOUNT")
 SB_H=("${SB_ARGS[@]}")   # the harness's own words: bound as fields (name time account), so `extra` = what follows them
+rs_nwarn() { cat "$A/out" "$A/err" 2>/dev/null | grep -ac '^WARNING: ' || :; }   # WARNING: lines so far (not `WARNING (lint):`)
 
 # policy gate first (its exit code is the verdict: 1 warning, 2 error, 3 refusal), then the partition's limits
 rs_stage policy
+if { [ "$PLAN" = 1 ] || [ -n "$EXPECT" ]; } && declare -f t_policy >/dev/null; then   # plan / an approved submit: the policy first
+  _w0=$(rs_nwarn); ( FORCE=0; t_policy ) && _pr=0 || _pr=$?   # as a submit WITHOUT -y sees it, in a subshell (its SB_ARGS, exit, trap stay
+  case "$_pr" in 0) ;;                                        # there): a -y gate silent under FORCE=1 (`[ "$FORCE" -ne 1 ] && …`) still prints
+    1) [ "$(rs_nwarn)" -gt "$_w0" ] || echo "WARNING: the target's policy stops this submit without -y (t_policy exit 1, no WARNING line of its own) — its lines are above." >&2 ;;
+    *) echo "ERROR: t_policy returned $_pr (probed as a submit without -y: a refusal -y never lifts)" >&2; exit "$_pr" ;; esac
+fi
+[ "$PLAN" = 0 ] || FORCE=1   # plan mode: every -y gate (the policy's too: PLAN=1 is visible) prints its WARNING and goes on
 if declare -f t_policy >/dev/null; then
   t_policy || { rc=$?; echo "ERROR: t_policy returned $rc (a policy that does not refuse must end with 'return 0')" >&2; exit "$rc"; }
 fi
@@ -135,40 +147,55 @@ else
   [ -n "$MEM" ] || MEM="${DEF_MEM:-$(( NGPU*${P_MEM_PER_GPU:-40} ))G}"
 fi
 
-# slurm time spec -> minutes (D-HH[:MM[:SS]] | HH:MM:SS | MM[:SS] | MM); -1 if unparsable (skip check).
+# Slurm time spec (MM | MM:SS | HH:MM:SS | D-HH[:MM[:SS]]) -> TMIN, in minutes as Slurm counts them (time_str2mins: the
+# seconds, a started minute rounded up); status 1 = not a spec this reads. Parameter expansion only (no here-string).
 t_min() {
-  printf '%s' "$1" | grep -Eq '^([0-9]+-)?[0-9]+(:[0-9]{1,2}){0,2}$' || { echo -1; return; }
-  local d="" rest="$1" a b c
-  case "$rest" in *-*) d="${rest%%-*}"; rest="${rest#*-}" ;; esac
-  IFS=: read -r a b c <<< "$rest"
-  if [ -n "$d" ]; then echo $(( 10#$d*1440 + 10#${a:-0}*60 + 10#${b:-0} + (10#${c:-0}>0 ? 1 : 0) ))
-  elif [ -n "${c:-}" ]; then echo $(( 10#$a*60 + 10#$b + (10#$c>0 ? 1 : 0) ))
-  elif [ -n "${b:-}" ]; then echo $(( 10#$a + (10#$b>0 ? 1 : 0) ))
-  else echo $(( 10#$a )); fi
+  local v=$1 dd="" d=0 h=0 m=0 s=0 a b="" c="" re='^([0-9]{1,9}-)?[0-9]{1,9}(:[0-9]{1,2}){0,2}$'; TMIN=""
+  [[ $v =~ $re ]] || return 1
+  case "$v" in *-*) dd=1; d=$((10#${v%%-*})); v=${v#*-} ;; esac
+  a=${v%%:*}; case "$v" in *:*) v=${v#*:}; b=${v%%:*}; case "$v" in *:*) c=${v#*:} ;; esac ;; esac
+  if [ -n "$dd" ]; then h=$((10#$a)); m=$((10#${b:-0})); s=$((10#${c:-0}))   # D-HH[:MM[:SS]]
+  elif [ -n "$c" ]; then h=$((10#$a)); m=$((10#$b)); s=$((10#$c))         # HH:MM:SS
+  else m=$((10#$a)); s=$((10#${b:-0})); fi                                  # MM[:SS]
+  TMIN=$(( (d*86400 + h*3600 + m*60 + s + 59) / 60 ))
 }
-# reject a time limit beyond the partition's MaxTime NOW (sbatch accepts it and the job pends forever): -t here, an
-# SBATCH_EXTRA --time / -t (sbatch takes the last one: it comes after the harness's --time) below
-time_cap() {   # time_cap WHAT VALUE
-  local cap="${P_MAXTIME:-${T_MAXTIME:-}}" req max
-  [ -n "$cap" ] || return 0
-  req=$(t_min "$2"); max=$(t_min "$cap")
-  if [ "$req" -gt 0 ] && [ "$max" -gt 0 ] && [ "$req" -gt "$max" ]; then
-    echo "ERROR: $1 $2 exceeds '$PART' MaxTime $cap on $CLUSTER — the job would pend forever. Lower $1." >&2; exit 2
-  fi
+# time_check WHAT VALUE: an explicit limit within the partition's MaxTime, else exit 2 — 0 (any spelling), UNLIMITED,
+# INFINITE and -1 mean NO limit in sbatch (it runs unbounded or pends forever); one this cannot read is refused too
+time_check() {
+  local cap="${P_MAXTIME:-${T_MAXTIME:-}}" req=0 lim=""
+  case "$2" in [Uu][Nn][Ll][Ii][Mm][Ii][Tt][Ee][Dd]|[Ii][Nn][Ff][Ii][Nn][Ii][Tt][Ee]|-1) ;;
+    *) t_min "$2" || { echo "ERROR: $1 '$2' is not a time limit this submit can read (MM, MM:SS, HH:MM:SS, D-HH[:MM[:SS]]) — nothing submitted" >&2; exit 2; }
+       req=$TMIN ;; esac
+  case "$cap" in ''|[Uu][Nn][Ll][Ii][Mm][Ii][Tt][Ee][Dd]|[Ii][Nn][Ff][Ii][Nn][Ii][Tt][Ee]) cap="" ;;
+    *) t_min "$cap" && [ "$TMIN" -gt 0 ] && lim=$TMIN || { echo "ERROR: the MaxTime '$cap' of '$PART' on $CLUSTER (policy.sh / profile.sh) is not one this submit can read — nothing submitted" >&2; exit 2; } ;; esac
+  [ "$req" -gt 0 ] || { echo "ERROR: $1 $2 asks for no time limit (sbatch reads 0, UNLIMITED and INFINITE as none) — give an explicit limit${cap:+ ≤ MaxTime $cap}; nothing submitted" >&2; exit 2; }
+  [ -z "$lim" ] || [ "$req" -le "$lim" ] || { echo "ERROR: $1 $2 exceeds '$PART' MaxTime $cap on $CLUSTER — the job would pend forever. Lower $1." >&2; exit 2; }
 }
-time_cap -t "$TIME"
+time_check "$_tl" "$TIME"
 # the run command must not be a Slurm submission itself: partition/QOS are this script's decision
 case "$1" in sbatch|srun|salloc) echo "ERROR: run command must not itself call sbatch/srun/salloc ('$1')" >&2; exit 2 ;; esac
 # SBATCH_EXTRA: space-separated sbatch flags (set -f keeps globs literal), ONE option per word: short flags are never
 # bundled (`-vW` is refused; `-qNAME` / `-D/path` attached values are fine). Rejected in any getopt spelling (long-option
 # prefixes included): the partition, the job name / output files, arrays, --wait, hetjob ':', a forbidden QOS
-# (-q NAME, -qNAME, --qos=NAME, --qo=NAME) and a dangling value flag.
+# (-q NAME, -qNAME, --qos=NAME, --qo=NAME), a word that is no option and no option's value, and a dangling value flag:
+# sbatch's getopt string starts with '+' (slurm-25.11.4 src/common/slurm_opt.c slurm_option_table_create), so it stops at
+# the first such word and runs THAT as the batch script, the harness's own options after it (partition, GPUs, name, log)
+# as the script's arguments (src/sbatch/opt.c; tests/vgate bare_word=); a value option at the end would take the
+# harness's next option as its value. _sv/_ss: the options that take a value there (required_argument, exact names).
+_sv=" account acctg-freq array autocomplete batch bb bbf begin chdir cluster cluster-constraint clusters comment constraint"
+_sv="$_sv container container-id context core-spec cores-per-socket cpu-freq cpus-per-gpu cpus-per-task deadline delay-boot"
+_sv="$_sv dependency distribution error exclude export export-file extra extra-node-info gid gpu-bind gpu-freq gpus gpus-per-node"
+_sv="$_sv gpus-per-socket gpus-per-task gres gres-flags hint input job-name kill-on-invalid-dep licenses mail-type mail-user"
+_sv="$_sv mcs-label mem mem-bind mem-per-cpu mem-per-gpu mincpus network nodefile nodelist nodes ntasks ntasks-per-core"
+_sv="$_sv ntasks-per-gpu ntasks-per-node ntasks-per-socket ntasks-per-tres open-mode output partition prefer priority profile"
+_sv="$_sv qos reservation resources segment signal sockets-per-node switches tasks-per-node thread-spec threads-per-core time"
+_sv="$_sv time-min tmp tres-bind tres-per-task uid wait-all-nodes wckey wrap "; _ss=ABCDFGJLMNSabcdeimnopqtwx
 _bad() { echo "ERROR: SBATCH_EXTRA must not contain '$_w' — partition, name/output, arrays, --wait, ':' and bundled short flags are not accepted here. Fix .hpc.conf." >&2; exit 2; }
+_np=${#SB_ARGS[@]}; _cx=()   # where SBATCH_EXTRA's words start in SB_ARGS (before: the harness's, then the policy's); the conf's words
 if [ -n "$SB_EXTRA" ]; then
-  set -f; _prev=""; _xt=""
+  set -f; _prev=""; _val=0   # _val=1: this word is the previous option's value (getopt takes the next word, whatever it is)
   for _w in $SB_EXTRA; do
-    _q=""; case "$_prev" in -q|--qo|--qos) _q="$_w" ;; --time|-t) _xt=$_w ;; esac
-    case "$_w" in --time=*) _xt=${_w#--time=} ;; -t?*) _xt=${_w#-t} ;; esac
+    _q=""; case "$_prev" in -q|--qo|--qos) _q="$_w" ;; esac
     case "$_w" in
       --part*|--j*|--ou*|--er*|--ar*|--wai|--wait|:) _bad ;;
       --qo=*|--qos=*) _q="${_w#*=}" ;;
@@ -178,17 +205,29 @@ if [ -n "$SB_EXTRA" ]; then
     if [ -n "$_q" ]; then case " ${T_FORBIDDEN_QOS:-} " in
       *" $_q "*) echo "ERROR: SBATCH_EXTRA selects QOS '$_q', which is forbidden on $CLUSTER — fix .hpc.conf." >&2; exit 2 ;;
     esac; fi
-    SB_ARGS+=("$_w"); _prev="$_w"
+    if [ "$_val" = 1 ]; then _val=0
+    else case "$_w" in --?*=*|-[!-]?*) ;; --?*) case "$_sv" in *" ${_w#--} "*) _val=1 ;; esac ;; -[$_ss]) _val=1 ;; -[!-]) ;;
+      *) echo "ERROR: SBATCH_EXTRA word '$_w' is no option and no option's value: sbatch would run it as the batch script, the harness's options after it (partition, GPUs, name, log) as its arguments — write values attached (--opt=VALUE, -oVALUE). Fix .hpc.conf." >&2; exit 2 ;; esac; fi
+    SB_ARGS+=("$_w"); _cx+=("$_w"); _prev="$_w"
   done
-  case "$_prev" in -q|--qo|--qos) echo "ERROR: SBATCH_EXTRA ends with a dangling '$_prev' (no value) — fix .hpc.conf." >&2; exit 2 ;; esac
+  case "$_val:$_prev" in 1:*) _x=1 ;; 0:--?*=*) _x="" ;; 0:--?*) _x=""; case "$_sv" in *" ${_prev#--}"*) _x=1 ;; esac ;; *) _x="" ;; esac
+  [ -z "$_x" ] || { echo "ERROR: SBATCH_EXTRA ends with a dangling '$_prev' (an option that takes a value — or an abbreviation of one — with none): sbatch would take the harness's next option as its value — fix .hpc.conf." >&2; exit 2; }
   set +f
-  [ -z "$_xt" ] || time_cap "SBATCH_EXTRA's --time" "$_xt"
 fi
 if [ "$CHAIN" = 1 ]; then   # --rs-chain: one singleton chain segment; another dependency already set is a conflict, never merged
   _d=""; _prev=""; for _w in "${SB_ARGS[@]}"; do case "$_prev:$_w" in -d:*|--dependency:*|*:--dependency=*|*:-d?*) _d="$_d $_w" ;; esac; _prev=$_w; done
   case "$_d" in "") SB_ARGS+=(--dependency=singleton) ;; *singleton*) ;;
     *) echo "ERROR: --rs-chain sets --dependency=singleton, but SBATCH_EXTRA or the policy already sets a dependency ($_d ) — keep one" >&2; exit 2 ;; esac
 fi
+# EVERY time limit sbatch could read — -t / --time, either value form, in the harness's, the policy's or SBATCH_EXTRA's
+# words — is checked (sbatch keeps the last; a word another option takes as its value, `--comment -t1`, is checked too:
+# hiding the real one behind a fake last one fails). ($TIME itself, the bound `time` after t_policy: checked above.)
+_i=0; _prev=""; _po=""; for _w in "${SB_ARGS[@]}"; do
+  if [ "$_i" -lt "${#SB_H[@]}" ]; then _o=$_tl; elif [ "$_i" -lt "$_np" ]; then _o="the policy's --time"; else _o="SBATCH_EXTRA's --time"; fi
+  case "$_prev" in -t|--ti|--tim|--time) time_check "$_po" "$_w" ;; esac
+  case "$_w" in --ti=*|--tim=*|--time=*) time_check "$_o" "${_w#*=}" ;; -t?*) time_check "$_o" "${_w#-t}" ;; esac
+  _prev=$_w; _po=$_o; _i=$((_i + 1)); done
+case "$_prev" in -t|--ti|--tim|--time) echo "ERROR: $_po ends with a dangling '$_prev' (no value) — fix .hpc.conf / policy.sh; nothing submitted" >&2; exit 2 ;; esac
 
 # free GPUs of type $2 (or any) in partition $1 -> stdout "FREE<TAB>MAXNODE"; per-node table to stderr.
 gpu_avail() {
@@ -211,11 +250,12 @@ check_gpu_avail() {
   echo "  -> $free free now; up to $maxn on one node (a 1-node job needs $NGPU on ONE node)."; AVAIL="free:$free/max_node:$maxn/gpu_type:$2"
   if { [ "$free" -lt "$NGPU" ] || [ "$maxn" -lt "$NGPU" ]; }; then
     [ "$FORCE" = 1 ] || { echo "WARNING: only $free free of '$2' ($maxn on one node). Re-run -y to queue, pick another -G, or lower -g." >&2; exit 1; }
-    if [ "$PLAN" = 1 ]; then echo "WARNING: only $free free of '$2' ($maxn on one node) — the submit needs -y to queue anyway." >&2
-    elif [ -n "$EXPECT" ]; then echo "WARNING: only $free free of '$2' ($maxn on one node) — -y: queuing anyway (the approved card's warning, counted)." >&2; fi
+    if [ "$PLAN" = 1 ] || [ -n "$EXPECT" ]; then W_AV=1   # the plan and the approved submit print the SAME line (warnings_id)
+      echo "WARNING: only $free free of '$2' ($maxn on one node) — the submit needs -y to queue anyway." >&2
+      [ "$PLAN" = 1 ] || echo "NOTE: -y: queuing anyway if the approved card showed this warning (its warnings_id is compared before sbatch)" >&2; fi
   fi
 }
-GRES=(); AVAIL=cpu-only
+GRES=(); AVAIL=cpu-only; W_AV=0
 rs_stage avail
 if [ "$P_CPU_ONLY" = 1 ]; then echo "CPU partition '$PART' (no GPU)."
 else
@@ -230,18 +270,21 @@ if [ "$SAME_OK" = 0 ] && [ "$_chain" = 0 ]; then
   _p2=$(cd "$PROJ" && pwd -P)
   if _q=$(squeue -h -u "${USER:-$(id -un)}" --states=all -O "JobID:0|,Name:0|,State:0|,Reason:0|,RestartCnt:0|,StartTime:0|,WorkDir:0|" 2>"$A/squeue.err"); then
     _live=""   # same name, not finished, WorkDir = this project: either of our paths, or one that resolves to it (a symlink)
-    while IFS='|' read -r _j _n _s _x _x _x _w _x; do
+    set -f; _ifs=$IFS; IFS=$'\n'   # one row per line, split by expansion (no here-string); the Name may hold '|': fields from the right
+    for _l in $_q; do
+      _j=${_l%%|*}; _r=${_l#*|}; _r=${_r%|}; _w=${_r##*|}; _r=${_r%|*}; _r=${_r%|*}; _r=${_r%|*}; _r=${_r%|*}; _s=${_r##*|}; _n=${_r%|*}
       [ "$_n" = "$NAME" ] && [ -n "$_w" ] || continue
       case "$_s" in COMPLETED|CANCELLED|FAILED|TIMEOUT|PREEMPTED|NODE_FAIL|BOOT_FAIL|DEADLINE|OUT_OF_MEMORY|REVOKED) continue ;; esac
       [ "$_w" = "$PROJ" ] || [ "$_w" = "$_p2" ] || [ "$(CDPATH='' cd -- "$_w" 2>/dev/null && pwd -P)" = "$_p2" ] || continue
       _live="$_live$_j $_s"$'\n'
-    done <<< "$_q"
+    done; IFS=$_ifs; set +f
     if [ -n "$_live" ]; then _j=$(printf %s "$_live" | head -n 1)
       echo "ERROR: '$NAME' is already ${_j#* } from this project (job ${_j%% *}; live: $(printf %s "$_live" | cut -d' ' -f1 | paste -sd, -)) —" \
         "a second copy would share its logs/ckpts. Follow that job, pick another -n, or pass --same-name-ok if both are wanted." >&2; exit 6
     fi
   elif [ -n "$EXPECT" ]; then   # an approved plan is submitted only with its duplicate check: -y never skips it here
     echo "ERROR: squeue failed ($(head -n 1 "$A/squeue.err")) — cannot check for a live '$NAME' from this project; an approved plan (--rs-expect) is never submitted without that check — nothing submitted, retry later" >&2; exit 1
+  elif [ "$PLAN" = 1 ]; then echo "WARNING: squeue failed — no check for a live '$NAME' from this project; the approved submit runs it again and never goes out without it" >&2
   elif [ "$FORCE" = 1 ]; then echo "WARNING: squeue failed — no check for a live '$NAME' from this project; -y: submitting anyway" >&2
   else echo "WARNING: squeue failed ($(head -n 1 "$A/squeue.err")) — cannot check for a live '$NAME' from this project. Re-run -y to submit anyway." >&2; exit 1; fi
 fi
@@ -249,9 +292,9 @@ fi
 [ "$P_PREEMPT" != 1 ] || echo "NOTE: $PART is preemptible (the job is requeued — killed, under --no-requeue — possibly abruptly). Ensure checkpoint+resume."
 lint_extra() {   # SBATCH_EXTRA lint, WARNINGs only (run after every refusal, so a refusal's first line is always its own)
   local allow=" --qos -q --account -A --exclude -x --dependency -d --requeue --no-requeue --signal --mail-type --mail-user --constraint -C --nice --reservation --comment ${T_SBATCH_EXTRA_ALLOW:-} "
-  local w o sp win off last=""; set -f; set -- $SB_EXTRA; set +f
+  local w o sp win off; set -f; set -- $SB_EXTRA; set +f   # (a dangling value flag never gets here: refused above)
   while [ "$#" -gt 0 ]; do
-    w=$1; shift; case "$w" in -?*) last=$w ;; *) last=""; continue ;; esac
+    w=$1; shift; case "$w" in -?*) ;; *) continue ;; esac
     case "$w" in --*) o=${w%%=*} ;; *) o=${w:0:2} ;; esac
     sp=$w; case "$w" in --*=*|-[!-]?*) ;; *) if [ "$#" -gt 0 ]; then case "$1" in -*) ;; *) sp="$w $1" ;; esac; fi ;; esac
     case "$allow" in *" $o "*) off="" ;; *) off=1 ;; esac; win=""
@@ -265,8 +308,6 @@ lint_extra() {   # SBATCH_EXTRA lint, WARNINGs only (run after every refusal, so
     if [ -n "$win" ]; then echo "WARNING (lint): SBATCH_EXTRA repeats $o, which the harness sets too; sbatch takes the last one: $win wins${off:+; it will be refused in a later version (use the submit.sh flag or conf key)}." >&2
     elif [ -n "$off" ]; then echo "WARNING (lint): SBATCH_EXTRA option '$o' is outside the allowed set ($(echo $allow)) — it will be refused in a later version; a target may allow more (T_SBATCH_EXTRA_ALLOW)." >&2; fi
   done
-  case "$last" in --qos|-q|--account|-A|--exclude|-x|--dependency|-d|--signal|--mail-type|--mail-user|--constraint|-C|--reservation|--comment)
-    echo "WARNING (lint): SBATCH_EXTRA ends with '$last' and no value: sbatch would take the next argument as its value." >&2 ;; esac
 }
 lint_extra
 _c=""; _prev=""; for _w in "${SB_ARGS[@]}"; do   # the job's comment = the last one given (policy or SBATCH_EXTRA) + rs=<NONCE>
@@ -279,25 +320,44 @@ rs_hook() {   # env_hook as bound: '<ENV_HOOK>:<sha256 of $PROJ/ENV_HOOK>' ('<EN
 }
 rs_bound() {   # THE bound list (the plan block's lines kind= … chain=; bound_hash = sha256 of them): what an approval covers
   local g=${GRES[0]:-} x=("${SB_ARGS[@]}"); [ "${x[*]:0:${#SB_H[@]}}" != "${SB_H[*]}" ] || x=("${x[@]:${#SB_H[@]}}")
-  printf 'kind=slurm\ntarget=%q\npartition=%q\ngres=%q\ncpus=%q\nmem=%q\ntime=%q\naccount=%q\nname=%q\nextra=%s\npayload=%s\nenv_kind=%q\nenv_name=%q\nwandb_mode=%q\nenv_hook=%q\nvenv_dir=%q\nuv_sync_args=%q\nchain=%s\n' \
+  printf 'kind=slurm\ntarget=%q\npartition=%q\ngres=%q\ncpus=%q\nmem=%q\ntime=%q\naccount=%q\nname=%q\nextra=%s\npayload=%s\nenv_kind=%q\nenv_name=%q\nwandb_mode=%q\nenv_hook=%q\nvenv_dir=%q\nuv_sync_args=%q\nconf_extra=%s\nchain=%s\n' \
     "$CLUSTER" "$PART" "${g#--gres=}" "$NCPU" "$MEM" "$TIME" "$ACCOUNT" "$NAME" "$(qw ${x[@]+"${x[@]}"})" "$(qw "$@")" \
-    "${ENV_KIND:-uv}" "$(ovr ENV_NAME)" "${WANDB_MODE:-online}" "$(rs_hook)" "$(ovr VENV_DIR)" "${UV_SYNC_ARGS:-}" "$_chain"
+    "${ENV_KIND:-uv}" "$(ovr ENV_NAME)" "${WANDB_MODE:-online}" "$(rs_hook)" "$(ovr VENV_DIR)" "${UV_SYNC_ARGS:-}" "$(qw ${_cx[@]+"${_cx[@]}"})" "$_chain"
 }
-rs_plan() {   # plan mode: the block, exit 0. --rs-expect: the SAME rs_bound hash and as many WARNING: lines as the approved
-  local b h w f k v ok=0  # card counted (--rs-warnings N); else the block + ERROR, exit 6
+rs_warn() {   # W_N W_ID: this call's distinct WARNING: lines (out + err; `WARNING (lint):` is not one), every digit run -> #, sorted
+  local l; l=$(cat "$A/out" "$A/err" | { grep -a '^WARNING: ' || [ "$?" = 1 ]; } | LC_ALL=C sed -E 's/[0-9]+/#/g' | LC_ALL=C sort -u) \
+    || { echo "ERROR: cannot read this call's WARNING lines back from $A — nothing submitted" >&2; exit 2; }
+  W_N=0; W_ID=$(printf '' | rs_sha)   # no warning: the digest of nothing
+  if [ -n "$l" ]; then W_N=$(printf '%s\n' "$l" | grep -c .); W_ID=$(printf '%s\n' "$l" | rs_sha); fi
+}
+rs_changed() {   # rs_changed BOUND HASH: `changed: <keys>` against the approved plan's block in its own journal (newest 500 attempts)
+  local d f="" k=""
+  if [ "$2" != "$EXPECT" ]; then
+    for d in $(ls -t "$PROJ/.rs/attempts" 2>/dev/null | head -n 500); do   # (NONCEs: [A-Za-z0-9._-], never split or globbed)
+      [ "$PROJ/.rs/attempts/$d" != "$A" ] && [ -f "$PROJ/.rs/attempts/$d/out" ] && grep -qxF "bound_hash=$EXPECT" "$PROJ/.rs/attempts/$d/out" \
+        && { f=$PROJ/.rs/attempts/$d/out; break; }; done
+    [ -n "$f" ] || return 0   # not here: rsk compares the card it stored
+    k=$(printf '%s\n' "$1" | awk 'NR == FNR { if ($0 == "@@end") e = 1; if (!e) { k = $0; sub(/=.*/, "", k); a[k] = $0 }; next }
+      { k = $0; sub(/=.*/, "", k); if (a[k] != $0) printf "%s%s", (n++ ? " " : ""), k }' "$f" -) || return 0
+  fi
+  [ "$W_ID" = "$RS_WARN" ] || k="${k:+$k }warnings"; [ -z "$k" ] || echo "changed: $k"
+}
+rs_plan() {   # plan mode: the block, exit 0. --rs-expect: the SAME rs_bound hash and the approved card's warnings_id (--rs-warnings
+  local b h f k v ch="" ok=0  # ID; none given: no warning at all); else the block, `changed:` and ERROR, exit 6
   b=$(rs_bound "$@") && h=$(printf '%s\n' "$b" | rs_sha) && [ "${#h}" = 64 ] \
     || { echo "ERROR: cannot hash the plan (no sha256sum or shasum here?) — nothing submitted" >&2; exit 2; }
-  w=$(cat "$A/out" "$A/err" | grep -c '^WARNING: ' || true); w=${w:-0}   # `WARNING (lint):` lines are not counted
-  [ -n "$EXPECT" ] && { [ "$h" != "$EXPECT" ] || [ "$w" != "${RS_WARN:-0}" ]; } || ok=1   # ok: no --rs-expect, or it holds
-  if [ "$PLAN" = 0 ] && [ "$ok" = 1 ]; then echo "plan: bound_hash=$h = --rs-expect (the approved plan); warnings $w = the approved card's"; return 0; fi
-  if [ "$ok" = 1 ]; then rs_stage plan; else rs_stage expect; fi
+  rs_warn; [ -n "$RS_WARN" ] || RS_WARN=$(printf '' | rs_sha)
+  [ -n "$EXPECT" ] && { [ "$h" != "$EXPECT" ] || [ "$W_ID" != "$RS_WARN" ]; } || ok=1   # ok: no --rs-expect, or it holds
+  if [ "$PLAN" = 0 ] && [ "$ok" = 1 ]; then echo "plan: bound_hash=$h = --rs-expect (the approved plan); its $W_N warning(s) = the approved card's (warnings_id)"; return 0; fi
+  if [ "$ok" = 1 ]; then rs_stage plan; else rs_stage expect; ch=$(rs_changed "$b" "$h"); fi
   printf '@@plan v1\napi=3\n%s\ninfo_avail=%q\n' "$b" "$AVAIL"
   for f in conf:"$A/conf" profile:"$SELF/profile.sh" policy:"$SELF/policy.sh" policy_local:"$SELF/policy.local.sh"; do
     v=none; [ ! -f "${f#*:}" ] || v=$(rs_sha < "${f#*:}"); printf 'info_%s_sha256=%s\n' "${f%%:*}" "$v"; done
   for k in commit dirty; do v=$(sed -n "s/^$k=//p" "$PROJ/.run-source" 2>/dev/null | head -n 1) || v=""; printf 'info_source_%s=%q\n' "$k" "${v:-none}"; done
-  printf 'warnings=%s\nbound_hash=%s\n@@end\n' "$w" "$h"
+  printf 'warnings=%s\nwarnings_avail=%s\nwarnings_id=%s\nbound_hash=%s\n@@end\n' "$W_N" "$W_AV" "$W_ID" "$h"
+  [ "$ok" = 1 ] || { [ -z "$ch" ] || echo "$ch" >&2; }
   [ "$ok" = 1 ] || [ "$h" = "$EXPECT" ] || { echo "ERROR: the resolved submission differs from the approved plan (bound_hash $h, --rs-expect $EXPECT) — nothing submitted; plan it again" >&2; exit 6; }
-  [ "$ok" = 1 ] || { echo "ERROR: the resolved submission differs from the approved plan: $w warning(s) now, ${RS_WARN:-0} on the approved card (a new -y gate, or one it showed is gone) — nothing submitted; plan it again" >&2; exit 6; }
+  [ "$ok" = 1 ] || { echo "ERROR: the resolved submission differs from the approved plan: its $W_N warning(s) are not the approved card's (warnings_id: a new -y gate, or one the card showed is gone) — nothing submitted; plan it again" >&2; exit 6; }
   exit 0
 }
 [ "$PLAN" = 0 ] && [ -z "$EXPECT" ] || rs_plan "$@"     # (exits unless an --rs-expect matched)

@@ -34,13 +34,15 @@ guard rails built in, and gives the agent a short, per-site reference instead of
 - **Reproducible environments.** `uv` by default: one venv per target, built from your `pyproject.toml`. Or a named
   conda env, which the harness only *verifies* — it never creates or modifies conda envs.
 - **Fail-closed.** A broken conf, a missing venv or a half-applied environment aborts the job instead of running it
-  misconfigured. Walltimes above a partition's cap are rejected (they would pend forever); busy GPUs produce a warning
-  that needs an explicit `-y`; site policies can refuse a submission outright.
+  misconfigured. Walltimes above a partition's cap are rejected (they would pend forever), and so is a limit of none;
+  busy GPUs produce a warning that needs an explicit `-y`; site policies can refuse a submission outright.
 - **Your authorisation, checked first — asked only when it is missing.** Every submit, launch and cancel is checked
   against what you already allowed: a plan you approved, a sweep (one approval for the set), or a standing permission
-  ("smoke runs on mybox are fine", "auto-resume preemptions up to 3 times") with the limits you set. The agent asks
-  only outside that — a charged partition, more resources, a wider scope, its own idea that a run should stop. Your
-  words are recorded verbatim (`rsk grant`); a cancel first checks the job is this project's and yours, and someone
+  ("smoke runs on mybox are fine", "auto-resume preemptions up to 3 times" — a resume only after an infrastructure end:
+  a preemption, a node failure, a reboot; never after a cancel, a failure or a timeout) with the limits you set. The
+  agent asks only outside that — a charged partition, more resources, a wider scope, its own idea that a run should
+  stop. Your words are recorded verbatim (`rsk grant`), and a "never" of yours also stops `rsk watch --act`; "cancel job
+  123" is bound to that job, for an hour, once; a cancel first checks the job is this project's and yours, and someone
   else's job is never touched. The record keeps you from being asked twice; it is bookkeeping, not proof that you
   agreed, and it cannot make an agent comply — it constrains what goes through `rsk`.
 - **Cheap, honest monitoring.** One deployed script, `status.sh`, returns a ~2 KB digest of a run: scheduler or PID
@@ -203,12 +205,14 @@ These are part of the skill's instructions and are enforced by the harness where
   an identity check; never someone else's job or process.
 - Partition and QOS are `submit.sh`'s decision — no raw `sbatch`/`srun`, no `--partition` smuggled in via
   `SBATCH_EXTRA`. A policy refusal is final; `-y` acknowledges a plan's warnings (availability, occupancy, cost), and
-  rsk adds it only to a card you approved with those warnings on it.
+  rsk sends it only when the approved card showed warnings or the covering grant's kind covers the plan's warnings
+  (`--allow-warnings availability`: the cluster is busy; `any`: every warning, a charged partition's too).
 - Never create a conda env; never guess the remote directory; never use a machine's stored wandb credentials.
 - Smoke tests run with `WANDB_MODE=disabled`; real runs checkpoint and resume.
 - Monitoring is detect-only and byte-bounded; findings are reported, decisions stay with you. The exceptions are what
   you authorised: `run-watch --act` resubmits preempted jobs (or first-submits rows) of a run table you approved,
-  within its budget, and `rsk cancel` / a relaunch that a permission of yours covers.
+  within its budget (`rsk watch --act` first checks every row against your "never"s), and `rsk cancel` / a relaunch
+  that a permission of yours covers.
 
 ## Repository layout
 

@@ -53,6 +53,7 @@ their own overlay, `~/.config/run-skills/targets/<name>/reference.local.md`:
 
 ## Maintaining this pack
 
-Edit `targets/<name>/` (profile, policy, reference, tests) and `routing/`. Check with
+Edit `targets/<name>/` (profile, policy, reference, tests) and `routing/` — a `t_policy` may run twice per plan or
+approved submit (once as a submit without `-y`), so keep it free of side effects. Check with
 `rsk setup` (its selftest runs every pack target's `tests.sh`) — then push. Guide:
 [run-skills docs/packs.md](https://github.com/NAIVlab/run-skills/blob/main/docs/packs.md).

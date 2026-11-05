@@ -9,10 +9,13 @@ deploys matches what this rsk speaks. RS_VIA_RSK=1 tells the scripts they were r
     rsk avail [-T T]... [-C DIR] [--type X] [--min N] [--timeout S]     (-T = the targets run-avail reads)
 Every argument rsk does not know is passed on as it stands (after `--` too).
 Two of them are the user's call every time (no grant covers them): `rsk sync -D` (deletes files in the remote dir
-the local tree lacks; with -n / --dry-run it only lists them) and `rsk bootstrap --job` (a Slurm job no plan card
-showed). They run only with --approve "the user's words" (non-empty), recorded in the ledger's audit.jsonl with the
-command line (event `approved_command`) before the script starts; without it: `needs user: approval (…)`, exit 4,
-nothing run. A record is bookkeeping, not proof the user agreed.
+the local tree lacks; with a real -n / --dry-run it only lists them) and `rsk bootstrap --job` (a Slurm job no plan
+card showed). Which call is which is read with the script's own grammar, word by word, never by set membership:
+run-sync takes -n|--dry-run, -D|--delete, --also PATH (the next word, whatever it is: `--also -n` is a path, not a
+dry run), --also=PATH and --take-over — anything else it refuses itself (exit 2, nothing done); run-bootstrap is in
+job mode when its first word is --job (any --job word is gated). They run only with --approve "the user's words"
+(non-empty), recorded in the ledger's audit.jsonl with the command line (event `approved_command`) before the script
+starts; without it: `needs user: approval (…)`, exit 4, nothing run. A record is bookkeeping, not proof the user agreed.
 """
 
 from __future__ import annotations
@@ -52,12 +55,33 @@ def plan(args: argparse.Namespace) -> tuple[list[str], dict[str, str], Path]:
     return ["bash", str(script), *extra], env, project_dir(args.dir)
 
 
+def sync_modes(words: list[str]) -> tuple[bool, bool]:
+    """(dry run, delete) as bin/run-sync's parser reads WORDS: -n|--dry-run, -D|--delete, --also PATH (it consumes the
+    next word whatever it is), --also=PATH, --take-over; any other word is run-sync's usage error (it then does
+    nothing) and is skipped here."""
+    dry = delete = False
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if w in ("-n", "--dry-run"):
+            dry = True
+        elif w in ("-D", "--delete"):
+            delete = True
+        elif w == "--also":
+            i += 1
+        i += 1
+    return dry, delete
+
+
 def needs_words(args: argparse.Namespace, argv: list[str]) -> str:
-    """'' unless this call is one only the user's words allow (sync -D without -n, bootstrap --job); else what it is."""
+    """'' unless this call is one only the user's words allow (sync -D without a real -n, bootstrap --job); else what
+    it is — read with the script's own grammar (sync_modes), never as a set of words."""
     w = argv[2:]
-    if args.command == "sync" and ({"-D", "--delete"} & set(w)) and not ({"-n", "--dry-run"} & set(w)):
-        return "remote deletion: rsk sync -D removes files in the remote dir that the local tree lacks"
-    if args.command == "bootstrap" and "--job" in w:
+    if args.command == "sync":
+        dry, delete = sync_modes(w)
+        if delete and not dry:
+            return "remote deletion: rsk sync -D removes files in the remote dir that the local tree lacks"
+    if args.command == "bootstrap" and (w[:1] == ["--job"] or any(x == "--job" or x.startswith("--job=") for x in w)):
         return "a Slurm job (run-bootstrap --job) that no plan card showed"
     return ""
 

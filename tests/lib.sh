@@ -1,8 +1,8 @@
 # run-skills tests/lib.sh — stub + helper library, sourced by every tests/NN-*.sh and targets/*/tests.sh.
 # Caller sets RS_HOME (harness root) and RS_USER_DIR (fixtures in phase A, the real overlay in phase B).
 # Scratch dir $T (removed on exit); counters PASS/FAIL; helpers ok bad has hasnt nosub mk_proj sub with_path
-# stub_sinfo stub_fail stub_rsync last_attempt. ssh prints $T/run-source.remote for run-sync's stamp read; sbatch prints
-# ARG:<each arg> and ENV:RS_ATTEMPT=<its env>. Stubs sbatch scontrol squeue sinfo ssh uv live in $T/bin, on PATH ONLY
+# stub_sinfo stub_fail stub_rsync last_attempt fulltmp fulltmp_ok. ssh prints $T/run-source.remote for run-sync's
+# stamp read; sbatch prints ARG:<each arg> and ENV:RS_ATTEMPT=<its env>. Stubs sbatch scontrol squeue sinfo ssh uv live in $T/bin, on PATH ONLY
 # for invocations prefixed PATH="$T/bin:$PATH" (sub/with_path do this) — forget it and you hit real binaries.
 : "${RS_HOME:?tests/lib.sh: set RS_HOME}"
 export RS_USER_DIR="${RS_USER_DIR:-$HOME/.config/run-skills}"
@@ -61,3 +61,9 @@ mk_proj(){
 sub(){ local p="$1" t="$2"; shift 2; : > "$T/sbatch.log"; PATH="$T/bin:$PATH" bash "$p/.$t/submit.sh" "$@" 2>/dev/null; }
 # last_attempt PROJ : the newest attempt dir submit.sh claimed under PROJ/.rs/attempts (empty if none)
 last_attempt(){ ls -dt "$1"/.rs/attempts/*/ 2>/dev/null | head -n 1 | sed 's|/$||'; }
+# fulltmp CMD... : CMD with $TMPDIR on a FULL 16k tmpfs and BASH_COMPAT=42 (bash <= 5.0: here-documents and here-strings are
+# temp files in $TMPDIR, bash CHANGES 5.1), in a private mount namespace (unshare -rm). fulltmp_ok: this machine reproduces
+# that (user namespaces, and a here-string there fails) — else the caller SKIPs.
+fulltmp(){ mkdir -p "$T/fulltmp"; unshare -rm sh -c 'd=$1; shift; mount -t tmpfs -o size=16k tmpfs "$d" || exit 99
+  dd if=/dev/zero of="$d/fill" bs=1k count=64 2>/dev/null; TMPDIR=$d BASH_COMPAT=42 exec "$@"' fulltmp "$T/fulltmp" "$@"; }
+fulltmp_ok(){ command -v unshare >/dev/null 2>&1 && fulltmp true 2>/dev/null && ! fulltmp bash -c 'read -r a <<< x' 2>/dev/null; }

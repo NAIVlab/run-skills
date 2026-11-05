@@ -22,6 +22,9 @@ from remote_run import ledger as L
 from remote_run.errors import CONFLICT, FAILED, NEEDS_USER, OK, PLACEMENT, REFUSED, UNKNOWN, USAGE, RskError
 
 
+WID = (hashlib.sha256(b"").hexdigest(), hashlib.sha256(b"WARNING: only # free\n").hexdigest())   # warnings_id: none, one
+
+
 def block(kind="slurm", target="fx", name="exp--train--a--scratch--s0--a01", warnings=0, payload="python t.py",
           **kw) -> str:
     if kind == "slurm":
@@ -29,7 +32,8 @@ def block(kind="slurm", target="fx", name="exp--train--a--scratch--s0--a01", war
                  ("gres", kw.get("gres", "gpu:1")), ("cpus", "8"), ("mem", "40G"), ("time", "1-00:00:00"),
                  ("account", "''"), ("name", name), ("extra", kw.get("extra", "")), ("payload", payload),   # qw "$@": words
                  ("env_kind", "uv"), ("env_name", "''"), ("wandb_mode", "online"), ("env_hook", kw.get("hook", "''")),
-                 ("venv_dir", "''"), ("uv_sync_args", "''"), ("chain", kw.get("chain", "0"))]
+                 ("venv_dir", "''"), ("uv_sync_args", "''"), ("conf_extra", kw.get("conf_extra", kw.get("extra", ""))),
+                 ("chain", kw.get("chain", "0"))]
         info = [("info_avail", "free:4/max_node:4/gpu_type:any"), ("info_conf_sha256", "a" * 64),
                 ("info_source_commit", "none"), ("info_source_dirty", "none")]
     else:
@@ -40,8 +44,11 @@ def block(kind="slurm", target="fx", name="exp--train--a--scratch--s0--a01", war
     bound = [(k, v) for k, v in bound if k not in kw.get("drop", ())]
     lines = [f"{k}={v}" for k, v in bound]
     h = hashlib.sha256(("\n".join(lines) + "\n").encode()).hexdigest()
-    return "\n".join(["@@plan v1", "api=3", *lines, *(f"{k}={v}" for k, v in info), f"warnings={warnings}",
-                      f"bound_hash={h}", "@@end"]) + "\n"
+    env = [(k, v) for k, v in (("warnings_avail", kw.get("warnings_avail", warnings)),
+                               ("warnings_id", kw.get("warnings_id", WID[int(warnings) > 0])))
+           if k not in kw.get("drop", ())]
+    return "\n".join(["@@plan v1", "api=3", *lines, *(f"{k}={v}" for k, v in info), *(f"{k}={v}" for k, v in env),
+                      f"warnings={warnings}", f"bound_hash={h}", "@@end"]) + "\n"
 
 
 def run(*argv: str) -> tuple[int, str]:
@@ -66,27 +73,33 @@ class Pure(unittest.TestCase):
 
     def test_submit_words_add_y_only_after_warnings_and_chain_per_segment(self):
         rec = {"kind": "slurm", "bound_hash": "h" * 64, "warnings": 0, "chain": 0, "flags": ["-p", "gpu"],
-               "payload": ["python", "t.py"]}
+               "payload": ["python", "t.py"], "block": {"warnings_id": WID[0]}}
         w = X.submit_words(rec, "n1")
-        self.assertEqual(w[:4], ["--rs-attempt", "n1", "--rs-expect", "h" * 64])
+        self.assertEqual(w[:6], ["--rs-attempt", "n1", "--rs-expect", "h" * 64, "--rs-warnings", WID[0]])
         self.assertNotIn("-y", w)
         self.assertEqual(w[-3:], ["--", "python", "t.py"])
-        w = X.submit_words({**rec, "warnings": 2, "chain": 3}, "n2")
+        w = X.submit_words({**rec, "warnings": 2, "chain": 3, "block": {"warnings_id": WID[1]}}, "n2")
+        self.assertEqual(w[4:6], ["--rs-warnings", WID[1]])                   # which warnings: the card's id
         self.assertIn("-y", w)
         self.assertIn("--rs-chain", w)
         self.assertLess(w.index("--rs-chain"), w.index("--"))
 
     def test_gpu_busy_ok_only_when_asked_and_the_card_listed_busy_gpus(self):
         rec = {"kind": "nohup", "bound_hash": "h" * 64, "flags": ["-d", "1", "-N", "r"], "payload": ["c"],
-               "gpu_busy_ok": True, "warnings": 1, "block": {"info_busy": "1:u:42", "busy_ok": "1", "info_gpus": "1"}}
+               "gpu_busy_ok": True, "warnings": 1, "block": {"info_busy": "1:u:42", "busy_ok": "1:GPU-x:u",
+                                                             "info_gpus": "1", "warnings_id": WID[1]}}
         w = X.submit_words(rec, "n")
         self.assertIn("--gpu-busy-ok", w)
         self.assertEqual(w[w.index("-d"):w.index("-d") + 2], ["-d", "1"])        # pinned: the card's own landing
-        self.assertEqual(w[4:6], ["--rs-warnings", "1"])                        # the card's count, recounted there
+        self.assertEqual(w[4:6], ["--rs-warnings", WID[1]])                     # the card's warnings, recomputed there
         # the card's landing was free (a busy GPU elsewhere): never --gpu-busy-ok, whatever was asked
         self.assertNotIn("--gpu-busy-ok", X.submit_words({**rec, "block": {"info_busy": "2:u:42", "busy_ok": "",
-                                                                           "info_gpus": "1"}}, "n"))
-        self.assertNotIn("--gpu-busy-ok", X.submit_words({**rec, "block": {"info_busy": "", "busy_ok": ""}}, "n"))
+                                                                           "info_gpus": "1", "warnings_id": WID[0]}}, "n"))
+        self.assertNotIn("--gpu-busy-ok", X.submit_words({**rec, "block": {"info_busy": "", "busy_ok": "",
+                                                                           "warnings_id": WID[0]}}, "n"))
+        with self.assertRaises(RskError) as c:                                  # a plan from before warnings_id
+            X.submit_words({**rec, "block": {"busy_ok": ""}}, "n")
+        self.assertEqual(c.exception.code, CONFLICT)
         self.assertEqual(X._pinned(["-n", "2", "-x", "0", "-N", "r"], "1,3"), ["-d", "1,3", "-N", "r"])
         req = X.Request("ws", "nohup", ["-n", "2"], ["c"], gpu_busy_ok=True)
         self.assertIn("--gpu-busy-ok", X.plan_words(req, "n"))
@@ -336,8 +349,8 @@ class Flow(Fixture):
                                     expires=None))
         self.answers = [self.plan_reply(), self.submitted("101")]
         self.cli("launch", "-T", "fx", "--", "python", "t.py")
-        self.led.observe("exp--train--a--scratch--s0", "a01", "101", "FAILED", "sacct",
-                         end={"state": "FAILED", "rc": "1:0", "evidence": "sacct"})
+        self.led.observe("exp--train--a--scratch--s0", "a01", "101", "PREEMPTED", "sacct",
+                         end={"state": "PREEMPTED", "rc": "0:0", "evidence": "sacct"})
         self.answers = [self.plan_reply(name="exp--train--a--scratch--s0--a02")]
         rc, text = self.cli("launch", "--relaunch", "exp--train--a--scratch--s0")
         self.assertEqual(rc, NEEDS_USER, text)
@@ -490,8 +503,8 @@ class ReviewFixes(Fixture):
         self.answers = [self.plan_reply(extra="--time=7-00:00:00 --nodes=8")]
         rc, text = self.cli("launch", "-T", "fx", "--", "c")
         self.assertEqual(rc, NEEDS_USER, text)
-        self.assertIn("  TIME       7-00:00:00 — SBATCH_EXTRA's --time comes after the harness's", text)
-        self.assertIn("  RESOURCES  SBATCH_EXTRA asks for --nodes=8", text)
+        self.assertIn("  TIME       7-00:00:00 — an SBATCH_EXTRA / policy --time comes after the harness's", text)
+        self.assertIn("  NO GRANT   SBATCH_EXTRA word(s) --time=7-00:00:00 --nodes=8 — outside what a standing grant", text)
 
     def test_an_api3_deploy_without_the_new_bound_keys_needs_a_sync(self):
         self.answers = [X.Reply(0, block(drop=("env_hook", "venv_dir", "uv_sync_args")), "", api="api=3")]
@@ -499,6 +512,222 @@ class ReviewFixes(Fixture):
         self.assertEqual(rc, CONFLICT, text)
         self.assertIn("needs: sync", text)
         self.assertIn("lacks env_hook, venv_dir, uv_sync_args", text)
+
+
+class Round3(Fixture):
+    """The round-2 findings on launch.py, each pinned (grants#4 grants#5 grants#6 grants#9, C-stale-API, F-unknown, L3-regex /
+    G-launch-line-regex-space, H1-msg) and the round-3 decisions D1 D3 D5 D9 D10."""
+
+    def grant(self, quote="launches are fine", actions=("launch",), **scope) -> dict:
+        return G.add(self.led, G.new_grant(quote, {"targets": ["fx", "ws"], **scope}, list(actions), max_live=None,
+                                           max_launches=None, expires=None))
+
+    def test_g2_9_no_word_before_the_double_dash_may_carry_rs(self):
+        for argv in (["-T", "fx", "-n--rs-chain", "--x", "--", "c"], ["-T", "fx", "-p", "x--rs-mode", "--", "c"],
+                     ["-T", "fx", "--relaunch", "r--rs-chain"], ["-T", "fx", "-n-x", "--", "c"], ["-T", "ws", "-d-1"]):
+            with self.assertRaises(RskError) as c:
+                X.parse(argv)
+            self.assertEqual(c.exception.code, USAGE, argv)
+        ns = X.parse(["-T", "fx", "-n", "r", "--", "python", "t.py", "--rs-seed", "3"])   # the payload may
+        self.assertEqual(ns.cmd[-2:], ["--rs-seed", "3"])
+        self.assertEqual(self.cli("launch", "-T", "fx", "-n--rs-chain", "--x", "--", "c")[0], USAGE)
+        self.assertEqual(self.calls, [])
+
+    def test_d5_g2_4_a_plain_launch_of_an_existing_run_is_a_relaunch(self):
+        self.grant()
+        self.answers = [self.plan_reply(name="exp--smoke--x"), self.submitted("101")]
+        self.assertEqual(self.cli("launch", "-T", "fx", "-n", "exp--smoke--x", "--", "c")[0], OK)
+        self.led.observe("exp--smoke--x", "a01", "101", "FAILED", "sacct", end={"state": "FAILED", "rc": "1:0",
+                                                                                "evidence": "sacct"})
+        G.add(self.led, G.new_deny("do not relaunch exp--smoke--x, it is broken", {"names": ["exp--smoke--x"]},
+                                   ["relaunch"]))
+        self.answers = [self.plan_reply(name="exp--smoke--x")]
+        rc, text = self.cli("launch", "-T", "fx", "-n", "exp--smoke--x", "--", "c")
+        self.assertEqual(rc, REFUSED, text)
+        self.assertIn("— relaunch on fx", text)
+        self.assertIn("do not relaunch exp--smoke--x", text)
+        self.assertEqual((len(self.calls), self.calls[-1][2]), (3, "--rs-mode"))   # planned, never submitted
+
+    def test_d5_a_not_submitted_attempt_is_no_earlier_run(self):
+        self.grant()
+        self.answers = [self.plan_reply(name="exp--smoke--n"), X.Reply(3, "", "REFUSED: policy", api="api=3",
+                                                                       result={"verdict": "refused", "stage": "policy"})]
+        self.assertEqual(self.cli("launch", "-T", "fx", "-n", "exp--smoke--n", "--", "c")[0], REFUSED)
+        self.answers = [self.plan_reply(name="exp--smoke--n"), self.submitted("102")]
+        rc, text = self.cli("launch", "-T", "fx", "-n", "exp--smoke--n", "--", "c")
+        self.assertEqual(rc, OK, text)                           # still a launch: the refused attempt never ran
+        self.assertIn("— launch on fx", text)
+
+    def test_d5_g2_5_a_runs_class_is_sticky(self):
+        self.grant(actions=("launch", "relaunch"))
+        self.answers = [self.plan_reply(name="bigrun"), self.submitted("101")]
+        self.assertEqual(self.cli("launch", "-T", "fx", "--class", "train", "-n", "bigrun", "--", "c")[0], OK)
+        self.led.observe("bigrun", "a01", "101", "PREEMPTED", "sacct", end={"state": "PREEMPTED", "rc": "",
+                                                                            "evidence": "sacct"})
+        n = len(self.calls)
+        for argv in (("launch", "--relaunch", "bigrun", "--class", "smoke"),
+                     ("launch", "-T", "fx", "--class", "smoke", "-n", "bigrun", "--", "c")):
+            rc, text = self.cli(*argv)
+            self.assertEqual(rc, USAGE, (argv, text))
+            self.assertIn("run bigrun is class train (recorded at its first attempt)", text)
+        self.assertEqual(len(self.calls), n)                     # before any ssh
+        G.add(self.led, G.new_deny("no more train runs, they burn the budget", {"classes": ["train"]}))
+        self.answers = [self.plan_reply(name="bigrun--a02")]
+        rc, text = self.cli("launch", "--relaunch", "bigrun")
+        self.assertEqual(rc, REFUSED, text)
+        self.assertIn("class train", text)
+
+    def test_d5_g2_6_an_sbatch_extra_singleton_is_a_chain(self):
+        self.grant()
+        G.add(self.led, G.new_deny("never chain jobs", {}, ["chain"]))
+        self.answers = [self.plan_reply(chain="1", extra="--dependency=singleton")]
+        rc, text = self.cli("launch", "-T", "fx", "--", "c")
+        self.assertEqual(rc, REFUSED, text)
+        self.assertIn("never chain jobs", text)
+        self.led.write_grants({"version": 1, "records": [r for r in self.led.state().grants if r["kind"] != "deny"],
+                               "budgets_unknown": None})
+        self.answers = [self.plan_reply(chain="1", extra="--dependency=singleton")]
+        rc, text = self.cli("launch", "-T", "fx", "--", "c")
+        self.assertEqual(rc, NEEDS_USER, text)
+        self.assertIn("action chain not in launch", text)
+
+    def test_d3_y_goes_with_a_grant_whose_kind_covers_the_warnings(self):
+        self.grant("queue them even if the cluster is busy", allow_warnings="availability")
+        self.answers = [self.plan_reply(warnings=1, warnings_avail=1), self.submitted("101")]
+        rc, text = self.cli("launch", "-T", "fx", "--", "c")
+        self.assertEqual(rc, OK, text)
+        self.assertIn("-y", self.calls[-1])
+        self.assertEqual(self.calls[-1][self.calls[-1].index("--rs-warnings") + 1], WID[1])
+        self.answers = [self.plan_reply(name="exp--train--b--s0--a01", warnings=2, warnings_avail=1,
+                                        warnings_id="b" * 64)]   # + a policy gate
+        rc, text = self.cli("launch", "-T", "fx", "-n", "exp--train--b--s0--a01", "--", "c")
+        self.assertEqual(rc, NEEDS_USER, text)
+        self.assertIn("the scope allows only the availability gate's", text)
+        self.assertIn("  warnings   2  (1 of them the availability gate's)", text)
+
+    def test_d10_a_proven_refusal_frees_the_plan_for_the_same_approval(self):
+        self.answers = [self.plan_reply()]
+        pid = self.plan_id(self.cli("launch", "-T", "fx", "--", "c")[1])
+        self.answers = [X.Reply(3, "", "REFUSED: the env gate", api="api=3",
+                                result={"verdict": "refused", "stage": "policy", "rc": "3"})]
+        rc, text = self.cli("launch", "--plan", pid, "--approve", "yes, run it")
+        self.assertEqual(rc, REFUSED, text)
+        self.assertIn(f"plan {pid} is free again", text)
+        self.assertIsNone(self.led.plan_claim(pid))
+        self.answers = [self.submitted("101")]
+        rc, text = self.cli("launch", "--plan", pid)                     # no new words: the same approval covers it
+        self.assertEqual(rc, OK, text)
+        aps = [r for r in self.led.state().grants if r["kind"] == "approval"]
+        self.assertEqual((len(aps), len(aps[0]["used"])), (1, 1))
+        self.assertEqual(self.calls[-1][2], "--rs-expect")
+        self.assertEqual(self.cli("launch", "--plan", pid)[0], CONFLICT)  # used now
+
+    def test_f_unknown_provably_unsent_submits_are_not_submitted(self):
+        self.grant()
+        nojournal = X.Reply(2, "@@api api=3\n@@rc 2\n@@claimed 0\n",
+                            "ERROR: cannot create /r/.rs/attempts — nothing submitted", api="api=3", claimed=False)
+        self.answers = [self.plan_reply(name="nj--smoke"), nojournal]
+        rc, text = self.cli("launch", "-T", "fx", "-n", "nj--smoke", "--", "c")
+        self.assertEqual(rc, USAGE, text)
+        self.assertIn("with no .rs/attempts/", text)
+        self.assertEqual(L.attempt_state(self.led.read_run("nj--smoke").data["attempts"]["a01"]), "NOT_SUBMITTED")
+        self.answers = [self.plan_reply(kind="nohup", target="ws", name="tf--smoke"),
+                        X.Reply(255, "[ws] current GPUs on wshost:\n", "ssh: connect to host wshost: timed out")]
+        rc, text = self.cli("launch", "-T", "ws", "-N", "tf--smoke", "--", "c")
+        self.assertEqual(rc, UNKNOWN, text)
+        self.assertIn("before its launch ssh: nothing was sent", text)
+        self.assertEqual(L.attempt_state(self.led.read_run("tf--smoke").data["attempts"]["a01"]), "NOT_SUBMITTED")
+        self.answers = [self.plan_reply(kind="nohup", target="ws", name="tf2--smoke"),
+                        X.Reply(255, "[ws] current GPUs on wshost:\n[ws] reference: /x/reference.md — the rules\n", "")]
+        rc, text = self.cli("launch", "-T", "ws", "-N", "tf2--smoke", "--", "c")
+        self.assertEqual(rc, UNKNOWN, text)                              # the launch ssh may have run: unknown
+        self.assertEqual(L.attempt_state(self.led.read_run("tf2--smoke").data["attempts"]["a01"]), "SUBMIT_UNKNOWN")
+
+    def test_c_stale_api_the_deployed_submit_sh_marker_decides(self):
+        d = self.home / "remote"
+        (d / ".fx").mkdir(parents=True)
+        (d / ".fx" / "API").write_text("api=3\n")                       # the separate file says api=3 …
+        (d / ".fx" / "submit.sh").write_text("#!/usr/bin/env bash\necho ran \"$@\"\n")   # … the script does not
+        place = harness.Place("fx", "slurm", "h", str(d), ".fx")
+        body = X.slurm_body(place, "n1", ["--rs-mode", "plan"])
+        r = X.parse_slurm(subprocess.run(["bash", "-c", body], capture_output=True, text=True))
+        self.assertEqual((r.rc, r.api), (65, ""))
+        self.assertNotIn("ran", r.out)
+        (d / ".fx" / "submit.sh").write_text("#!/usr/bin/env bash\n# rs-api=3\necho ran \"$@\"; exit 2\n")
+        r = X.parse_slurm(subprocess.run(["bash", "-c", body], capture_output=True, text=True))
+        self.assertEqual((r.rc, r.api, r.claimed), (2, "api=3", False))
+        self.assertIn("ran --rs-mode plan", r.out)
+        s, w = harness.Place("fx", "slurm", "h", "/r", ".fx"), harness.Place("ws", "nohup", "h", "p", ".ws")
+        for reply, place in ((X.Reply(2, err="ERROR: unknown arg 'plan' (flags: -p …)", api="api=3"), s),
+                             (X.Reply(2, err="ERROR: '--rs-chain' is not a flag of this submit.sh", api="api=3"), s),
+                             (X.Reply(2, err="ERROR: unknown arg '--rs-mode'"), w),
+                             (X.Reply(2, err="ERROR: the deployed .ws/launch.sh does not speak rs-api=3 (an older "
+                                             "deploy) — run-sync, then plan again; nothing launched"), w)):
+            with contextlib.redirect_stdout(io.StringIO()) as buf:
+                e = X.plan_failure(reply, place)
+            self.assertEqual(e.code, CONFLICT, reply)
+            self.assertIn("needs: sync", buf.getvalue())
+        self.answers = [self.plan_reply()]
+        pid = self.plan_id(self.cli("launch", "-T", "fx", "--", "c")[1])
+        self.answers = [X.Reply(2, "", "ERROR: unknown arg '" + "7" * 64 + "' (flags: …)", api="api=3",
+                                result={"verdict": "refused", "stage": "pre-policy", "rc": "2"})]
+        rc, text = self.cli("launch", "--plan", pid, "--approve", "go")
+        self.assertEqual(rc, CONFLICT, text)
+        self.assertIn("needs: sync", text)
+
+    def test_h1_msg_a_refused_launch_names_what_changed(self):
+        self.answers = [self.plan_reply(kind="nohup", target="ws", name="r", gpus_req="ids=1", info_gpus="1",
+                                        busy="1:me:42", busy_ok="1:GPU-x:me", warnings=1)]
+        rc, text = self.cli("launch", "-T", "ws", "-d", "1", "-N", "r", "--gpu-busy-ok", "--", "c")
+        pid = self.plan_id(text)
+        self.assertIn("  busy ok    1:GPU-x:me", text)
+        now = block(kind="nohup", target="ws", name="r", gpus_req="ids=1", info_gpus="1", busy="1:root:1",
+                    busy_ok="1:GPU-x:root", warnings=1)
+        self.answers = [X.Reply(6, now, "ERROR: the resolved submission differs from the approved plan")]
+        rc, text = self.cli("launch", "--plan", pid, "--approve", "share GPU 1 with my eval job")
+        self.assertEqual(rc, CONFLICT, text)
+        self.assertIn("busy_ok: 1:GPU-x:me → 1:GPU-x:root", text)
+        self.assertNotIn("the conf changed since", text)
+
+    def test_b_m4_another_set_of_warnings_is_refused_and_named(self):
+        old = G.parse_plan(block(warnings=1))
+        self.assertIn("the warnings: 1 on the card, 1 now", X.drift({"kind": "slurm", "block": old},
+                                                                     block(warnings=1, warnings_id="c" * 64)))
+        self.assertEqual(X.drift({"kind": "slurm", "block": old}, "no block here"), "")
+        self.answers = [self.plan_reply(warnings=1)]
+        pid = self.plan_id(self.cli("launch", "-T", "fx", "--", "c")[1])
+        swapped = X.Reply(6, block(warnings=1, warnings_id="c" * 64), "ERROR: the resolved submission differs from the "
+                          "approved plan: its 1 warning(s) are not the approved card's (warnings_id …)", api="api=3",
+                          result={"verdict": "refused", "stage": "expect", "rc": "6"})
+        self.answers = [swapped]
+        rc, text = self.cli("launch", "--plan", pid, "--approve", "ok, queue it even though the partition is full")
+        self.assertEqual(rc, CONFLICT, text)
+        self.assertIn("the warnings differ from the approved card", text)
+        self.assertEqual(self.calls[-1][self.calls[-1].index("--rs-warnings") + 1], WID[1])
+
+    def test_l3_g_space_the_launch_line_reads_from_the_end_and_the_receipt_wins(self):
+        line = ("[ws] started PID 4242 on GPU(s) 1 ; log /h/projects/my proj/logs/r;1-20261104-120000.log ; pid file "
+                "/h/projects/my proj/logs/r;1-20261104-120000.log.pid\n")
+        m = X.started(line, "ws")
+        self.assertEqual((m.group(1), m.group(2), X.rel_log(m.group(3))), ("4242", "1", "logs/r;1-20261104-120000.log"))
+        self.grant()
+        self.answers = [self.plan_reply(kind="nohup", target="ws", name="sp1"), X.Reply(0, line, "")]
+        rc, text = self.cli("launch", "-T", "ws", "-N", "sp1", "--", "c")
+        self.assertEqual(rc, OK, text)
+        self.assertIn("launched: sp1 a01 pid 4242", text)
+        def journal(places, *a, **k):
+            n = k["nonces"][places[0].target][0]
+            o = observe.Observation(places[0], ok=True, attempts_ok=True)
+            o.attempts[n] = {"receipt": {"pid": "777", "pgid": "777", "start": "55", "boot_id": "b", "gpu_ids": "2",
+                                         "log": "logs/sp2-20261104-120000.log"}, "gate": "go",
+                             "result": {"verdict": "launched"}}
+            return [o]
+        self.answers = [self.plan_reply(kind="nohup", target="ws", name="sp2"), X.Reply(0, "[ws] launching …\n", "")]
+        with mock.patch.object(observe, "observe", journal):
+            rc, text = self.cli("launch", "-T", "ws", "-N", "sp2", "--", "c")
+        self.assertEqual(rc, OK, text)                                   # no launch line at all: the receipt decides
+        sub = self.led.read_run("sp2").data["attempts"]["a01"]["submissions"][0]
+        self.assertEqual((sub["submit"], sub["proc"]["pid"], sub["proc"]["start"]), ("submitted", "777", "55"))
 
 
 class Nohup(Fixture):

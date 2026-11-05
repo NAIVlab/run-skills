@@ -7,13 +7,17 @@ It also reads the local ledger (ledger.py) and records what it saw there — nev
   the last good observation in place and says the target is unobservable now);
 - UNLEDGERED: live jobs/runs of this dir the ledger does not know (adopt them: rsk adopt), and journal attempts
   (.rs/attempts/<nonce>/) the ledger does not know whose outcome is open — except what this project's own tools made:
-  run-watch's submits (journal nonces rw-…) and run-bootstrap --job's job (<JOB_NAME>-bootstrap) are tagged with the
-  tool (`(run-watch's)`, `run-watch attempt …`), never UNLEDGERED, no adopt hint;
+  run-watch's submits (journal nonces rw-…) and run-bootstrap --job's job (its receipt's argv ends with the payload it
+  always sends, `bash <dir>/.<t>/bootstrap.sh` — never the job's name alone) are tagged with the tool (`(run-watch's)`,
+  `run-watch attempt …`), never UNLEDGERED, no adopt hint;
 - SUBMIT_UNKNOWN attempts reconciled from the remote journal: a receipt, or a job whose comment carries rs=<nonce>
   = submitted; result verdict refused|failed = not submitted (its grant use is given back); anything else stays
   SUBMIT_UNKNOWN (sticky: never resubmitted blind) and becomes a `needs user:` line;
-- nohup end states from <log>.rc, the watch lease, every active grant with its balance, and `needs user:` lines.
-  A needs-user line names the decision, never a ready-to-run --approve command (the user's words come first).
+- nohup end states from <log>.rc (REBOOT when the pid is gone with no .rc and the box's boot_id is not the receipt's),
+  the watch lease and a run-watch lock holder (alive here, on another host, or stale), every active grant with its
+  balance, and `needs user:` lines. A needs-user line names the decision, never a ready-to-run --approve command (the
+  user's words come first). A ledger that cannot be written (read-only state dir, a full disk) is a warning: the
+  view is still printed, nothing recorded.
 logs: the deployed bounded digest (remote/status.sh) for one job id or log path — the one monitoring read.
 """
 
@@ -21,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -84,26 +89,38 @@ def _line(j: observe.Job, now: int) -> str:
     return f"  {j.state:<9} job {j.id:<8} {j.name}{extra}"
 
 
-def tool_of(nonce: str, name: str) -> str:
+_BASH_WORD = re.compile(r"(?:^| )bash ((?:\\.|[^ \\])+)$")
+
+
+def is_bootstrap(argv_tail: str, deploy: str) -> bool:
+    """A receipt's argv (its last bytes) ends with the payload run-bootstrap --job always sends — `bash
+    <dir>/<deploy>/bootstrap.sh` (the same test job.sbatch uses) — never judged by the job's name."""
+    m = _BASH_WORD.search(str(argv_tail).rstrip())
+    if not m or not deploy:
+        return False
+    try:
+        path = grants.unq(m.group(1))
+    except RskError:
+        return False
+    return path.endswith(f"/{deploy}/bootstrap.sh")
+
+
+def tool_of(nonce: str, argv_tail: str = "", deploy: str = "") -> str:
     """Which of this project's own tools made a submission the ledger does not hold: 'run-watch' (its journal nonces
-    are rw-…), 'bootstrap' (run-bootstrap --job names its job <JOB_NAME>-bootstrap), '' = unknown (UNLEDGERED)."""
+    are rw-…), 'bootstrap' (its receipt's argv ends with `bash <dir>/<deploy>/bootstrap.sh`), '' = unknown."""
     if str(nonce).startswith("rw-"):
         return "run-watch"
-    return "bootstrap" if str(name).endswith("-bootstrap") else ""
+    return "bootstrap" if is_bootstrap(argv_tail, deploy) else ""
 
 
 def labels_of(o: observe.Observation) -> dict[str, str]:
-    """job id / log -> the tool its journal receipt says made it (tool_of); jobs named <…>-bootstrap too."""
+    """job id / log -> the tool its journal receipt says made it (tool_of). A job without such a receipt has none."""
     out = {}
     for n, a in o.attempts.items():
         rc = a.get("receipt") or {}
-        k, t = rc.get("job") or rc.get("log") or "", tool_of(n, rc.get("name", ""))
+        k, t = rc.get("job") or rc.get("log") or "", tool_of(n, a.get("argv_tail", ""), o.place.deploy)
         if k and t:
             out[k] = t
-    for j in o.jobs:
-        t = tool_of("", j.name)
-        if t and (j.id or j.log):
-            out.setdefault(j.id or j.log, t)
     return out
 
 
@@ -123,7 +140,8 @@ def render(o: observe.Observation, days: int, known: set[str] | None = None) -> 
     tools = labels_of(o)
     for j in sorted(live, key=lambda j: (ORDER.get(j.state, 2), j.name)):
         k = j.id if p.kind == "slurm" else j.log
-        tag = "" if known is None or k in known else f"  ({tools[k]}'s)" if k in tools else "  UNLEDGERED"
+        tag = "" if known is None or k in known else f"  ({tools[k]}'s)" if k in tools else "  UNLEDGERED" + (
+            " (its name looks like run-bootstrap's; no receipt says so)" if str(j.name).endswith("-bootstrap") else "")
         lines.append(_line(j, now) + tag)
     if p.kind == "slurm":
         counts: dict[str, int] = {}
@@ -190,7 +208,7 @@ def reconcile(state: L.LedgerState, o: observe.Observation) -> list[tuple]:
     by_id = {j.id: j for j in o.jobs if j.id and j.source != "pid"}
     by_log = {j.log: j for j in o.jobs if j.log}
     carried = {n: jid for jid, n in o.comments.items()} if o.comments_ok else {}
-    def seen(run: str, aid: str, key: str) -> None:
+    def seen(run: str, aid: str, key: str, sub: dict) -> None:
         j = (by_id if kind == "slurm" else by_log).get(key)
         if not j:
             return            # not in this read (older than --days, or not listed): absence is no evidence
@@ -200,7 +218,12 @@ def reconcile(state: L.LedgerState, o: observe.Observation) -> list[tuple]:
         elif kind == "nohup" and j.rc:
             end = {"state": "ENDED", "rc": j.rc.get("rc", ""), "evidence": f"{key}.rc term={j.rc.get('term', '?')}"}
         elif kind == "nohup" and j.state == "ENDED":
-            end = {"state": "ENDED", "rc": "", "evidence": f"pid {j.reason}, no .rc"}
+            was = str((sub.get("proc") or {}).get("boot_id") or "")
+            if was and o.boot_id and was != o.boot_id:   # positive evidence: the run's boot is over (no .rc written)
+                end = {"state": "REBOOT", "rc": "", "evidence": f"pid {j.reason}, no .rc; the box's boot_id is "
+                                                              f"{o.boot_id[:8]}…, the run's was {was[:8]}…"}
+            else:
+                end = {"state": "ENDED", "rc": "", "evidence": f"pid {j.reason}, no .rc"}
         out.append(("observe", run, aid, key, j.state, j.source, end))
 
     for run, aid, att, sub in _subs(state, o.place.target):
@@ -223,10 +246,10 @@ def reconcile(state: L.LedgerState, o: observe.Observation) -> list[tuple]:
                             str((att.get("request") or {}).get("grant", ""))))
             if fields:
                 out.append(("submitted", run, aid, nonce, fields))
-                seen(run, aid, str(fields.get("job") or (fields.get("proc") or {}).get("log") or ""))
+                seen(run, aid, str(fields.get("job") or (fields.get("proc") or {}).get("log") or ""), {**sub, **fields})
             continue
         if sub.get("submit") in ("submitted", "adopted") and not sub.get("end"):
-            seen(run, aid, str(sub.get("job") or (sub.get("proc") or {}).get("log") or ""))
+            seen(run, aid, str(sub.get("job") or (sub.get("proc") or {}).get("log") or ""), sub)
     return out
 
 
@@ -253,8 +276,8 @@ def record(led: L.Ledger, state: L.LedgerState, obs: list[observe.Observation]) 
                     notes.append(f"{c[1]} {c[2]}: SUBMIT_UNKNOWN -> not submitted ({c[4]})")
                 else:
                     led.observe(c[1], c[2], c[3], c[4], c[5], at=at, end=c[6])
-    except RskError as exc:
-        notes.append(f"ledger not updated: {exc}")
+    except (RskError, OSError) as exc:      # a read-only state dir, a full disk: the view is still printed
+        notes.append(f"WARNING: ledger not updated (read-only view): {exc}")
     return notes
 
 
@@ -338,25 +361,37 @@ def view(led: L.Ledger, state: L.LedgerState, obs: list[observe.Observation], da
                 continue      # an old submit of another tool, long over: the job lines above already say so
             unledgered.append({"target": o.place.target, "nonce": n, "verdict": v or "open", "stage": a.get("stage"),
                                "job": rc.get("job", ""), "log": rc.get("log", ""), "name": rc.get("name", ""),
-                               "age": int(now - int(a.get("mtime") or now)), "by": tool_of(n, rc.get("name", ""))})
+                               "age": int(now - int(a.get("mtime") or now)),
+                               "by": tool_of(n, a.get("argv_tail", ""), o.place.deploy)})
     for r in state.grants:
-        if r.get("revoked"):
+        if not isinstance(r, dict) or r.get("revoked"):
             continue
         for f in grants.after_deny(r, state.grants):
             needs.append(f"{r['kind']} {r['id']} ({r.get('created_via')}): {f} — confirm with the user that it replaces "
                          "the deny before relying on it")
     lease = led.lease().data
+    from remote_run.watch import lock_holder
     return {"runs": runs, "needs": needs, "unledgered": unledgered, "lease": lease,
-            "lease_state": L.lease_state(lease)}
+            "lease_state": L.lease_state(lease), "watch_lock": lock_holder(led.project)}
 
 
 def _lease_line(v: dict) -> str:
     le = v["lease"]
     if not le:
-        return "watch lease: none"
-    until = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(le.get("until") or 0)))
-    return (f"watch lease: {v['lease_state']} — pid {le.get('pid')} on {le.get('host')} since {le.get('started')} "
-            f"until {until}")
+        line = "watch lease: none"
+    else:
+        until = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(le.get("until") or 0)))
+        line = (f"watch lease: {v['lease_state']} — pid {le.get('pid')} on {le.get('host')} since {le.get('started')} "
+                f"until {until}")
+    lk = v.get("watch_lock")
+    if lk:
+        state = {True: "alive on this host", False: "stale (its pid is gone)",
+                 None: f"on {lk.get('host') or 'another host'} (cannot be checked from here)"}[lk.get("alive")]
+        orphan = lk.get("alive") is True and v["lease_state"] != "live"
+        line += (f"\nrun-watch lock: pid {lk.get('pid') or '?'} since {lk.get('started') or '?'} act={lk.get('act') or '?'}"
+                 f" — {state}" + (" — no live rsk watch lease holds it (an orphan: rsk watch refuses to start beside it)"
+                                  if orphan else ""))
+    return line
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -387,8 +422,9 @@ def cmd_status(args: argparse.Namespace) -> int:
                          "attempts_listed": o.attempts_ok} for o in obs],
             "runs": [{"run": r, "attempt": a, "state": L.attempt_state(att), **att} for r, a, att in v["runs"]],
             "unledgered": v["unledgered"], "grants": [{**g, "covers": grants.describe(g), "balance": grants.balance(g, st)}
-                                                      for g in st.grants if not g.get("revoked")],
+                                                      for g in st.grants if isinstance(g, dict) and not g.get("revoked")],
             "budgets_unknown": st.budgets_unknown, "lease": v["lease"], "lease_state": v["lease_state"],
+            "watch_lock": v["watch_lock"],
             "needs_user": v["needs"], "notes": notes}, indent=1, ensure_ascii=False))
         return OK if all(o.ok for o in obs) else UNKNOWN
     for o in obs:

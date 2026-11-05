@@ -19,6 +19,8 @@ rsk sync -T <t> [-n] [--also <path>]      # = TARGET=<t> bash $ROOT/bin/run-sync
 First line printed: `[<t>] remote: <host>:<dir>  tag: <TAG>  deploy: .ws`. Never deletes remote `.venv* .cache
 .local .config bin tmp wandb wandb-artifacts logs run_logs ckpts checkpoints runs outputs videos data .wandb_env .rs`
 (the launch journal) or any `.<target>/` dir. Pushes the conf, the profile and your wandb key file as `.wandb_env` (mode 600).
+`rsk sync -D` runs only with `--approve "<their words>"` (audited) unless a real `-n` / `--dry-run` makes it a listing —
+read with run-sync's own grammar: `--also -n` pushes a path named `-n`, it is no dry run.
 With a transfer host (`T_XFER_HOST`) it prints `transfer host: <xfer>` and ends `sync done -> … ; files via <xfer>`.
 Every sync stamps `<REMOTE_DIR>/.run-source` (local path, host, branch, commit, dirty-file count, time; never pruned):
 it prints `[<t>] source: <branch>@<commit> dirty=N`, and every run sees it as `$RS_SOURCE_COMMIT` (env.sh). A remote
@@ -54,6 +56,7 @@ covered it; not covered (exit 4) → show its card verbatim (GPU request, `busy 
 without rsk: the same check against the user's words; outside them, print a one-line plan (target / GPU ids / run
 command / `ref: <reference path>`) and wait for their go. Never launch onto a GPU another job is using without the
 user's words naming it: with `-d <ids> --gpu-busy-ok` (rsk takes it only with `-d`), a card that lands on one (`ON A BUSY GPU`) is never grant-covered.
+Its `busy ok` row binds who is on each accepted busy GPU (`<id>:<uuid>:<user>`): their approval is for those occupants.
 Classify and name the run per `experiment-conventions.md` (run class, structured `-N` name, wandb mapping). A smoke
 goes out with `WANDB_MODE=disabled` (prepend `env WANDB_MODE=disabled` to the payload). A pilot/train/ablate must
 checkpoint and resume: nothing restarts a nohup run after a crash or reboot. A relaunch must use the logical run's
@@ -66,11 +69,17 @@ rsk launch --plan <id> [--plan <id>]... --approve "<the user's words>"     # the
 TARGET=<t> bash $ROOT/bin/run-launch [-d 0,1 | -n <count>] [-N <name>] [--same-name-ok] [--gpu-busy-ok] -- <RUN>   # without rsk
 ```
 `rsk launch` runs `run-launch` (with `RS_VIA_RSK=1`) twice: `--rs-mode plan` for the card, then, once a record covers
-the plan, the launch with `--rs-expect <bound_hash> --rs-warnings <the card's count>` (`--gpu-busy-ok` only when the
-approved card's own landing was on a busy GPU, pinned to it with `-d`; the busy set is bound: another GPU busy since is
-exit 6). Exit as for Slurm (procedure-slurm §4: 0 launched, 3 refused, 4 needs the user,
-5 reply lost = SUBMIT_UNKNOWN, 6 stale plan / drift / a live ledger run of that name / a busy `-d` GPU / `needs: sync`),
-plus 8: too few free GPUs now. `run-launch` called directly while rsk is installed (on PATH, or in `uv tool dir --bin`)
+the plan, the launch with `--rs-expect <bound_hash> --rs-warnings <the card's warnings_id>` (`--gpu-busy-ok` only when the
+approved card's own landing was on a busy GPU, pinned to it with `-d`). The busy set is bound as its occupants
+(`busy_ok=<id>:<uuid>:<user>,…`): a different owner on an approved GPU, a newly busy GPU in the landing, or another
+physical GPU behind the same id is exit 6, and the refusal names what changed (`busy_ok: 1:GPU-…:me → 1:GPU-…:root`).
+No word before `--` may contain `--rs-`, not even as an option's value, and a value of `-g -d -N --nice --relaunch` never
+starts with `-` (exit 2). The action is the plan's: a run that already has attempts that may have run is a `relaunch`
+(a relaunch grant covers it only after a REBOOT of the box; the user's approval of the card after any end). Exit as for
+Slurm (procedure-slurm §4: 0 launched, 1 failed — also a plan whose env would fail the gate —, 3 refused, 4 needs the
+user, 5 reply lost = SUBMIT_UNKNOWN, 6 stale plan / drift / a live ledger run of that name / a busy `-d` GPU / `needs:
+sync`; a launch the target proves never started — refused or failed with no receipt, or `run-launch` failing before its
+launch ssh — is NOT_SUBMITTED: the use comes back and `plan <id> is free again`), plus 8: too few free GPUs now. `run-launch` called directly while rsk is installed (on PATH, or in `uv tool dir --bin`)
 prints `use: rsk launch -T <t> …` and exits 2; installed without rsk it launches as below, with a one-line NOTE. That steers; it is not a guard.
 `-d ids` uses exactly those GPUs (bypasses `GPU_EXCLUDE`); `-n N` picks the N idlest free ones (no compute process),
 skipping `GPU_EXCLUDE` (default `DEFAULT_NGPU`, 1; positive integer; fewer than N free is a hard error, exit 1, never a
@@ -86,15 +95,22 @@ the conda env is active → start `<RUN>` detached (`setsid` + `nohup`, `PYTHONU
 `logs/<name>-<timestamp>.log`; it prints `[<t>] started PID … ; log …` + a `verify:` line. Report PID + log path.
 Address GPUs as `cuda:0…` in the program. Exit: 0 launched, 1 failed (env gate, nvidia-smi, start) or too few free GPUs,
 2 usage, 6 same name alive / a busy `-d` GPU / not the approved plan, 75 that attempt already ran, 255 ssh.
-rsk's protocol (api=3, the deployed `.ws/API`): `--rs-mode plan` runs every step above except the env gate (env.sh creates
-the project's cache dirs; a plan creates nothing outside `.rs/` — the gate runs at the launch, exit 1 there), then prints ONE
-`@@plan v1` … `@@end` block and starts nothing (bound: `name gpus_req exclude nice busy_ok payload env_kind env_hook venv_dir
-uv_sync_args env_name` — `busy_ok` = the busy GPUs the landing accepts with `--gpu-busy-ok`, `env_hook` = `<ENV_HOOK>:<sha256
-of the file>`; `info_gpus=` `info_uuids=` `info_busy=<id:user:pid,…>|unknown`; `warnings=N` `bound_hash=`; result
-`verdict=planned`). `--rs-expect <bound_hash> [--rs-warnings N]` launches only while the request still hashes the same and the
-call printed N `WARNING:` lines (the card's count, default 0) — else the current block + `ERROR: the resolved submission
-differs from the approved plan`, exit 6, before anything starts. The picked ids are envelope: a GPU that got busy since the
-plan moves the pick, never the request. A plan is a card for the user, not an approval.
+rsk's protocol (api=3: the line `# rs-api=3` inside the deployed `.ws/launch.sh`; with any `--rs-` word, run-launch's one
+ssh checks that line first and, on an older `launch.sh`, exits 2 `does not speak rs-api=3`, nothing run — rsk: `needs:
+sync`): `--rs-mode plan` runs every step above and checks the env gate read-only — the venv's `python` must be
+executable (resolved as env.sh resolves it: `VENV_DIR`, `T_ENV_ROOT`, `T_SUFFIX`), a conda env must activate in a
+throwaway shell, the `ENV_HOOK` file must exist and `ENV_KIND` be valid — exiting 1 with no card when the launch's gate
+would refuse; it creates nothing outside `.rs/` (env.sh itself mkdirs the project's caches: the real gate runs at the
+launch). It then prints ONE `@@plan v1` … `@@end` block and starts nothing (bound: `name gpus_req exclude nice busy_ok payload env_kind env_hook venv_dir
+uv_sync_args env_name` — `busy_ok` = `<id>:<uuid>:<user>` of each busy GPU the landing accepts with `--gpu-busy-ok`
+(sorted by id; empty, or `unknown`), `env_hook` = `<ENV_HOOK>:<sha256 of the file>`; `info_gpus=` `info_uuids=`
+`info_busy=<id:user:pid,…>|unknown`; `warnings=N` (the distinct `WARNING:` lines) `warnings_avail=0` (a box has no
+availability `-y` gate: too few free GPUs is exit 1) `warnings_id=` (their sha256, digit runs masked) `bound_hash=`;
+result `verdict=planned`). `--rs-expect <bound_hash> [--rs-warnings <warnings_id>]` launches only while the request
+still hashes the same and the call's `WARNING:` lines give the same `warnings_id` (none given = no warning at all) —
+else the current block, `changed: <keys>` (from the approved plan's own journal entry, when it is there) and `ERROR: the
+resolved submission differs from the approved plan`, exit 6, before anything starts. The picked ids are envelope: a GPU
+that got busy since the plan moves the pick, never the request. A plan is a card for the user, not an approval.
 
 launch.sh records before it prints: the attempt dir holds `out`/`err` (every line it printed), `stage`, `result`
 (`stage= rc= verdict=launched|refused|failed`) and `receipt` (`pid pgid start boot_id gpus log name nonce at`); the run
@@ -126,12 +142,20 @@ started, its launch was not confirmed). Once the pid is gone status.sh reads the
 (else `(the log's EXIT footer)`, which must name that pid; `exit=unknown` when neither exists); a run
 launched before launch.sh existed has neither: there `proc=gone` + the last lines + the final artifact ARE the evidence. Idle = ALL of the run's GPUs under ~5 % util
 AND the log not advancing across two checks — never one sample. A nohup'd run survives ssh disconnect, not a reboot:
-relaunch with the next `a<attempt>` (`rsk launch --relaunch <run>`, conventions §3) and confirm it resumed.
+relaunch with the next `a<attempt>` (`rsk launch --relaunch <run>`, conventions §3) and confirm it resumed. `rsk status`
+shows that end as `REBOOT` (pid gone, no `.rc`, the box's boot id is not the run's) — the one end a `relaunch` grant
+resumes after.
 **Stop a run only through `rsk cancel <run> [--job <pid>] [--approve "<the user's words>"]`**: the same ssh first checks
-the pid against the run's receipt (pid, process start time, boot id, your user, the group leader) — exit 6 = mismatch
-(a reused pid), nothing signalled; someone else's process: never — then sends TERM to the run's process group, waits
-`--grace` (30 s) and KILLs what is left; `<log>.rc` is read back. It acts on the user's words naming that run, or — for
-your own judgment that it should stop — on a `cancel_own` grant (runs rsk launched only); else exit 4: ask. Without
+the pid against the run's receipt (pid, process start time, boot id, your user, the group leader); someone else's
+process: never (exit 3). A ledgered run whose pid is gone, reused by another process (its start time differs) or whose
+box rebooted (boot id differs) has ended: exit 0 `nothing to cancel … ended`, nothing signalled, its end recorded in the
+ledger now (REBOOT for a changed boot id); exit 6 = its identity is not proven (the receipt and the ledger disagree,
+no receipt, not the group leader), nothing signalled. Then it sends TERM to the run's process group, waits
+`--grace` (30 s) and KILLs what is left; `<log>.rc` is read back. It acts on the user's words naming that run — an
+approval bound to its identity (target, pid, start, boot id), for 1 h, used up by its first cancel whatever came of it
+— or, for your own judgment that it should stop, on a `cancel_own` grant (runs rsk launched only); else exit 4: ask.
+A `cancel_own` grant's cancels count against its `max_launches`. An answer cut off after the cancel started says `the
+cancel may have been sent: rsk status` (exit 5). Without
 rsk, on the same terms: `ssh <host> "kill <pid>"` (the `<log>.pid` wrapper: it forwards TERM to the run once and records
 `term=1`), and only if the run's group outlives that, `ssh <host> "kill -- -<pid>"` (the whole process group).
 
@@ -141,7 +165,8 @@ rsk, on the same terms: `ssh <host> "kill <pid>"` (the `<log>.pid` wrapper: it f
 round: one read-only ssh per box, one dated event per change (ADOPT DONE STALL WARN ATTENTION). On workstations it
 only detects: it never launches, relaunches or kills. Run it as this session's background task with a lease (`--for`,
 default 2 h) and follow its output; every exit is a review point. Without that, run `--once` at each review. Never
-detach it (no `nohup`, `setsid`, cron). ATTENTION is a finding — report it.
+detach it (no `nohup`, `setsid`, cron). One watcher per project: a second one exits 6 and names the holder (pid, host,
+start). ATTENTION is a finding — report it.
 
 ## 6. Pull results back — only with `run-pull`
 ```

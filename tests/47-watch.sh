@@ -6,7 +6,9 @@
 # CANCELLED never resubmitted, requeue + requeue-storm, adoption rules, submit refused / unknown / interrupted,
 # --adopt / --release, workstations detect-only, stall + resume checks, blind targets, lock, lost state, exit codes;
 # P3: grep -a, <log>.rc, --rs-attempt nonces + the journal read, sticky unknowns across tables, --adopt identity,
-# '#@ ok … conf=', the lock's pid/host/start, '#@ allow fail-stop'.
+# '#@ ok … conf=', the lock's pid/host/start, '#@ allow fail-stop'; round 3 (D11): fail-stop's pending cancels only with
+# --act under an approved fail-stop, fail-stop and unknown submits across tables, a target column in state lines, the
+# settle path's job name, base-10 numbers, lock exit 6, '#@ ok' lines / headers this copy cannot read.
 set -u
 . "$RS_HOME/tests/lib.sh"
 export WORLD=$T/world RBIN=$T/rbin TBIN=$T/bin; mkdir -p "$WORLD" "$RBIN"
@@ -277,7 +279,7 @@ for n in 2 3; do O=$(rww t.tsv --once); done; has "$O" 'ATTENTION name=w4 .*reas
 
 echo "-- lock, lost state, removed rows --"
 reset; approved "a fx-slurm - $ROW"; q; mkdir -p "$P/logs/run-watch/.lock"; echo $$ > "$P/logs/run-watch/.lock/pid"
-O=$(rw t.tsv --once); [ "$?" = 2 ] && has "$O" 'holds' "a live lock holder: exit 2" || bad "lock conflict exit 2"
+O=$(rw t.tsv --once); [ "$?" = 6 ] && has "$O" 'holds' "a live lock holder: exit 6 (not 2: rsk watch maps it)" || bad "lock conflict exit 6"
 echo 999999 > "$P/logs/run-watch/.lock/pid"; O=$(rw t.tsv --once); has "$O" 'NOTE stale-lock' "a dead holder's lock is taken over"
 [ ! -d "$P/logs/run-watch/.lock" ] && ok "lock released at exit" || bad "lock released at exit"
 rw t.tsv --once >/dev/null; rm -f "$P/logs/run-watch/t.state"; O=$(rw t.tsv --once)
@@ -398,10 +400,10 @@ cp "$L2/.hpc.conf" "$R2/.hpc.conf"; O=$(rwin t.tsv --once --act --max-active 3);
 
 reset; approved "a fx-slurm - $ROW"; q; mkdir -p "$P/logs/run-watch/.lock"; echo $$ > "$P/logs/run-watch/.lock/pid"
 echo "$(uname -n) 2026-11-04T10:00:00+0000 1" > "$P/logs/run-watch/.lock/info"; O=$(rw t.tsv --once --act); RC=$?
-[ "$RC" = 2 ] && has "$O" "pid=$$ host=$(uname -n) started=2026-11-04T10:00:00+0000 act=1" "a live watcher's lock: its pid, host and start" || bad "lock report (rc=$RC)"
+[ "$RC" = 6 ] && has "$O" "pid=$$ host=$(uname -n) started=2026-11-04T10:00:00+0000 act=1" "a live watcher's lock: exit 6, its pid, host and start" || bad "lock report (rc=$RC)"
 [ "$(nsub)" = 0 ] && ok "  ...--act does not run beside it" || bad "--act beside a live watcher"
 echo 999999 > "$P/logs/run-watch/.lock/pid"; echo "other-host-x 2026-11-04T10:00:00+0000 0" > "$P/logs/run-watch/.lock/info"
-O=$(rw t.tsv --once); [ "$?" = 2 ] && has "$O" 'host=other-host-x .*another host' "another host's lock is never broken" || bad "other host lock"
+O=$(rw t.tsv --once); [ "$?" = 6 ] && has "$O" 'host=other-host-x .*another host' "another host's lock is never broken (exit 6)" || bad "other host lock"
 rm -rf "$P/logs/run-watch/.lock"; echo "$P/logs/run-watch/.lock" > "$WORLD/grab-lock"; rw t.tsv --once >/dev/null; rm -f "$WORLD/grab-lock"
 has "$(cat "$WORLD/lock.info" 2>/dev/null)" "^$(uname -n) [0-9T:+-]* 0$" "a running watcher records host, start time and act in its lock"
 
@@ -470,3 +472,130 @@ N=$(st a 16); [ "$(st a 2)" = submit-unknown ] && [ -d "$P/.rs/attempts/$N" ] ||
 printf 'stage=plan rc=0 verdict=planned at=1\n' > "$P/.rs/attempts/$N/result"; O=$(rw t.tsv --once --act --max-active 2)
 has "$O" "ATTENTION name=a .*reason=submit-refused attempt=$N .*verdict=planned" "verdict=planned: nothing was queued -> held submit-refused (never stuck unknown)"
 [ "$(st a 2)" = held ] && ok "...held" || bad "...held ($(st a 2))"
+
+echo "-- round 3 (D11): fail-stop's pending cancels need --act and an approved fail-stop (G4-1) --"
+sf() { awk -F'	' -v n="$1" -v f="$2" '$1 == n { print $f }' "$P/logs/run-watch/$3.state"; }   # sf NAME FIELD STATE-NAME
+l6() {   # a adopted (1000), b's launch unknown (sbatch timed out: attempt $N), then a FAILED: the group stops, b pending
+  reset; approved "#@ allow launch errors=0 fail-stop" "a fx-slurm - $ROW" "b fx-slurm - $ROW"
+  echo 1001 > "$WORLD/nextjid"; q "1000|a|RUNNING|None|0|$NOW|$P|"; touch "$WORLD/sbatch.fail"
+  rw t.tsv --once --act --max-active 4 --adopt a=1000 >/dev/null; rm -f "$WORLD/sbatch.fail"; N=$(st b 16)
+  q; acct "1000|a|FAILED|1:0|$P"; rw t.tsv --once --act --max-active 4 >/dev/null; q "1001|b|RUNNING|None|0|$NOW|$P|"; }
+receipt() { printf 'job=%s\nname=%s\n' "$2" "$3" > "$P/.rs/attempts/$1/receipt"; }   # receipt NONCE JOB NAME: the job exists
+l6; grep -q '^#failstop-pending b$' "$P/logs/run-watch/t.state" && ok "setup: the stop names b (submit-unknown) as pending" || bad "G4-1 setup"
+receipt "$N" 1001 b; O=$(rw t.tsv --once); has "$O" 'ADOPT name=b .*job=1001 note=receipt' "a detect-only run tracks b from its receipt"
+has "$O" 'ATTENTION name=b .*job=1001 reason=fail-stop-not-cancelled why=no-act fail-stop=a' "  ...reports the pending fail-stop cancel (why=no-act)"
+[ ! -s "$WORLD/scancel.log" ] && ok "  ...and never runs scancel without --act" || bad "  ...scancel without --act: $(cat "$WORLD/scancel.log")"
+grep -q '^#failstop-pending b$' "$P/logs/run-watch/t.state" && ok "  ...b stays pending for an --act run" || bad "  ...pending kept"
+O=$(rw t.tsv --once --act --max-active 4); has "$O" 'CANCEL name=b .*job=1001 by=fail-stop fail-stop=a' "  ...which cancels it (identity checked)"
+l6; O=$(rw t.tsv --once --adopt b=1001); has "$O" 'ADOPT name=b .*job=1001 note=manual' "--adopt without --act tracks b"
+[ ! -s "$WORLD/scancel.log" ] && ok "  ...and cancels nothing" || bad "  ...--adopt without --act cancelled: $(cat "$WORLD/scancel.log")"
+l6; sed 's/^#@ allow launch errors=0 fail-stop$/#@ allow launch errors=0/' "$P/t.tsv" > "$T/t.nofs"; cp "$T/t.nofs" "$P/t.tsv"
+rw t.tsv --approve "no fail-stop any more, keep b running" >/dev/null; receipt "$N" 1001 b; O=$(rw t.tsv --once --act --max-active 4)
+has "$O" 'NOTE table=t.tsv fail-stop-pending-dropped rows=b' "the table approved again without fail-stop: its pending cancel is dropped"
+[ ! -s "$WORLD/scancel.log" ] && ok "  ...b is never cancelled for it" || bad "  ...withdrawn fail-stop cancelled: $(cat "$WORLD/scancel.log")"
+hasnt "$(cat "$P/logs/run-watch/t.state")" '^#failstop-pending' "  ...nor kept for later"; has "$(cat "$P/logs/run-watch/t.state")" '^#failstop a 1000$' "  ...the stop itself still holds the group (--release a)"
+
+echo "-- round 3 (D11): a table's fail-stop goes with its rows to a renamed or copied table (G4-2) --"
+reset; approved "#@ allow launch preempt=1 errors=0 fail-stop" "a fx-slurm - $ROW" "b fx-slurm - $ROW" "c fx-slurm - $ROW"
+q "1000|a|RUNNING|None|0|$NOW|$P|" "1001|b|RUNNING|None|0|$NOW|$P|" "1002|c|RUNNING|None|0|$NOW|$P|"
+rw t.tsv --once --act --max-active 4 --adopt a=1000 --adopt b=1001 --adopt c=1002 >/dev/null
+q "1001|b|RUNNING|None|0|$NOW|$P|" "1002|c|PREEMPTED|None|0|$NOW|$P|"; acct "1000|a|FAILED|1:0|$P"; O=$(rw t.tsv --once --act --max-active 4)
+has "$O" 'CANCEL name=b .*job=1001 by=fail-stop' "setup: a FAILED stops the group (b cancelled, c ended in the queue)"
+q; acct "1000|a|FAILED|1:0|$P" "1001|b|CANCELLED by 1|0:0|$P" "1002|c|PREEMPTED|0:0|$P"; O=$(rw t.tsv --once --act --max-active 4)
+has "$O" 'ATTENTION name=c .*reason=preempted why=fail-stop' "  ...c's preemption waits on the stop"
+mv "$P/t.tsv" "$P/u.tsv"; rm -f "$P/logs/run-watch/attention.seen"; O=$(rw u.tsv --once --act --max-active 4)
+has "$O" 'reason=fail-stop-inherited trigger=a:1000 from=logs/run-watch/t.state' "a renamed table takes the stopped group's fail-stop with its rows"
+has "$O" 'ATTENTION name=c .*reason=preempted why=fail-stop' "  ...c stays held by it"; hasnt "$O" 'RESUBMIT' "  ...no resubmit"
+[ "$(nsub)" = 0 ] && ok "  ...0 submits: a rename never resumes a stopped group" || bad "  ...rename resumed the group ($(nsub) submits)"
+grep -q '^#failstop a 1000$' "$P/logs/run-watch/u.state" && ok "  ...u.state records the stop" || bad "  ...u.state stop"
+{ echo '#@ run-watch v1'; echo '#@ allow launch preempt=1 errors=0 fail-stop'; echo "c fx-slurm - $ROW"; } > "$P/v.tsv"; rw v.tsv --approve "c alone" >/dev/null
+O=$(rw v.tsv --once --act --max-active 4); has "$O" 'reason=fail-stop-inherited trigger=a:1000 .*though it is not a row here' "a table holding only c takes the stop too"
+[ "$(nsub)" = 0 ] && ok "  ...no resubmit of c there" || bad "  ...$(nsub)"
+O=$(rw v.tsv --once --act --max-active 4 --release a); has "$O" 'RELEASE table=v.tsv fail-stop=a -- fail-stop cleared' "  ...--release of the trigger (not a row there) resumes that group"
+hasnt "$(cat "$P/logs/run-watch/v.state")" '^#failstop' "  ...v.state no longer stopped"; rm -f "$P/v.tsv"
+O=$(rw u.tsv --once --act --max-active 4 --release a); has "$O" 'NOTE name=a .*fail-stop cleared' "  ...--release a there resumes it"
+l6; mv "$P/t.tsv" "$P/u.tsv"; receipt "$N" 1001 b; O=$(rw u.tsv --once --act --max-active 4)
+has "$O" 'ADOPT name=b .*job=1001 note=receipt' "renamed after the stop: b's unknown submit goes with it, settled from its journal"
+has "$O" 'CANCEL name=b .*job=1001 by=fail-stop fail-stop=a' "  ...and its pending fail-stop cancel too"
+[ "$(cat "$WORLD/scancel.log" 2>/dev/null)" = 1001 ] && ok "  ...one scancel of 1001" || bad "  ...scancel: $(cat "$WORLD/scancel.log" 2>/dev/null)"
+
+echo "-- round 3 (D11): an unknown submit in ANY other state file is sticky, even over a row's own state (G4-3) --"
+utab() { { echo '#@ run-watch v1'; echo "$1"; echo "a fx-slurm - $ROW"; } > "$P/u.tsv"; rw u.tsv --approve "go" >/dev/null; }
+reset; q; utab "#@ allow launch"; rw u.tsv --once >/dev/null; [ "$(sf a 2 u)" = pending ] || bad "G4-3 setup: u pending ($(sf a 2 u))"
+approved "#@ allow launch" "a fx-slurm - $ROW"; touch "$WORLD/sbatch.fail"; rw t.tsv --once --act --max-active 2 >/dev/null; rm -f "$WORLD/sbatch.fail"
+N=$(st a 16); [ "$(st a 2)" = submit-unknown ] && ok "setup: t's launch of a is unknown (attempt $N)" || bad "G4-3 setup: t ($(st a 2))"
+O=$(rw u.tsv --once --act --max-active 2)
+has "$O" "ATTENTION name=a .*reason=submit-unknown attempt=$N from=logs/run-watch/t.state" "a row with its own (pending) state takes the other table's unknown submit"
+hasnt "$O" 'LAUNCH' "  ...never launched past it"; [ "$(nsub):$(sf a 2 u)" = 0:submit-unknown ] && ok "  ...0 sbatch, submit-unknown" || bad "  ...$(nsub):$(sf a 2 u)"
+receipt "$N" 1000 a; q "1000|a|PENDING|Priority|0|N/A|$P|"; O=$(rw u.tsv --once --act --max-active 2)
+has "$O" 'ADOPT name=a .*job=1000 note=receipt' "  ...settled here from that attempt's journal (job 1000)"
+O=$(rw u.tsv --once --act --max-active 2); hasnt "$O" 'reason=submit-unknown attempt=' "  ...once: t.state's stale unknown is not taken again"
+[ "$(sf a 2 u):$(nsub)" = active:0 ] && ok "  ...active, still 0 sbatch" || bad "  ...$(sf a 2 u):$(nsub)"
+reset; q; utab "#@ allow launch"; rw u.tsv --once >/dev/null
+approved "#@ allow launch" "a fx-slurm - $ROW"; touch "$WORLD/sbatch.reject"; rw t.tsv --once --act --max-active 2 >/dev/null; rm -f "$WORLD/sbatch.reject"; N=$(st a 16)
+O=$(rw u.tsv --once --act --max-active 2); has "$O" "NOTE name=a .*attempt=$N queued nothing .*back to pending" "the other table's attempt queued nothing (journal: refused): the row's own status back"
+[ "$(nsub)" = 0 ] && ok "  ...nothing submitted in that round" || bad "  ...$(nsub)"
+O=$(rw u.tsv --once --act --max-active 2); has "$O" 'LAUNCH name=a' "  ...then launched under its own approval"; [ "$(nsub)" = 1 ] && ok "  ...once" || bad "  ...$(nsub)"
+reset; utab "#@ allow preempt=2"; q "1000|a|RUNNING|None|0|$NOW|$P|"; rw u.tsv --once --adopt a=1000 >/dev/null
+approved "#@ allow preempt=2" "a fx-slurm - $ROW"; rw t.tsv --once --adopt a=1000 >/dev/null
+q; acct "1000|a|PREEMPTED|0:0|$P"; echo 2000 > "$WORLD/nextjid"; touch "$WORLD/ssh.drop-after"; rw t.tsv --once --act >/dev/null; rm -f "$WORLD/ssh.drop-after"
+[ "$(st a 2):$(nsub)" = submit-unknown:1 ] && ok "setup: t resubmitted a (job 2000), its ssh dropped: unknown" || bad "G4-3 resubmit setup ($(st a 2):$(nsub))"
+O=$(rw u.tsv --once --act); has "$O" 'ADOPT name=a .*job=2000 note=receipt' "a copy with its own (active) state settles the other table's resubmit from its journal"
+hasnt "$O" 'RESUBMIT' "  ...instead of resubmitting"; [ "$(nsub)" = 1 ] && ok "  ...one sbatch for one preemption" || bad "  ...$(nsub) sbatch"
+for st17 in 17 15; do reset; approved "a fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --adopt a=1000 >/dev/null
+  cut -f1-$st17 "$P/logs/run-watch/t.state" > "$T/old.state"; cp "$T/old.state" "$P/logs/run-watch/t.state"; O=$(rw t.tsv --once)
+  [ "$(st a 2):$(st a 3):$(awk -F'	' '$1 == "a" { print NF ":" $18 }' "$P/logs/run-watch/t.state")" = active:1000:18:fx-slurm ] && hasnt "$O" 'state-lost' \
+    "a $st17-field state file (before the target column) still loads; its own row's target is filled in" || bad "$st17-field state ($(st a 2))"
+done
+
+echo "-- round 3 (D11): state lines carry the target; status and jobs only from the same target (G4-4) --"
+U2=$T/user2; mkdir -p "$U2"; cp -R "$RS_USER_DIR/." "$U2/"; mkdir -p "$U2/targets/fx-y"   # a second cluster, host fy
+sed 's/T_HOST=fx;/T_HOST=fy;/' "$U2/targets/fx-slurm/profile.sh" > "$U2/targets/fx-y/profile.sh"; cp "$U2/targets/fx-slurm/policy.sh" "$U2/targets/fx-y/"
+( export RS_USER_DIR=$U2; . "$RS_HOME/lib/common.sh"; rs_load_target fx-y; d="$P/.fx-y"; mkdir -p "$d"; for f in $(rs_deploy_files); do cp "$f" "$d/"; done
+  rs_deploy_profile "$d/profile.sh"; chmod +x "$d"/*.sh )
+rwy() { ( export RS_USER_DIR=$U2; rw "$@" ); }
+reset; approved "#@ allow preempt=1" "a fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --adopt a=1000 >/dev/null
+[ "$(awk -F'	' '$1 == "a" { print NF ":" $18 }' "$P/logs/run-watch/t.state")" = 18:fx-slurm ] && ok "a state line records its target (18th column)" || bad "state target column"
+utab "#@ allow preempt=1"; sed 's/^a fx-slurm /a fx-y /' "$P/u.tsv" > "$T/u.y"; cp "$T/u.y" "$P/u.tsv"; rwy u.tsv --approve "only resume a on fy if it is preempted" >/dev/null
+q; acct "1000|other-exp|PREEMPTED|0:0|/elsewhere/proj"; echo 5000 > "$WORLD/nextjid"; O=$(rwy u.tsv --once --act)
+has "$O" 'NOTE name=a target=fx-y budgets-from=logs/run-watch/t.state .*target-there=fx-slurm' "another target's state: only its spent budgets go with the run"
+hasnt "$O" 'RESUBMIT' "  ...never a resubmit on another cluster's job id"; [ "$(nsub)" = 0 ] && ok "  ...0 submits" || bad "  ...$(nsub) submits"
+has "$O" 'ATTENTION name=a target=fx-y .*not-submitted why=no-launch-allowed' "  ...a first submit there needs 'launch'"
+reset; approved "#@ allow preempt=1" "a fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --adopt a=1000 >/dev/null
+utab "#@ allow launch preempt=1"; sed 's/^a fx-slurm /a fx-y /' "$P/u.tsv" > "$T/u.y"; cp "$T/u.y" "$P/u.tsv"; rwy u.tsv --approve go >/dev/null
+q; acct; echo 5000 > "$WORLD/nextjid"; O=$(rwy u.tsv --once --act --max-active 2)
+has "$O" 'LAUNCH name=a target=fx-y job=5000' "an approved launch row on another target is launched (no accounting-gap on a job it never had)"
+reset; approved "#@ allow preempt=1" "a fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --adopt a=1000 >/dev/null
+approved "#@ allow preempt=1" "a fx-y - $ROW"; q; acct "1000|other-exp|PREEMPTED|0:0|/elsewhere/proj"; O=$(rwy t.tsv --once --act)
+has "$O" 'NOTE name=a target=fx-y target-changed from=fx-slurm status-there=active job-there=1000' "a row moved to another target in its own table: its old jobs are not followed"
+hasnt "$O" 'RESUBMIT' "  ...no resubmit"; [ "$(nsub):$(st a 2):$(st a 3)" = 0:pending:- ] && ok "  ...pending, no jobs, 0 submits" || bad "  ...$(nsub):$(st a 2):$(st a 3)"
+reset; approved "#@ allow preempt=1" "a fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --adopt a=1000 >/dev/null
+q; acct "1000|other-exp|PREEMPTED|0:0|$P"; O=$(rw t.tsv --once --act)
+has "$O" 'ATTENTION name=a .*job=1000 reason=job-identity-mismatch name=other-exp' "a terminal sacct row naming another job never settles the row"
+[ "$(nsub)" = 0 ] && ok "  ...0 submits" || bad "  ...$(nsub) submits"
+reset; approved "a fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --adopt a=1000 >/dev/null
+cut -f1-17 "$P/logs/run-watch/t.state" > "$T/old.state"; mv "$T/old.state" "$P/logs/run-watch/t.state"; rm -f "$P/logs/run-watch/t.state.prev"; mv "$P/t.tsv" "$P/u.tsv"
+O=$(rw u.tsv --once); has "$O" 'NOTE name=a .*budgets-from=logs/run-watch/t.state .*target-there=-' "a line from before the target column: only its budgets go to another table"
+has "$O" 'ADOPT name=a .*job=1000 state=RUNNING' "  ...its live job is adopted again by name and WorkDir"
+
+echo "-- round 3 (D11): numbers are base 10 (G4-6) --"
+reset; approved "a fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$NOW|$P|"; O=$(rw t.tsv --every 0999 --for 1 --adopt a=01000); RC=$?
+has "$O" 'START .* every=999 for=1 ' "--every 0999 is 999"; hasnt "$O" 'value too great' "  ...never read as octal (no crash after the first round)"
+[ "$RC" = 3 ] && ok "  ...the lease ends: exit 3" || bad "  ...exit $RC"; has "$O" 'ADOPT name=a .*job=1000 note=manual' "--adopt a=01000 is job 1000"
+O=$(rw t.tsv --once --every 0060); has "$O" 'START .* every=60 ' "--every 0060 is 60"
+for v in 0059 1234567890 0x10; do O=$(rw t.tsv --once --every $v); [ "$?" = 2 ] && ok "--every $v refused" || bad "--every $v"; done
+reset; approved "#@ allow preempt=08 errors=010" "a fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$NOW|$P|"; O=$(rw t.tsv --once --adopt a=1000); RC=$?
+hasnt "$O" 'value too great' "'#@ allow preempt=08' is 8 (the requeue-storm threshold is arithmetic)"; [ "$RC" = 3 ] && ok "  ...exit 3" || bad "  ...exit $RC"
+q "1000|a|RUNNING|None|8|$NOW|$P|"; O=$(rw t.tsv --once); has "$O" 'requeue-storm restarts=8' "  ...8 restarts reach it"
+
+echo "-- round 3 (H-p2): '#@ ok' lines and headers this copy cannot read: refused, saying a newer run-watch wrote them --"
+reset; q; table "#@ allow launch" '#@ ok 2026-11-05 sum=1 conf=0123456789ab v=4 "go"' "a fx-slurm - $ROW"; O=$(rw t.tsv --once); RC=$?
+[ "$RC" = 2 ] && has "$O" "carrying v= — written by a newer run-watch" "an '#@ ok' key this copy does not know: exit 2, a newer run-watch named" || bad "unknown ok key (rc=$RC)"
+has "$O" 'rsk update, then rsk setup' "  ...and how to update"; O=$(rw t.tsv --approve "again"); [ "$?" = 2 ] && ok "  ...--approve never writes over it" || bad "  ...--approve over it"
+table '#@ ok sum=1 "x"' "a fx-slurm - $ROW"; O=$(rw t.tsv --once); [ "$?" = 2 ] && has "$O" 'malformed .*delete that line, then --approve' "a hand-edited '#@ ok' line: refused, says how to recover" || bad "malformed ok"
+{ echo '#@ run-watch v2'; echo "a fx-slurm - -"; } > "$P/t.tsv"; O=$(rw t.tsv --once); [ "$?" = 2 ] && has "$O" "written for a newer run-watch (this copy reads v1)" "a '#@ run-watch v2' table: a newer run-watch named" || bad "v2 header"
+[ "$(nsub)" = 0 ] && ok "  ...nothing submitted" || bad "  ...$(nsub)"
+echo "-- round 3 (D2): the remote bodies (run on the login node / the box) parse rows by expansion, never a here-string --"
+RB=$(awk "/^[A-Z_]+='rw_main\\(\\) \\{/,/^(rw_main'|}')\$/" "$RS_HOME/bin/run-watch")
+[ "$(printf '%s\n' "$RB" | grep -c "^[A-Z_]*='rw_main() {")" -ge 4 ] && ok "the four remote bodies found (OBS_SLURM OBS_WS SUBMIT_SH CANCEL_SH)" || bad "remote bodies found"
+hasnt "$RB" '<<' "...none has a here-string or heredoc (bash <= 5.0 writes them to \$TMPDIR: a full one read rows as empty)"

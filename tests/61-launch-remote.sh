@@ -5,7 +5,8 @@
 # gate fail-closed paths, the duplicate guard by live triple, GPU ids (+ UUIDs in the receipt), NICE, group/wrapper TERM -> rc=143 term=1,
 # no payload without a confirmed gate, the conf cannot steer launch.sh, RUN's plain conf/hook variables (named ones only,
 # mode 600, deleted once read; the harness's CUDA env wins), nested launches, status.sh / rsk reading the run, api=3 (the
-# plan block, --rs-expect, the P2 launch.sh given its flags) and busy GPUs (--query-compute-apps, --gpu-busy-ok).
+# plan block, --rs-expect, the P2 launch.sh given its flags), busy GPUs (--query-compute-apps, --gpu-busy-ok, the occupants
+# bound), the plan's read-only env check (D10) and a full $TMPDIR under bash 4.2 heredocs (fulltmp).
 # Run by selftest.sh with RS_HOME set:  bash tests/61-launch-remote.sh
 set -u
 . "$RS_HOME/tests/lib.sh"
@@ -17,7 +18,8 @@ printf 'conda() { case "$1" in activate) [ "$2" = broken ] && export CONDA_DEFAU
 cat > "$T/bin/nvidia-smi" <<EOS
 #!/usr/bin/env bash
 [ ! -f "$T/nvsmi.fail" ] || { echo "NVIDIA-SMI has failed" >&2; exit 9; }
-case "\$*" in *index,uuid,memory.used*) printf '0, GPU-aaaa0000-0000, 8000\n1, GPU-aaaa0000-0001, 2\n2, GPU-aaaa0000-0002, 5\n3, GPU-aaaa0000-0003, 9000\n' ;;
+case "\$*" in *index,uuid,memory.used*) [ ! -f "$T/gpus" ] || { cat "$T/gpus"; exit 0; }   # another table: \$T/gpus
+    printf '0, GPU-aaaa0000-0000, 8000\n1, GPU-aaaa0000-0001, 2\n2, GPU-aaaa0000-0002, 5\n3, GPU-aaaa0000-0003, 9000\n' ;;
   "--query-compute-apps=gpu_uuid,pid --format=csv,noheader") [ ! -f "$T/apps.fail" ] || exit 9; cat "$T/apps" 2>/dev/null; exit 0 ;;   # the busy list: \$T/apps
   *) echo "nvidia-smi stub: unexpected \$*" >&2; exit 2 ;; esac
 EOS
@@ -208,7 +210,7 @@ printf 'WS_REMOTE_DIR=projects/pv\nENV_KIND=none\nENV_HOOK=hook.sh\n' > "$V/.ws.
 O=$(L pv -N pv2 -d 2 -- "$RV"); E5=$V/$(kv log "$(latt "$V")/receipt"); waitfor "$E5.rc"
 has "$(cat "$E5")" '^cvd=2 order=PCI_BUS_ID unbuf=1 outer=2 ' "a plain CUDA_VISIBLE_DEVICES in the hook: the harness's ids still win"
 
-echo "-- api=3: plan mode (every check but the env gate, nothing starts or is created), --rs-expect, busy GPUs --"
+echo "-- api=3: plan mode (every check, the env gate read-only; nothing starts or is created), --rs-expect, busy GPUs --"
 blk() { printf '%s\n' "$1" | sed -n '/^@@plan v1$/,/^@@end$/p'; }   # the plan block
 bnd() { printf '%s\n' "$1" | sed -n '/^kind=/,/^env_name=/p'; }   # its bound lines, which bound_hash covers
 bh() { printf '%s\n' "$1" | sed -n 's/^bound_hash=//p'; }
@@ -216,7 +218,7 @@ nolog() { ! ls "$N"/logs/"$1"-*.log >/dev/null 2>&1; }
 rm -f "$T/apps" "$T/apps.fail"
 O=$(L n --rs-attempt pl1 --rs-mode plan -N pl1 -n 2 -x 1 --nice 3 -- "touch $T/plan-ran"); RC=$?; A=$N/.rs/attempts/pl1; B=$(blk "$O")
 [ "$RC" = 0 ] && ok "plan mode exits 0" || { bad "plan mode exits 0 (rc=$RC)"; printf '%s\n' "$O" | head -8 | sed 's/^/    | /'; }
-[ "$(printf '%s\n' "$B" | sed 's/=.*//' | tr '\n' ' ')" = "@@plan v1 api kind target name gpus_req exclude nice busy_ok payload env_kind env_hook venv_dir uv_sync_args env_name info_gpus info_uuids info_busy warnings bound_hash @@end " ] \
+[ "$(printf '%s\n' "$B" | sed 's/=.*//' | tr '\n' ' ')" = "@@plan v1 api kind target name gpus_req exclude nice busy_ok payload env_kind env_hook venv_dir uv_sync_args env_name info_gpus info_uuids info_busy warnings warnings_avail warnings_id bound_hash @@end " ] \
   && ok "ONE block, exactly these keys in this order" || { bad "plan block keys"; printf '%s\n' "$B" | sed 's/^/    | /'; }
 [ "$(printf '%s\n' "$O" | grep -c '^@@plan v1$')" = 1 ] && ok "...printed once" || bad "...printed once"
 has "$B" "^api=$(sed -n 's/^api=//p' "$N/.ws/API")\$" "api= is the deployed .ws/API's"; has "$B" '^kind=nohup$' "kind=nohup"; has "$B" '^target=ws-box$' "target="
@@ -225,6 +227,8 @@ has "$B" "^payload=touch\\\\ $T/plan-ran\$" "payload = RUN, %q-quoted"; has "$B"
 has "$B" '^busy_ok=$' "busy_ok= (no --gpu-busy-ok: never a busy GPU)"; has "$B" "^env_hook=''\$" "env_hook='' (no ENV_HOOK)"; has "$B" "^venv_dir=''\$" "venv_dir"; has "$B" "^uv_sync_args=''\$" "uv_sync_args"
 has "$B" '^info_gpus=2,0$' "info_gpus = the pick (envelope)"; has "$B" '^info_uuids=GPU-aaaa0000-0002,GPU-aaaa0000-0000$' "info_uuids"
 has "$B" '^info_busy=$' "info_busy= (none busy)"; has "$B" '^warnings=0$' "warnings=0"
+has "$B" '^warnings_avail=0$' "warnings_avail=0 (no availability -y gate on a box)"; has "$B" "^warnings_id=$(printf '' | sha256sum | cut -d' ' -f1)\$" "warnings_id = the digest of nothing"
+[ "$(grep -cx '# rs-api=3' "$N/.ws/launch.sh")" = 1 ] && ok "C: the deployed launch.sh carries the '# rs-api=3' line" || bad "launch.sh: the '# rs-api=3' line"
 H1=$(bh "$O"); [ "$(bnd "$O" | sha256sum | cut -d' ' -f1)" = "$H1" ] && ok "bound_hash = sha256 of the lines kind= … env_name= (each + newline)" || bad "bound_hash = sha256 of the bound lines"
 has "$(cat "$A/result")" '^stage=plan rc=0 verdict=planned ' "journal: stage=plan rc=0 verdict=planned"
 [ ! -e "$A/receipt" ] && [ ! -e "$A/gate" ] && [ ! -e "$A/run" ] && [ ! -e "$A/vars" ] && nolog pl1 && ok "...no receipt, gate, wrapper script or log" || bad "a plan creates nothing"
@@ -245,21 +249,41 @@ builtin() { command printf "conda\0forged\0"; }
 sha256sum() { echo 0000; }
 echo conf-says-hi')
 O=$(L pc --rs-mode plan -N c1 -d 0 -- c); RC=$?
-[ "$RC" = 0 ] && has "$(blk "$O")" '^env_kind=conda$' "conda conf: env_kind=conda (no conda here: the plan skips the env gate)" || bad "conda plan (rc=$RC)"
+[ "$RC" = 0 ] && has "$(blk "$O")" '^env_kind=conda$' "conda conf: env_kind=conda (the env activates in a throwaway shell: the plan goes on)" || bad "conda plan (rc=$RC)"
 has "$(blk "$O")" '^env_name=tagged$' "...env_name = WSBOX_ENV_NAME over ENV_NAME, as env.sh; a conf builtin() cannot forge it"
 [ "$(bnd "$O" | sha256sum | cut -d' ' -f1)" = "$(bh "$O")" ] && ok "...and a conf sha256sum() never computes the hash" || bad "conf sha256sum() reached the hash"
 hasnt "$(blk "$O")" 'conf-says-hi' "...the conf's own output stays out of the block"
 PG=$(mkp pg 'WS_REMOTE_DIR=projects/pg
 ENV_KIND=uv')
-( cd "$PG" && find . -path ./.rs -prune -o -print | sort ) > "$T/tree.before"
+tree() { ( cd "$1" && find . -path ./.rs -prune -o -print | sort ); }   # the project, .rs/ left out
+tree "$PG" > "$T/tree.before"
 O=$(L pg --rs-attempt pg1 --rs-mode plan -N g -d 0 -- c); RC=$?
-[ "$RC" = 0 ] && has "$O" 'the env gate runs at the launch' "L4: plan mode skips the env gate (env.sh would create the project's caches): exit 0" || bad "plan skips the env gate (rc=$RC)"
-has "$(blk "$O")" '^env_kind=uv$' "...a block (env_kind=uv)"; has "$(cat "$PG/.rs/attempts/pg1/result")" '^stage=plan rc=0 verdict=planned ' "...journal: planned"
-( cd "$PG" && find . -path ./.rs -prune -o -print | sort ) > "$T/tree.after"
-cmp -s "$T/tree.before" "$T/tree.after" && ok "...and the project tree is unchanged outside .rs/ (no logs/, no cache dirs)" || { bad "a plan created project dirs"; comm -13 "$T/tree.before" "$T/tree.after" | head -5 | sed 's/^/    | /'; }
-O=$(L pg --rs-attempt pg2 --rs-expect "$(bh "$O")" -N g -d 0 -- c); RC=$?
-[ "$RC" = 1 ] && has "$O" 'uv venv not active' "...the gate runs at the launch: no venv -> exit 1" || bad "the env gate at the launch (rc=$RC)"
-has "$(cat "$PG/.rs/attempts/pg2/result")" 'rc=1 verdict=failed' "...journal: failed, nothing started"
+[ "$RC" = 1 ] && has "$O" '^ERROR: uv venv missing: no .*/projects/pg/\.venv/bin/python' "D10 (L4): a plan checks the env gate read-only: no venv -> exit 1, before any card" || bad "plan env check (rc=$RC)"
+hasnt "$O" '^@@plan' "...no block (nothing to approve)"; has "$(cat "$PG/.rs/attempts/pg1/result")" '^stage=plan rc=1 verdict=failed ' "...journal: stage=plan rc=1"
+tree "$PG" > "$T/tree.after"; cmp -s "$T/tree.before" "$T/tree.after" && ok "...and the project tree is unchanged outside .rs/ (no logs/, no cache dirs)" || { bad "a plan created project dirs"; comm -13 "$T/tree.before" "$T/tree.after" | head -5 | sed 's/^/    | /'; }
+mkdir -p "$PG/.venv/bin"; printf '#!/bin/sh\n' > "$PG/.venv/bin/python"; chmod +x "$PG/.venv/bin/python"; tree "$PG" > "$T/tree.before"
+O=$(L pg --rs-attempt pg2 --rs-mode plan -N g -d 0 -- c); RC=$?
+[ "$RC" = 0 ] && has "$O" 'the env gate was checked read-only' "...with the venv: the plan goes on (exit 0)" || bad "plan with the venv (rc=$RC)"
+has "$(blk "$O")" '^env_kind=uv$' "...a block (env_kind=uv)"; has "$(cat "$PG/.rs/attempts/pg2/result")" '^stage=plan rc=0 verdict=planned ' "...journal: planned"
+tree "$PG" > "$T/tree.after"; cmp -s "$T/tree.before" "$T/tree.after" && ok "...a passing plan creates nothing outside .rs/ either" || { bad "a passing plan created project dirs"; comm -13 "$T/tree.before" "$T/tree.after" | head -5 | sed 's/^/    | /'; }
+chmod -x "$PG/.venv/bin/python"; O=$(L pg --rs-mode plan -N g -d 0 -- c); [ "$?" = 1 ] && ok "...a venv python that is not executable: exit 1" || bad "non-executable venv python"
+chmod +x "$PG/.venv/bin/python"
+printf 'WS_REMOTE_DIR=projects/pg\nENV_KIND=uv\nVENV_DIR=$HOME/venvs/pg\n' > "$PG/.ws.conf"; O=$(L pg --rs-mode plan -N g -d 0 -- c); RC=$?
+[ "$RC" = 1 ] && has "$O" "no $H/venvs/pg/bin/python" "...VENV_DIR resolved as env.sh does (\$HOME expanded): missing -> exit 1" || bad "VENV_DIR env check (rc=$RC)"
+mkdir -p "$H/venvs/pg/bin"; cp "$PG/.venv/bin/python" "$H/venvs/pg/bin/"; O=$(L pg --rs-mode plan -N g -d 0 -- c); [ "$?" = 0 ] && ok "...present: exit 0" || bad "VENV_DIR present"
+printf 'WS_REMOTE_DIR=projects/pg\nENV_KIND=uv\nENV_HOOK=nohook.sh\n' > "$PG/.ws.conf"; O=$(L pg --rs-mode plan -N g -d 0 -- c); RC=$?
+[ "$RC" = 1 ] && has "$O" "ENV_HOOK 'nohook.sh' not found" "...an ENV_HOOK file that is missing: exit 1" || bad "missing ENV_HOOK (rc=$RC)"
+printf 'WS_REMOTE_DIR=projects/pg\nENV_KIND=conda\nENV_NAME=broken\n' > "$PG/.ws.conf"; tree "$PG" > "$T/tree.before"
+O=$(L pg --rs-mode plan -N g -d 0 -- c); RC=$?
+[ "$RC" = 1 ] && has "$O" "conda env 'broken' does not activate here" "...a conda env that does not activate: exit 1" || bad "conda env check (rc=$RC)"
+tree "$PG" > "$T/tree.after"; cmp -s "$T/tree.before" "$T/tree.after" && ok "...creating nothing" || bad "a conda env check created project dirs"
+printf 'WS_REMOTE_DIR=projects/pg\nENV_KIND=uv\n' > "$PG/.ws.conf"; O=$(L pg --rs-mode plan -N g -d 0 -- c)
+O=$(L pg --rs-attempt pg3 --rs-expect "$(bh "$O")" -N g -d 0 -- c); RC=$?
+[ "$RC" = 0 ] && has "$O" 'started PID' "...the approved launch then passes the real gate" || bad "launch after a passing env check (rc=$RC)"
+O=$(L pg --rs-mode plan -N gx -d 0 -- c); mv "$PG/.venv" "$PG/.venv-off"
+O=$(L pg --rs-attempt pg4 --rs-expect "$(bh "$O")" -N gx -d 0 -- c); RC=$?; mv "$PG/.venv-off" "$PG/.venv"
+[ "$RC" = 1 ] && has "$O" 'uv venv not active' "...and the real gate still runs at the launch (the venv gone since the plan: exit 1)" || bad "the env gate at the launch (rc=$RC)"
+has "$(cat "$PG/.rs/attempts/pg4/result")" 'rc=1 verdict=failed' "...journal: failed, nothing started"
 O=$(L n --rs-mode plan -N rcpt -d 0 -- c); RC=$?   # rcpt's first run was TERMed: the second (A2) is gone too; a live one:
 O=$(L n --rs-attempt lv1 -N live1 -d 3 -- sleep 30); O=$(L n --rs-mode plan -N live1 -d 0 -- c); RC=$?
 [ "$RC" = 6 ] && hasnt "$O" '^@@plan' "plan mode keeps the duplicate guard: a live same-name run -> exit 6, no block" || bad "plan + live duplicate (rc=$RC)"
@@ -316,23 +340,65 @@ O=$(L n --rs-mode plan -N b10 -d 0 --gpu-busy-ok -- c); RC=$?
 [ "$RC" = 0 ] && has "$(blk "$O")" '^info_busy=unknown$' "...--gpu-busy-ok: goes on (plan: info_busy=unknown, the WARNING counted)" || bad "unknown + ok (rc=$RC)"
 has "$(blk "$O")" '^warnings=1$' "...warnings=1"; has "$(blk "$O")" '^busy_ok=unknown$' "...busy_ok=unknown (bound: a known state later is another plan)"; rm -f "$T/apps" "$T/apps.fail"
 
-echo "-- H1: the accepted busy set is bound (busy_ok); a landing on another busy GPU is exit 6 --"
+echo "-- H1: who the landing shares with is bound (busy_ok=<id>:<uuid>:<user>); another busy GPU, owner or GPU behind the id is exit 6 --"
+wid() { printf '%s\n' "$1" | sed -n 's/^warnings_id=//p'; }
 printf 'GPU-aaaa0000-0001, %s\n' "$$" > "$T/apps"
-O=$(L n --rs-mode plan -N h1 -d 1,3 --gpu-busy-ok -- "touch $T/h1-ran"); HB=$(bh "$O"); has "$(blk "$O")" '^busy_ok=1$' "plan -d 1,3 --gpu-busy-ok, GPU 1 busy: busy_ok=1 (bound)"
-O=$(L n --rs-mode plan -N h1 -d 3,1 --gpu-busy-ok -- c); has "$(blk "$O")" '^busy_ok=1$' "...sorted ids, whatever the -d order"
+O=$(L n --rs-mode plan -N h1 -d 1,3 --gpu-busy-ok -- "touch $T/h1-ran"); HB=$(bh "$O"); WB=$(wid "$O")
+has "$(blk "$O")" "^busy_ok=1:GPU-aaaa0000-0001:$U\$" "plan -d 1,3 --gpu-busy-ok, GPU 1 busy: busy_ok=1:<uuid>:<user> (bound)"
+O=$(L n --rs-mode plan -N h1 -d 3,1 --gpu-busy-ok -- c); has "$(blk "$O")" "^busy_ok=1:GPU-aaaa0000-0001:$U\$" "...whatever the -d order"
+O=$(L n --rs-mode plan -N h1 -d 3,01 --gpu-busy-ok -- c); has "$(blk "$O")" "^busy_ok=1:GPU-aaaa0000-0001:$U\$" "...-d 01 is GPU 1 (base 10)"
+printf 'GPU-aaaa0000-0001, %s\nGPU-aaaa0000-0001, %s\n' "$$" "$DP" > "$T/apps"
+O=$(L n --rs-mode plan -N h1 -d 1,3 --gpu-busy-ok -- c); has "$(blk "$O")" "^busy_ok=1:GPU-aaaa0000-0001:?,1:GPU-aaaa0000-0001:$U\$" "two owners on one GPU: one entry each, sorted (a pid ps cannot see: ?)"
+printf 'GPU-aaaa0000-0001, %s\n' "$DP" > "$T/apps"; : > "$N/1:GPU-aaaa0000-0001:x"   # an entry ending in '?' is no glob over the project's files
+O=$(L n --rs-mode plan -N h1 -d 1,3 --gpu-busy-ok -- c); has "$(blk "$O")" "^busy_ok=1:GPU-aaaa0000-0001:?\$" "...a '?' owner stays '?' next to a file it would glob to"; rm -f "$N/1:GPU-aaaa0000-0001:x"
 printf 'GPU-aaaa0000-0001, %s\nGPU-aaaa0000-0003, %s\n' "$$" "$$" > "$T/apps"
-O=$(L n --rs-attempt h1x --rs-expect "$HB" --rs-warnings 1 -N h1 -d 1,3 --gpu-busy-ok -- "touch $T/h1-ran"); RC=$?
-[ "$RC" = 6 ] && has "$(blk "$O")" '^busy_ok=1,3$' "GPU 3 busy too since the approval: busy_ok=1,3 -> exit 6" || bad "a newly busy GPU in the landing (rc=$RC)"
+O=$(L n --rs-attempt h1x --rs-expect "$HB" --rs-warnings "$WB" -N h1 -d 1,3 --gpu-busy-ok -- "touch $T/h1-ran"); RC=$?
+[ "$RC" = 6 ] && has "$(blk "$O")" "^busy_ok=1:GPU-aaaa0000-0001:$U,3:GPU-aaaa0000-0003:$U\$" "GPU 3 busy too since the approval -> exit 6" || bad "a newly busy GPU in the landing (rc=$RC)"
+has "$O" '^changed: busy_ok warnings$' "H1-msg: ...changed: busy_ok warnings (read from the approved plan's journal)"
 has "$(cat "$N/.rs/attempts/h1x/result")" 'rc=6 verdict=refused' "...refused"; nolog h1 && ok "...nothing launched" || bad "...nothing launched (h1)"
+U1=$(ps -o user= -p 1 2>/dev/null | tr -d ' ')
+if [ -n "$U1" ] && [ "$U1" != "$U" ]; then   # H1-owner: the same GPU, another user's process (pid 1) since the approval
+  printf 'GPU-aaaa0000-0001, 1\n' > "$T/apps"
+  O=$(L n --rs-attempt h1o --rs-expect "$HB" --rs-warnings "$WB" -N h1 -d 1,3 --gpu-busy-ok -- "touch $T/h1-ran"); RC=$?
+  [ "$RC" = 6 ] && has "$(blk "$O")" "^busy_ok=1:GPU-aaaa0000-0001:$U1\$" "H1-owner: GPU 1 now held by $U1, not $U: exit 6" || bad "owner swap on the approved GPU (rc=$RC)"
+  has "$O" '^changed: busy_ok' "...changed: busy_ok"; nolog h1 && ok "...nothing launched (owner swap)" || bad "...launched onto another user's GPU"
+else echo "  SKIP: pid 1 runs as $U here: the owner-swap check needs another user's process"; fi
+printf '0, GPU-aaaa0000-0000, 8000\n1, GPU-aaaa0000-0009, 2\n2, GPU-aaaa0000-0002, 5\n3, GPU-aaaa0000-0003, 9000\n' > "$T/gpus"; printf 'GPU-aaaa0000-0009, %s\n' "$$" > "$T/apps"
+O=$(L n --rs-attempt h1u --rs-expect "$HB" --rs-warnings "$WB" -N h1 -d 1,3 --gpu-busy-ok -- "touch $T/h1-ran"); RC=$?; rm -f "$T/gpus"
+[ "$RC" = 6 ] && has "$(blk "$O")" "^busy_ok=1:GPU-aaaa0000-0009:$U\$" "H1-uuid: id 1 is another physical GPU since the approval: exit 6" || bad "GPU re-index under the approved id (rc=$RC)"
 printf 'GPU-aaaa0000-0001, %s\n' "$$" > "$T/apps"
 O=$(L n --rs-attempt h1w --rs-expect "$HB" -N h1 -d 1,3 --gpu-busy-ok -- "touch $T/h1-ran"); RC=$?
-[ "$RC" = 6 ] && has "$O" 'differs from the approved plan: 1 warning(s) now, 0 on the approved card' "M4: the same landing, the card's count not given (0): its WARNING is new -> exit 6" || bad "launch.sh warning recount (rc=$RC)"
-O=$(L n --rs-attempt h1y --rs-expect "$HB" --rs-warnings 1 -N h1 -d 1,3 --gpu-busy-ok -- "touch $T/h1-ran"); RC=$?
-[ "$RC" = 0 ] && has "$O" "warnings 1 = the approved card's" "the approved busy set and count, unchanged: launches" || bad "approved busy launch (rc=$RC)"
+[ "$RC" = 6 ] && has "$O" "differs from the approved plan: its 1 warning(s) are not the approved card's" "the same landing, no --rs-warnings (= no warning): its WARNING is new -> exit 6" || bad "launch.sh warnings_id (rc=$RC)"
+has "$O" '^changed: warnings$' "...changed: warnings"
+O=$(L n --rs-attempt h1y --rs-expect "$HB" --rs-warnings "$WB" -N h1 -d 1,3 --gpu-busy-ok -- "touch $T/h1-ran"); RC=$?
+[ "$RC" = 0 ] && has "$O" "its 1 warning(s) = the approved card's (warnings_id)" "the approved occupants and warnings, unchanged: launches" || bad "approved busy launch (rc=$RC)"
 waitfor "$T/h1-ran" && ok "...the payload ran" || bad "...the payload ran (h1)"
-for a in '--rs-warnings 1' '--rs-warnings x' "--rs-expect $HB --rs-warnings"; do
-  O=$(L n $a -N bad2 -d 0 -- c); RC=$?; [ "$RC" = 2 ] && ok "'$a' -> exit 2" || bad "'$a' -> exit 2 (rc=$RC)"; done
+for a in '--rs-warnings 1' '--rs-warnings x' "--rs-expect $HB --rs-warnings" "--rs-expect $HB --rs-warnings 1" "--rs-expect $HB --rs-warnings $(printf %s "$WB" | tr a-f A-F)"; do
+  O=$(L n $a -N bad2 -d 0 -- c); RC=$?; [ "$RC" = 2 ] && ok "'${a:0:40}' -> exit 2" || bad "'$a' -> exit 2 (rc=$RC)"; done
+for a in '-N --rs-chain' '-d --rs-mode' '--log --rs-x' '--nice --rs-expect'; do   # an --rs- word as an option's value
+  O=$(L n $a -d 0 -- c); RC=$?; [ "$RC" = 2 ] && ok "--rs- value: '$a' -> exit 2" || bad "--rs- value: '$a' -> exit 2 (rc=$RC)"; done
 rm -f "$T/apps"
+O=$(L n --rs-mode plan -N ch1 -n 2 -- c); HC=$(bh "$O")
+O=$(L n --rs-expect "$HC" -N ch1 -n 3 --nice 2 -- c); RC=$?
+[ "$RC" = 6 ] && has "$O" '^changed: gpus_req nice$' "H1-msg: another -n and --nice than the plan's: changed: gpus_req nice" || bad "changed: line (rc=$RC)"
+O=$(L n --rs-expect "$(printf %s "$HC" | tr 0-9a-f 1-9a-f0)" -N ch1 -n 2 -- c); RC=$?
+[ "$RC" = 6 ] && hasnt "$O" '^changed:' "...no plan with that hash in the journal: no changed: line (rsk compares its stored card)" || bad "unknown expect (rc=$RC)"
+
+echo "-- D: busy GPUs read without a temp file: a full \$TMPDIR under bash 4.2 heredocs never reads as 'none busy' --"
+hasnt "$(sed -n '/^BUSY=""; BROWS/,/^else BUSY=unknown/p' "$RS_HOME/remote/launch.sh")" '<<' "the busy parse has no heredoc / here-string"
+hasnt "$(grep -v '^ *#' "$RS_HOME/remote/launch.sh")" '<<' "launch.sh has no heredoc / here-string at all (the wrapper is a literal)"
+if fulltmp_ok; then
+  printf 'GPU-aaaa0000-0000, %s\nGPU-aaaa0000-0003, %s\n' "$$" "$$" > "$T/apps"
+  O=$(cd "$H/projects/n" && fulltmp env HOME="$H" PATH="$T/bin:$PATH" TARGET=ws-box bash .ws/launch.sh --rs-mode plan -N ft -d 0 -- c 2>&1); RC=$?
+  [ "$RC" = 6 ] && has "$O" '^ERROR: -d GPU(s) 0 already run a compute process' "TMPDIR full, BASH_COMPAT=42: -d onto busy GPU 0 is still exit 6" || bad "full TMPDIR: -d busy (rc=$RC)"
+  O=$(cd "$H/projects/n" && fulltmp env HOME="$H" PATH="$T/bin:$PATH" TARGET=ws-box bash .ws/launch.sh --rs-mode plan -N ft -n 4 -- c 2>&1); RC=$?
+  [ "$RC" = 1 ] && has "$O" 'only 2 GPU id(s) free' "...and -n 4 with 2 busy: exit 1, only 2 free" || bad "full TMPDIR: -n 4 (rc=$RC)"
+  rm -f "$T/apps"   # the wrapper is written without a heredoc too: a launch on a full TMPDIR starts (2fd4991: cannot write …/run)
+  O=$(cd "$H/projects/n" && fulltmp env HOME="$H" PATH="$T/bin:$PATH" TARGET=ws-box bash .ws/launch.sh -N ftl -d 2 -- sleep 30 2>&1); RC=$?; A=$(latt "$N")
+  [ "$RC" = 0 ] && has "$O" '^\[ws-box\] started PID [0-9]* on GPU(s) 2 ' "TMPDIR full, BASH_COMPAT=42: a launch still writes its wrapper and starts" || { bad "full TMPDIR: launch (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
+  [ -n "$A" ] && head -n 1 "$A/run" 2>/dev/null | grep -q '^_rw_a=' && tail -n 1 "$A/run" | grep -qx '_rw_fin "$_rw_rc" ""' && ok "...the wrapper file: its variables, then the whole literal" || bad "...the wrapper file"
+  P=$(kv pid "$A/receipt"); [ -n "$P" ] && kill -TERM -- "-$P" 2>/dev/null; waitfor "$N/$(kv log "$A/receipt").rc" && has "$(cat "$N/$(kv log "$A/receipt").rc")" '^rc=143 term=1 at=[0-9]*$' "...and its TERM path writes <log>.rc as before" || bad "...<log>.rc after TERM"
+else echo "  SKIP: no user namespace here (unshare -rm) or heredocs do not fail on a full TMPDIR: the full-TMPDIR check runs on Linux"; fi
 
 echo "-- an OLD launch.sh (P2) given the api=3 flags exits 2 and starts nothing --"
 if OLDL=$(git -C "$RS_HOME" show 8560838:remote/launch.sh 2>/dev/null) && [ -n "$OLDL" ]; then

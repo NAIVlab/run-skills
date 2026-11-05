@@ -46,6 +46,8 @@ API (every mutator takes the lock itself; hold `with led.locked():` around a che
   led.create_plan(record) -> id               O_EXCL; id 'p-<UTC stamp>-<hex>' unless given
   led.read_plan(id) -> Loaded                 led.plans() -> [record, ...] oldest first
   led.claim_plan(id, **info) -> dict          O_EXCL plans/<id>.used; RskError(CONFLICT) when already used
+  led.release_plan(id, **info) -> bool        the claim moved aside (plans/<id>.used.released-<stamp>): the remote
+                                              proved nothing was submitted, so the same plan may be submitted again
   led.plan_claim(id) -> dict | None           led.latest_plan(target, name) -> record | None
   led.audit(event, **fields)                  led.read_audit() -> (records, bad_line_count)
   led.lease() -> Loaded                       lease_state(lease) -> 'none'|'live'|'dead'|'expired'|'foreign'
@@ -99,7 +101,7 @@ from remote_run.errors import CONFLICT, USAGE, RskError
 VERSION = 1
 SUBMIT = ("submitted", "unknown", "not_submitted", "adopted")
 TERMINAL = {"COMPLETED", "CANCELLED", "FAILED", "TIMEOUT", "PREEMPTED", "NODE_FAIL", "BOOT_FAIL", "DEADLINE",
-            "OUT_OF_MEMORY", "REVOKED", "ENDED", "NOT_SUBMITTED"}
+            "OUT_OF_MEMORY", "REVOKED", "ENDED", "NOT_SUBMITTED", "REBOOT"}   # REBOOT: nohup, the box's boot_id changed
 NONCE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")      # submit.sh / launch.sh accept exactly this
 _ATTEMPT = re.compile(r"--(a[0-9]{2,})$")
 
@@ -604,6 +606,22 @@ class Ledger:
             self.audit("plan_used", **rec)
         return rec
 
+    def release_plan(self, pid: str, **info: Any) -> bool:
+        """Undo claim_plan(PID) — only when the target proved nothing of it was submitted (verdict refused/failed
+        before sbatch / setsid, no receipt): the claim is moved aside (kept for the record), audited, and the plan
+        may be submitted again (rsk launch --plan PID; --rs-expect still guards drift). False: no claim."""
+        if not NONCE_RE.fullmatch(pid or ""):
+            raise RskError(f"plan id {pid!r} must match {NONCE_RE.pattern}", USAGE)
+        with self.locked():
+            path = self.dir / "plans" / f"{pid}.used"
+            claim = self.plan_claim(pid)
+            if claim is None:
+                return False
+            os.replace(path, path.with_name(f"{pid}.used.released-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}"))
+            _fsync_dir(path.parent)
+            self.audit("plan_released", plan=pid, claim=claim, **info)
+        return True
+
     def plan_claim(self, pid: str) -> dict | None:
         data, err = _parse(self.dir / "plans" / f"{pid}.used")
         if err == "missing":
@@ -716,7 +734,7 @@ class Ledger:
 
 
 BOUND_KEYS = frozenset("partition gres cpus mem time account name extra payload env_kind env_name wandb_mode chain "
-                       "gpus_req exclude nice busy_ok env_hook venv_dir uv_sync_args".split())
+                       "gpus_req exclude nice busy_ok env_hook venv_dir uv_sync_args conf_extra".split())
 
 
 def next_attempt(atts: dict) -> str:

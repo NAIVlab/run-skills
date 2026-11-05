@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # tests/vgate/slurm-remote.sh — reproductions behind the v3 submit protocol, run ON a Slurm login node, only with the
 # user's OK:  ssh <alias> bash -s -- <scratch-dir> <partition> [VENV=<venv>] [sbatch args...] < tests/vgate/slurm-remote.sh
-# Submits 5 tiny CPU jobs (1 cpu, 1G, <= 5 min): two held and cancelled unrun (duplicate options, SBATCH_* vs CLI,
-# Comment storage); two of one name with --dependency=singleton (submit.sh --rs-chain), held, the second released: it
+# Submits 8 tiny CPU jobs (1 cpu, 1G, <= 5 min): five held and cancelled unrun (duplicate options, SBATCH_* vs CLI,
+# Comment storage; a time limit of 0 — or sbatch's refusal of it; a value word `-t1` after --comment; a bare word, which
+# sbatch runs as the batch script); two of one name with --dependency=singleton (submit.sh --rs-chain), held, the second released: it
 # stays PENDING (Dependency) while the first is pending, both cancelled (the second as soon as the first is gone, before
 # it can run more than `true`); one --requeue job that this script requeues once (env and stored script after a
 # requeue; a login-node dir seen from the compute node; torch arch flags without a GPU when VENV= is given), then
@@ -27,7 +28,20 @@ echo "dup_time=$(tl "$j") (given 00:02:00 then 00:03:00)"
 echo "comment_squeue=$(squeue -h -j "$j" -O Comment:0 2>&1)"
 j2=$(SBATCH_TIMELIMIT=00:04:00 sb --hold --time=00:02:00 -J rs-vgate-env --wrap true); got "$j2" env
 echo "env_vs_cli_time=$(tl "$j2") (SBATCH_TIMELIMIT=00:04:00, --time=00:02:00)"
-scancel "$j" "$j2"; sleep 8
+# 1a. a time limit of 0 is NO limit (sbatch(1) --time; slurm_opt.c arg_set_time_limit: 0 -> INFINITE): submit.sh refuses
+#     it; what this cluster does with one (held: never runs)
+j4=$(sb --hold --time=0 -J rs-vgate-t0 --wrap true 2> t0.err) || j4=""
+if [ -n "$j4" ]; then J="$J $j4"; echo "time0=$(tl "$j4") reason=$(squeue -h -j "$j4" -O Reason:0 2>&1) (want TimeLimit=UNLIMITED or a partition-limit pend: 0 = none)"; scancel "$j4"
+else echo "time0=rejected err=$(head -c 200 t0.err | tr '\n' ' ') (sbatch itself refused a limit of none here)"; fi
+# 1b'. getopt: a required-argument option takes the NEXT word as its value even when it starts with '-' (--comment -t1)
+j5=$(sb --hold --time=00:02:00 --comment -t1 -J rs-vgate-cv --wrap true); got "$j5" commentval
+echo "comment_value=$(tl "$j5") comment=$(squeue -h -j "$j5" -O Comment:0 2>&1) (want TimeLimit=00:02:00 comment=-t1: -t1 is the comment, never a --time)"
+# 1b''. sbatch's getopt string starts with '+' (slurm_opt.c): the first word that is no option and no option's value
+#      (--requeue takes none as a separate word) is the batch script, every option after it that script's argument
+printf '#!/bin/sh\ntrue\n' > bare.sh
+j6=$(sb --hold --time=00:01:00 --requeue bare.sh -J rs-vgate-bare --comment=rs=vgate-bare); got "$j6" bare
+echo "bare_word=$(squeue -h -j "$j6" -O 'Name:0|,Comment:0|' 2>&1) (want bare.sh|<no rs=vgate-bare>|: -J and --comment after the bare word went to bare.sh)"
+scancel "$j" "$j2" "$j5" "$j6"; sleep 8
 echo "comment_sacct=$(sacct -X -n -P -j "$j" -o Comment 2>&1 | head -n 1)"
 # identity of an ended job (run-watch --adopt, rsk cancel's "gone"): JobID|JobName|User|WorkDir, -P (no trailing '|')
 echo "id_sacct=$(sacct -X -n -j "$j" -o JobID,JobName,User,WorkDir -P 2>&1 | head -n 1) (want $j|rs-vgate-dup|$U|$D)"

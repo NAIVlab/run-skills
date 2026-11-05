@@ -4,10 +4,13 @@
     rsk cancel --job J -T T [--approve "the user's words"] [-C DIR] [--grace S] [--deadline S]
 
 What may be stopped (the user's policy, §U of the P3 contract):
-  - the user said it ("cancel job 123"): --approve "their words" records a cancel approval naming exactly those job(s)
-    (grants.new_cancel_approval) — acted on once the identity check passes;
+  - the user said it ("cancel job 123"): --approve "their words" records a cancel approval naming exactly those job(s),
+    each bound to the identity it was asked for (Slurm: target, job id, run name, WorkDir; nohup: target, pid, start,
+    boot_id), for 1 h — acted on once the identity check passes, and used up by that first cancel whatever its
+    outcome (never given back: a later cancel of the same id needs the user's words again);
   - the agent's own judgment: only a run rsk launched for this project (a ledger attempt with a plan, never an
-    adopted one) under a standing grant with cancel_own in scope; anything else is the user's call → exit 4;
+    adopted one) under a standing grant with cancel_own in scope, each cancel counted against its max_launches;
+    anything else is the user's call → exit 4;
   - a deny always wins (exit 3, its quote); someone else's job or process: never (exit 3), whatever was approved.
 Identity, then the action, in ONE ssh (nothing is cancelled that this same read did not check):
   slurm  J is in `squeue -u $USER` with this user, the ledger's job name (an unledgered job: its own record's), and
@@ -17,10 +20,13 @@ Identity, then the action, in ONE ssh (nothing is cancelled that this same read 
          adopted triple) has pid J, gate go, the box's boot_id and /proc/J's start time, the owner is $USER and it
          leads its process group → `kill -TERM -- -<pgid>`, up to --grace seconds (30) for the group to go, then
          `kill -KILL -- -<pgid>`; the run's <log>.rc is read back.
-Recorded: the approval (if any), the grant use (given back only when nothing can have been cancelled: not once a job
-passed its identity check, even if the answer was cut off after it), the observation (Slurm: CANCELLING until rsk
-status sees the end; nohup: CANCELLED with its rc) and an audit line.
-Exit: 0 cancelled (or already gone) · 2 usage · 3 denied / not this user's · 4 needs the user · 5 the target could
+Recorded: the approval (if any), the use (a cancel_own grant's is given back only when the answer proves nothing
+was signalled — an @@fail, `none`, or no identity that passed; an answer cut off after it started, a timeout's partial
+output included, counts as "may have been sent"; an approval's never), the observation (Slurm: CANCELLING until rsk
+status sees the end; nohup: CANCELLED with its rc) and an audit line. A ledgered run that already ended — Slurm: ended
+in squeue; nohup: its pid gone, reused by another process (start differs), or the box rebooted (boot_id differs) — is
+exit 0 "nothing to cancel … ended", its end recorded in the ledger now (REBOOT for a changed boot_id).
+Exit: 0 cancelled (or already ended) · 2 usage · 3 denied / not this user's · 4 needs the user · 5 the target could
 not be read · 6 the identity does not match (name, WorkDir, receipt) · 1 scancel / kill failed.
 """
 
@@ -175,11 +181,22 @@ def item_of_job(led: L.Ledger, target: str, job: str, kind: str) -> Item:
     return Item(job, run, aid, name=str(att.get("name", "")))
 
 
-def authorize(led: L.Ledger, target: str, kind: str, items: list[Item], words: str | None) -> dict[str, dict]:
-    """{job: the record that covers its cancel}; a deny → exit 3; with WORDS the user's request is recorded first."""
+def ident(place: harness.Place, i: Item) -> str:
+    """The identity a cancel approval is bound to (grants.cancel_ident): Slurm target + job id + run name + WorkDir
+    (the project's remote dir), nohup target + pid + /proc start + boot_id."""
+    if place.kind == "slurm":
+        return grants.cancel_ident("slurm", place.target, i.job, i.name, place.remote_dir)
+    return grants.cancel_ident("nohup", place.target, i.job, i.start, i.boot_id)
+
+
+def authorize(led: L.Ledger, place: harness.Place, items: list[Item], words: str | None) -> dict[str, dict]:
+    """{job: the record that covers its cancel}; a deny → exit 3; with WORDS the user's request is recorded first,
+    bound to each item's identity. Every use is counted here, before the ssh."""
+    target, kind = place.target, place.kind
+
     def ask(i: Item, st: L.Ledger | L.LedgerState) -> grants.Decision:
-        return grants.check(st, "cancel", job=i.job, run=i.run, plan={"target": target, "kind": kind,
-                                                                       "name": i.name, "warnings": "0"})
+        return grants.check(st, "cancel", job=i.job, run=i.run, ident=ident(place, i),
+                            plan={"target": target, "kind": kind, "name": i.name, "warnings": "0"})
     with led.locked():
         for i in items:
             d = ask(i, led)
@@ -187,7 +204,8 @@ def authorize(led: L.Ledger, target: str, kind: str, items: list[Item], words: s
                 raise RskError(f"cancel of {i.job} is denied by {d.record['id']}: \"{d.record['quote']}\" — nothing "
                                "cancelled", REFUSED)
         if words is not None:
-            ap = grants.add(led, grants.new_cancel_approval(words, target, [i.job for i in items]))
+            ap = grants.add(led, grants.new_cancel_approval(words, target, [i.job for i in items],
+                                                            idents=[ident(place, i) for i in items]))
             out(f"approval {ap['id']}: {grants.describe(ap)} — \"{words}\"")
         cover: dict[str, dict] = {}
         for i in items:
@@ -235,8 +253,11 @@ def parse(text: str) -> tuple[dict, dict[str, str], dict[str, str]]:
 
 
 def refund(led: L.Ledger, rec: dict, job: str, why: str) -> None:
-    """Give back the cancel use of JOB under REC (nothing was cancelled)."""
-    cur = next((r for r in led.state().grants if r.get("id") == rec["id"]), None)
+    """Give back the cancel use of JOB under REC — a cancel_own grant's, when nothing was signalled. A cancel approval
+    is never given back: it was the user's word for that one cancel, used up by it whatever came of it."""
+    if rec.get("kind") == "approval":
+        return
+    cur = next((r for r in led.state().grants if isinstance(r, dict) and r.get("id") == rec["id"]), None)
     for u in reversed((cur or {}).get("used") or []):
         if u.get("job") == job and u.get("action") == "cancel":
             grants.refund(led, rec["id"], u["nonce"], why)
@@ -272,24 +293,26 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     if bad:
         raise RskError(f"{', '.join(bad)}: {'a Slurm job id' if place.kind == 'slurm' else 'a pid (the run wrapper)'}",
                        USAGE)
-    cover = authorize(led, place.target, place.kind, items, words)
+    cover = authorize(led, place, items, words)
     deadline = args.deadline + (args.grace + 5 if place.kind == "nohup" else 0)
     try:
         done = observe.run(place, body(place, items, args.grace), deadline)
         text, rc, err = done.stdout, done.returncode, done.stderr
-    except subprocess.TimeoutExpired:
-        text, rc, err = "", None, f"no answer within {deadline:.0f} s"
+    except subprocess.TimeoutExpired as exc:   # what arrived before the deadline still counts (an `@@c J ok`)
+        text, rc, err = _text(exc.stdout), None, f"no answer within {deadline:.0f} s"
     except OSError as exc:
         text, rc, err = "", None, f"ssh: {exc}"
     facts, verdict, extra = parse(text)
     if "end" not in facts or "fail" in facts:
         why = facts.get("fail") or (f"ssh exited {rc}: {err.strip()[:200]}" if rc else err or "the answer was cut off")
-        # once a job passed its identity check (`@@c J ok`) the scancel / TERM may have gone out: no use given back
-        sent = "scancel" in facts or "term:" in " ".join(extra) or any(v.startswith("ok") for v in verdict.values())
-        for i in items:
-            if not sent:
-                refund(led, cover[i.job], i.job, "the identity check did not complete")
-        led.audit("cancel", target=place.target, jobs=[i.job for i in items], outcome="unobservable", why=why[:200])
+        if not sent_maybe(facts, verdict, items):
+            for i in items:
+                refund(led, cover[i.job], i.job, "nothing was signalled")
+            sent = False
+        else:
+            sent = True
+        led.audit("cancel", target=place.target, jobs=[i.job for i in items], outcome="unobservable", why=why[:200],
+                  sent="maybe" if sent else "no")
         raise RskError(f"[{place.target}] {why} — {'the cancel may have been sent: rsk status' if sent else 'nothing was cancelled'}",
                        UNKNOWN)
     worst = OK
@@ -332,9 +355,11 @@ def cmd_cancel(args: argparse.Namespace) -> int:
             out(f"REFUSED: {what} belongs to {v[5:]} — another user's job/process is never cancelled")
             code = REFUSED
         elif v.startswith("gone") or v.startswith("ended="):
-            out(f"nothing to cancel: {what} is {'ended (' + v[6:] + ')' if v.startswith('ended=') else 'not running'}"
-                f"{' (' + v[5:] + ')' if v.startswith('gone ') else ''}" + ("" if i.run else
-                " — and the ledger never had it: a wrong id?"))
+            end = ended(place, i, v)
+            out(f"nothing to cancel: {what} is {end['said']}" + ("" if i.run else
+                " — and the ledger never had it: a wrong id?")
+                + (f"; ledger: {i.run} {i.attempt} ended {end['state']}" if i.run and end["recorded"] and
+                   _record_end(led, i, end) else ""))
             code = OK if i.run else CONFLICT
         else:
             out(f"NOT cancelled: {what}: the identity does not match ({v}) — "
@@ -344,6 +369,55 @@ def cmd_cancel(args: argparse.Namespace) -> int:
                   outcome=f"not cancelled: {v}"[:200])
         worst = worst or code
     return worst
+
+
+def _text(b: bytes | str | None) -> str:
+    """subprocess.TimeoutExpired.stdout: the raw bytes read before the deadline (also in text mode), or None."""
+    if b is None:
+        return ""
+    return b.decode("utf-8", "replace") if isinstance(b, bytes) else b
+
+
+def sent_maybe(facts: dict, verdict: dict[str, str], items: list[Item]) -> bool:
+    """For an answer without @@end (cut off, timed out) or with @@fail: may a scancel / TERM have gone out? Only proof
+    says no — no @@start (the remote never began), @@fail (it stopped before any identity), `@@scancel none` /
+    `@@kill none`, or every item's identity verdict arrived and none passed. Anything else after @@start: maybe."""
+    if "start" not in facts or "fail" in facts:
+        return False
+    if facts.get("scancel") == "none" or facts.get("kill") == "none":
+        return False
+    if all(i.job in verdict for i in items) and not any(v.startswith("ok") for v in verdict.values()):
+        return False
+    return True
+
+
+def ended(place: harness.Place, i: Item, v: str) -> dict:
+    """What a `gone…` / `ended=STATE` verdict says about an item: {said, state, evidence, recorded}."""
+    if v.startswith("ended="):
+        st = v[6:]
+        return {"said": f"ended ({st})", "state": st, "evidence": f"rsk cancel: squeue says {st}", "recorded": True}
+    why = v[5:] if v.startswith("gone ") else ""
+    if why == "boot":
+        return {"said": "ended (the box rebooted since it started: boot_id differs)", "state": "REBOOT",
+                "evidence": "rsk cancel: the box's boot_id differs from the run's", "recorded": True}
+    if why == "reused":
+        return {"said": "ended (its pid now belongs to another process: start time differs; nothing was signalled)",
+                "state": "ENDED", "evidence": "rsk cancel: pid reused (its /proc start differs), nothing signalled",
+                "recorded": True}
+    if place.kind == "slurm":       # not in this user's squeue: ended long ago, or a wrong id — rsk status reads sacct
+        return {"said": "not running (not in squeue)", "state": "", "evidence": "", "recorded": False}
+    return {"said": "ended (its pid is gone)", "state": "ENDED", "evidence": "rsk cancel: pid gone (no /proc entry)",
+            "recorded": True}
+
+
+def _record_end(led: L.Ledger, i: Item, end: dict) -> bool:
+    """The end a cancel's identity read proved, into the ledger now (never a guess: only recorded verdicts)."""
+    try:
+        led.observe(i.run, i.attempt, i.log or i.job, end["state"], "rsk cancel", end={
+            "state": end["state"], "rc": "", "evidence": end["evidence"]})
+    except (RskError, KeyError, OSError):
+        return False
+    return True
 
 
 def add_parser(sub) -> None:
