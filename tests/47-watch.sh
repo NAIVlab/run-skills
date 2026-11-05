@@ -104,6 +104,7 @@ O=$(rw t.tsv --once --every 10); [ "$?" = 2 ] && ok "--every below 60 refused" |
 echo "-- --approve: the program writes the checksum; edits and budget changes go stale --"
 reset; q; table "#@ allow launch preempt=2" "a fx-slurm - $ROW" "b fx-slurm - $ROW"
 O=$(rw t.tsv --approve 'yes, run a and b'); has "$O" 'approving block' "--approve prints what it approves"
+has "$O" '^under: #@ allow launch preempt=2$' "...and the allow line it approves them under, once prefixed (no '#@ #@')"
 has "$(sed -n 3p "$P/t.tsv")" '^#@ ok [0-9-]* sum=[0-9]* conf=[0-9a-f]\{12\} "yes, run a and b"$' "--approve inserts '#@ ok … conf=<sha256[:12] of .hpc.conf>' above the rows"
 cp "$P/t.tsv" "$T/t.before"; O=$(rw t.tsv --approve 'again'); has "$O" 'nothing to approve' "a second --approve changes nothing"
 cmp -s "$P/t.tsv" "$T/t.before" && ok "table untouched when nothing is pending" || bad "table untouched when nothing is pending"
