@@ -50,6 +50,7 @@ API (every mutator takes the lock itself; hold `with led.locked():` around a che
   led.audit(event, **fields)                  led.read_audit() -> (records, bad_line_count)
   led.lease() -> Loaded                       lease_state(lease) -> 'none'|'live'|'dead'|'expired'|'foreign'
   led.take_lease(until, argv=()) -> dict      RskError(CONFLICT) while another pid's lease is live/foreign
+  led.refresh_lease(until) -> bool            this process's lease, `until` moved forward (rsk watch, each minute)
   led.release_lease() -> bool                 only this process's lease
   led.state(now=None) -> LedgerState          what grants.check()/covers() read: .grants .runs .budgets_unknown
                                               (why, '' = known) .affected(record) -> bool
@@ -274,15 +275,17 @@ def _alive(pid: int) -> bool:
 
 
 def lease_state(lease: dict | None, at: float | None = None) -> str:
-    """none | live (its pid runs here) | dead (its pid is gone or reused) | expired (past until) | foreign (another
-    host or boot: cannot be checked, counts as live until it expires)."""
+    """none | live (its pid runs here) | dead (its pid is gone or reused; this host, another boot: gone with that
+    boot) | expired (past until) | foreign (another host: cannot be checked, counts as live until it expires)."""
     if not lease:
         return "none"
     t = time.time() if at is None else at
     if t > float(lease.get("until") or 0):
         return "expired"
-    if lease.get("host") != socket.gethostname() or (lease.get("boot_id") or "") != boot_id():
+    if lease.get("host") != socket.gethostname():
         return "foreign"
+    if (lease.get("boot_id") or "") != boot_id():      # this host rebooted since: its holder is gone
+        return "dead"
     try:
         pid = int(lease.get("pid") or 0)
     except (TypeError, ValueError):
@@ -661,6 +664,16 @@ class Ledger:
             self.audit("lease_take", pid=rec["pid"], until=_iso(until), replaced=st if cur else "none")
             return rec
 
+    def refresh_lease(self, until: float) -> bool:
+        """Move this process's lease's `until` forward (never back); False when the lease is not ours any more."""
+        with self.locked():
+            cur = self.lease().data
+            if not cur or int(cur.get("pid") or 0) != os.getpid() or cur.get("host") != socket.gethostname():
+                return False
+            if float(until) > float(cur.get("until") or 0):
+                write_json(self.dir / "watch.lease", {**cur, "until": float(until)})
+            return True
+
     def release_lease(self) -> bool:
         with self.locked():
             cur = self.lease().data
@@ -703,7 +716,7 @@ class Ledger:
 
 
 BOUND_KEYS = frozenset("partition gres cpus mem time account name extra payload env_kind env_name wandb_mode chain "
-                       "gpus_req exclude nice".split())
+                       "gpus_req exclude nice busy_ok env_hook venv_dir uv_sync_args".split())
 
 
 def next_attempt(atts: dict) -> str:

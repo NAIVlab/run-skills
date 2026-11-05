@@ -33,7 +33,7 @@ only what it reports. Read every launch script you found (bounded: `head -60`) �
 | `-A/--account` | `ACCOUNT` (`<TAG>_ACCOUNT` when per cluster) |
 | `--qos`, `--constraint`, `--exclude`, `--mail-*` | `SBATCH_EXTRA` (never a partition, job name or log path) |
 | `module load …`, project `export VAR=…` lines | `ENV_HOOK=scripts/rs_env.sh` (sourced at the end of env.sh; branch on `$RS_TARGET`). Under a bare ssh command or a job `module` is often undefined: start the hook with `type module >/dev/null 2>&1 \|\| . /etc/profile.d/<the probe's modules: file>`. Drop exports of cache paths — the harness pins those |
-| `CUDA_VISIBLE_DEVICES=0,1`, `nohup … &`, tmux | workstation: drop them — `DEFAULT_NGPU=2` (the id count), `run-launch` picks GPUs (`-d` for ids) and detaches; someone else's GPUs → `GPU_EXCLUDE` |
+| `CUDA_VISIBLE_DEVICES=0,1`, `nohup … &`, tmux | workstation: drop them — `DEFAULT_NGPU=2` (the id count), `rsk launch` / `run-launch` picks GPUs (`-d` for ids) and detaches; someone else's GPUs → `GPU_EXCLUDE` |
 | the python command line | `RUN="…"` (double-quoted) |
 | `wandb.init(project=…, entity=…)` | keep it; the key comes from the user's `wandb_env`; names per `experiment-conventions.md` |
 | hardcoded cache dirs / `/home/…` paths in code | report them: they bypass containment or break on another machine. Change code only with the user's OK |
@@ -90,4 +90,6 @@ and a Python into the env root when the server has none; conda is only checked).
 ## 6. Hand over
 Report the conf, what each old-script setting became, and the gaps from step 1 — above all whether the trainer
 checkpoints and auto-resumes (`experiment-conventions.md` §6; formal runs need it). Offer one smoke run following
-the procedure: plan → explicit go → `WANDB_MODE=disabled`, smallest resources. Never launch it unasked.
+the procedure: `rsk launch` (the card) → the user's words → `WANDB_MODE=disabled`, smallest resources. Never launch it
+unasked. Permissions the user states while setting up ("smoke runs on `<target>` are fine") are recorded with `rsk
+grant add`, in their words and with the limits they stated (SKILL.md §3) — never ones you infer.

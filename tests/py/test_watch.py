@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from helpers import ScratchHome
@@ -45,6 +46,21 @@ class Lease(ScratchHome):
         self.assertEqual(Wt.until_of(["t", "--for", "600", "--every", "60"], 0), 600 + 60 + Wt.SLACK)
         self.assertEqual(Wt.until_of(["t", "--once"], 0), Wt.SLACK + Wt.EVERY_DEFAULT)
         self.assertEqual(Wt.until_of(["t", "--approve", "ok"], 0), 300)
+
+    def test_l8_the_last_for_wins_and_the_lease_moves_forward_while_it_runs(self):
+        self.assertEqual(Wt.until_of(["t", "--for", "60", "--for", "86400"], 0), 86400 + Wt.EVERY_DEFAULT + Wt.SLACK)
+        self.assertEqual(Wt.until_of(["t", "--every", "60", "--every", "600", "--for", "60"], 0), 60 + 600 + Wt.SLACK)
+        seen = self.home / "untils"
+        with mock.patch.object(Wt, "REFRESH_S", 0.2):
+            rc = Wt.run_watch(self.led, ["t.table", "--for", "1", "--every", "60"], str(self.proj), dict(os.environ),
+                              ["bash", "-c", 'for i in 1 2 3 4 5 6 7 8; do sed -n \'s/.*"until": \\([0-9.]*\\).*/\\1/p\' '
+                                             '"$1" >> "$2"; sleep 0.3; done', "rw", str(self.led.dir / "watch.lease"),
+                               str(seen)])
+        self.assertEqual(rc, OK)
+        u = [float(x) for x in seen.read_text().split()]
+        self.assertGreater(u[-1], u[0])                                # refreshed while run-watch ran
+        self.assertGreaterEqual(u[-1], time.time() - 3 + 60 + Wt.SLACK)   # now + one round + the slack
+        self.assertIsNone(self.led.lease().data)
 
     def test_held_while_it_runs_released_after_and_3_is_lease_ended(self):
         rc = Wt.run_watch(self.led, ["t.table", "--once"], str(self.proj), dict(os.environ),

@@ -3,11 +3,16 @@ the project as cwd and TARGET set — no logic of their own (bash stays the one 
 script's). The harness is this rsk's own tree (paths.harness_src(), the one harness.py drives), so what a sync
 deploys matches what this rsk speaks. RS_VIA_RSK=1 tells the scripts they were reached through rsk.
 
-    rsk sync -T T [-C DIR] [run-sync args: -n -D --also PATH --take-over]
-    rsk bootstrap -T T [-C DIR] [--job [submit.sh flags]]
+    rsk sync -T T [-C DIR] [run-sync args: -n -D --also PATH --take-over] [--approve "the user's words"]
+    rsk bootstrap -T T [-C DIR] [--job [submit.sh flags]] [--approve "the user's words"]
     rsk pull -T T [-C DIR] [-n] PATH...
     rsk avail [-T T]... [-C DIR] [--type X] [--min N] [--timeout S]     (-T = the targets run-avail reads)
 Every argument rsk does not know is passed on as it stands (after `--` too).
+Two of them are the user's call every time (no grant covers them): `rsk sync -D` (deletes files in the remote dir
+the local tree lacks; with -n / --dry-run it only lists them) and `rsk bootstrap --job` (a Slurm job no plan card
+showed). They run only with --approve "the user's words" (non-empty), recorded in the ledger's audit.jsonl with the
+command line (event `approved_command`) before the script starts; without it: `needs user: approval (…)`, exit 4,
+nothing run. A record is bookkeeping, not proof the user agreed.
 """
 
 from __future__ import annotations
@@ -18,7 +23,7 @@ import sys
 from pathlib import Path
 
 from remote_run import harness, paths
-from remote_run.errors import USAGE, RskError
+from remote_run.errors import NEEDS_USER, USAGE, RskError
 
 SCRIPTS = {"sync": "run-sync", "bootstrap": "run-bootstrap", "pull": "run-pull", "avail": "run-avail"}
 
@@ -47,8 +52,38 @@ def plan(args: argparse.Namespace) -> tuple[list[str], dict[str, str], Path]:
     return ["bash", str(script), *extra], env, project_dir(args.dir)
 
 
+def needs_words(args: argparse.Namespace, argv: list[str]) -> str:
+    """'' unless this call is one only the user's words allow (sync -D without -n, bootstrap --job); else what it is."""
+    w = argv[2:]
+    if args.command == "sync" and ({"-D", "--delete"} & set(w)) and not ({"-n", "--dry-run"} & set(w)):
+        return "remote deletion: rsk sync -D removes files in the remote dir that the local tree lacks"
+    if args.command == "bootstrap" and "--job" in w:
+        return "a Slurm job (run-bootstrap --job) that no plan card showed"
+    return ""
+
+
+def gate(args: argparse.Namespace, argv: list[str], cwd: Path) -> None:
+    """Refuse (exit 4) a call needs_words() names without --approve; with it, audit the words + the command first."""
+    what = needs_words(args, argv)
+    words = getattr(args, "approve", None)
+    if words is not None and not words.strip():
+        raise RskError("--approve takes the user's words, verbatim (non-empty)", USAGE)
+    if not what:
+        return
+    if words is None:
+        print(f"needs user: approval ({what}) — never a grant's call: ask the user, then pass their words with "
+              "--approve", flush=True)
+        raise RskError(f"rsk {args.command} {' '.join(argv[2:])}: {what} — only with the user's words (--approve); "
+                       "nothing run", NEEDS_USER)
+    from remote_run import ledger as L
+    L.Ledger(cwd).audit("approved_command", command=args.command, target=getattr(args, "target", ""),
+                        argv=argv[2:], what=what, quote=words)
+
+
 def cmd_wrap(args: argparse.Namespace) -> int:
     argv, env, cwd = plan(args)
+    if args.command in ("sync", "bootstrap"):
+        gate(args, argv, cwd)
     sys.stdout.flush()
     sys.stderr.flush()
     os.chdir(cwd)
@@ -70,4 +105,8 @@ def add_parsers(sub) -> None:
                            help="a target to read (repeatable; default: all)")
         else:
             p.add_argument("-T", "--target", required=True)
+        if name in ("sync", "bootstrap"):
+            p.add_argument("--approve", default=None, metavar="WORDS",
+                           help="the user's words, for " + ("-D (remote deletion)" if name == "sync" else
+                                                            "--job (a Slurm job no plan card showed)"))
         p.set_defaults(func=cmd_wrap, passthrough=True)

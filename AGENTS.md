@@ -6,7 +6,7 @@ Guidance for Codex and other coding agents — and, via the `CLAUDE.md` symlink,
 
 One agent skill, `remote-run` (Slurm clusters + GPU workstations; it replaced the `hpc-run` / `ws-run` pair), plus the bash
 harness it drives, shipped as the uv tool `remote-run` whose command `rsk` (`src/remote_run/`, standard library only, Python
->= 3.11) installs and updates it; the README has the user-facing story, `INSTALL.md` the runbook an agent follows to install
+>= 3.11) installs and updates it and is the agent's path for every read, launch and cancel; the README has the user-facing story, `INSTALL.md` the runbook an agent follows to install
 it for a user (shipped to the harness dir; tested by `70-docs`). MIT, public. Edit the clone only — the tool env, `~/.agents/run-skills`
 and `~/.agents/skills/remote-run` are generated (`uv tool install` + `rsk setup`, which runs `install.sh` from the wheel's copy of the
 harness). The reasons behind the constraints below: `docs/DESIGN.md`; target packs: `docs/packs.md`.
@@ -25,9 +25,16 @@ bash tests/pkg-wheel.sh    # NOT in selftest (uv + network once): wheel contents
 `rsk` (`src/remote_run/`): `cli.py`; `install.py` (how it was installed: PEP 610 `direct_url.json` + `uv-receipt.toml`
 → update commands); `packs.py`; `harness.py` calls `lib/common.sh` / `install.sh` (targets, conf → remote dir) — never a
 second implementation in Python; `observe.py` + `status.py` (`rsk status` / `rsk logs`: read-only, one ssh per target,
-discovery by WorkDir / `logs/*.pid`; a failed read is UNOBSERVABLE, never "no jobs"); `errors.py` = the exit codes. The wheel force-includes the harness under `remote_run/_harness/` (`pyproject.toml`): a new top-level dir the
+discovery by WorkDir / `logs/*.pid`; a failed read is UNOBSERVABLE, never "no jobs"; also the ledger's runs, unledgered jobs,
+SUBMIT_UNKNOWN reconciled from the remote journal); `ledger.py` + `grants.py` (the per-project ledger and the one authorisation
+record type, below); `launch.py` (`rsk launch`), `cancel.py` (`rsk cancel`), `watch.py` (`rsk watch` = the lease around
+`bin/run-watch`), `adopt.py` (`rsk adopt`), `wrappers.py` (`rsk sync|bootstrap|pull|avail` exec `bin/run-*`, no logic), `legacy.py`
+(`rsk doctor --legacy-refs`); `errors.py` = the exit codes (0 ok 1 failed 2 usage 3 refused 4 needs user 5 unknown 6 conflict 7 lease
+ended 8 placement). The wheel force-includes the harness under `remote_run/_harness/` (`pyproject.toml`): a new top-level dir the
 harness needs at run time goes there too, and `tests/pkg-wheel.sh` lists what must be in it (`install.sh` copies every dir the docs name under `~/.agents/run-skills`: 70-docs). Unit tests: `tests/py/`
-(run by `tests/90-py.sh` with an isolated interpreter, scratch HOME and RS_* dirs; python < 3.11 = SKIP in a clone, FAIL only packaged).
+(run by `tests/90-py.sh` with an isolated interpreter, scratch HOME and RS_* dirs; python < 3.11 = SKIP in a clone, FAIL only packaged);
+`tests/62-rsk-launch.sh` runs the real CLI end to end (plan → card → approve / grant / deny, drift, sweep, lost reply, cancel identity,
+busy GPUs, the lease) against the fixture targets through an *executing* ssh stub, so the deployed submit.sh / launch.sh do the work.
 
 Hard rules: never commit generated files (they exist only in installed copies); this repo is public and ships **no
 site at all** — no cluster/host/site name, user id, account, group path or personal policy gate, not even in a
@@ -39,7 +46,8 @@ hardcode the check count.
 
 ### Three layers
 
-1. **`skills/remote-run/SKILL.md`** (thin, both kinds; reads via `rsk status/logs/exec` first) + `references/`: `INDEX.md` (line 1
+1. **`skills/remote-run/SKILL.md`** (thin, both kinds; everything through `rsk`: reads first, `rsk launch` / `rsk cancel` check the
+   user's authorisation; a brief bash fallback for installs without rsk) + `references/`: `INDEX.md` (line 1
    `root:` = harness dir, one row per target with a `kind` column, Routing rules; a stub that `install.sh` regenerates with
    `rs_gen_index`), `procedure-slurm.md` / `procedure-nohup.md`, `conf-keys.md` (both confs), `experiment-conventions.md` (run classes,
    naming, wandb mapping, checkpoint/resume), `project-setup.md` (onboarding) — ONE copy each. The agent reads INDEX, then exactly one `targets/<t>/reference.md`.
@@ -119,17 +127,39 @@ NONCE = `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, the set spelled out; taken = exit 75)
 `result` (`stage= rc= verdict=submitted|launched|refused|failed|unknown`), THEN replays out/err (`trap '' PIPE`): a dead ssh
 (SIGPIPE on the first write) loses nothing, the exit status is unchanged. Slurm adds the snapshots `conf hook profile.sh env.sh`;
 `/.rs/` is an anchored sync exclude, refused by run-pull; nothing deletes attempts. 6 = a live same-name job of the project.
-**api=3** (`remote/API`, deployed for both kinds, in MANIFEST): both pre-scan `--rs-mode plan` and `--rs-expect <64 hex>` (submit.sh
-also `--rs-chain`) as separate words before `--` — an older parser exits 2 on the bare value word (tested against `git show
-8560838:` / `650d7d6:remote/submit.sh` and the P2 launch.sh); an unknown `--rs-*` is exit 2. Plan mode runs every check (`FORCE=1`:
-a -y gate prints its `WARNING:` and goes on; launch.sh runs the env gate) and prints ONE `@@plan v1` … `@@end` block: `api= kind= target=`,
-the bound fields (`rs_bound`, one function), `info_*` (envelope), `warnings=` (the `WARNING:` lines in out+err, not `WARNING (lint)`),
-`bound_hash=` (sha256 of the lines `kind=` … the last bound field, each + newline); it stops before the snapshots / the wrapper (`stage=plan
-rc=0 verdict=planned`). `--rs-expect H` recomputes that hash right before the snapshots and sbatch (nohup: before the env gate's subshell):
-a mismatch prints the block + `ERROR: … differs from the approved plan`, exit 6 (`stage=expect`, refused). `--rs-chain` adds
-`--dependency=singleton` (another dependency: exit 2) and passes the duplicate guard. launch.sh: a GPU with a compute process
+**api=3** (`remote/API`, deployed for both kinds, in MANIFEST): both pre-scan `--rs-mode plan`, `--rs-expect <64 hex>` and
+`--rs-warnings N` (with `--rs-expect` only; submit.sh also `--rs-chain`) as separate words before `--` — an older parser exits 2
+(tested against `git show 8560838:` / `650d7d6:` / `e612ef6:` submit.sh and launch.sh); an unknown `--rs-*` is exit 2. Plan
+mode runs every check (`FORCE=1`: a -y gate prints its `WARNING:` and goes on; launch.sh skips the env gate — env.sh mkdirs
+the project's caches, a plan creates nothing outside `.rs/`) and prints ONE `@@plan v1` … `@@end` block: `api= kind= target=`,
+the bound fields (`rs_bound`, one function; also `env_hook=<path>:<sha256>`, `venv_dir`, `uv_sync_args`, nohup `busy_ok` = the
+busy GPUs its landing accepts), `info_*` (envelope), `warnings=` (the `WARNING:` lines in out+err, not `WARNING (lint)`),
+`bound_hash=` (sha256 of the lines `kind=` … the last bound field, each + newline); it stops before the snapshots / the wrapper
+(`stage=plan rc=0 verdict=planned`). `--rs-expect H` recomputes that hash and recounts the `WARNING:` lines right before the
+snapshots and sbatch (nohup: before the env gate's subshell): another hash, or a count other than `--rs-warnings` (default 0),
+prints the block + `ERROR: … differs from the approved plan`, exit 6 (`stage=expect`, refused) — -y never passes a new warning;
+under it a failed squeue is exit 1. `--rs-chain` adds `--dependency=singleton` (another dependency: exit 2) and passes the
+duplicate guard. An `SBATCH_EXTRA` `--time`/`-t` is held to MaxTime like `-t`. launch.sh: a GPU with a compute process
 (`--query-compute-apps`) is never auto-picked (too few free: exit 1), `-d` onto one is exit 6, an unknown state exit 1 — unless
-`--gpu-busy-ok`. run-launch without `RS_VIA_RSK` while `rsk` is on PATH points at `rsk launch` (exit 2); `tests/lib.sh` exports it.
+`--gpu-busy-ok`. P7: run-launch without `RS_VIA_RSK` while rsk is installed (on PATH or `$(uv tool dir --bin)/rsk`) prints
+`use: rsk launch …` and exits 2 (else it launches, with a NOTE; a Slurm target points at `rsk launch`) — a nudge, not a guard;
+`tests/lib.sh` exports `RS_VIA_RSK`.
+
+### Authorisation (`grants.py`, `ledger.py`; used by `launch.py`, `cancel.py`; docs/DESIGN.md "Authorization")
+
+The user's policy: never ask again for what they already allowed, but check every action against it. Every launch, relaunch,
+chain and cancel calls `grants.check()` first — a deny → 3 (its quote), a covering record → act and record the use, else
+`needs user:` → 4. One record type in the ledger's `grants.json` (`<state>/projects/<sha256(realpath)[:16]>/`, flock, atomic writes
+with `.prev`, single-use `plans/`, append-only `audit.jsonl`): `approval` (the plan ids + bound hashes of the cards the user
+approved, claimed and recorded in one lock hold, expiring with the plans (24 h) — a sweep is one record — or named jobs to
+cancel), `grant` (a standing predicate: scope + actions + `max_live` / `max_launches` / `expires`, all three stated, `none` = the
+user set none; `resubmit` is refused in a new one), `deny` (always wins; one of `launch` stops relaunch/chain too; its name globs
+also match the run id). A record `validate()` rejects covers nothing (a deny: matches everything). The class is the name's.
+Never grant-covered: a plan with warnings (unless `allow_warnings`), a `--*-user-asked` policy flag, `--same-name-ok`, SBATCH_EXTRA
+resources, a workstation plan on a busy GPU; `rsk sync -D` / `rsk bootstrap --job` need `--approve` (audited); never at all:
+someone else's job or process.
+`cancel_own` covers only ledger attempts rsk launched. run-watch keeps its own approvals (`#@ ok`, bash) — `rsk watch` adds only
+the lease. A record is bookkeeping, not proof of consent: an agent can write any quote; rsk constrains only what goes through it.
 
 ### Storage policy (env.sh, driven by `T_*`)
 
@@ -194,10 +224,13 @@ sync exclude and the INDEX row — nothing else needs editing. Extending a pack'
 mention another target (cross-target routing lives only in INDEX's Routing section).
 
 ## Editing the docs
-The rails in `SKILL.md` / `procedure-*.md` / `experiment-conventions.md` (confirm before every submit/launch, no
-`scancel`/`kill` without OK, never create a conda env, never guess the remote dir, own wandb key only, smokes run
-`WANDB_MODE=disabled`, formal runs checkpoint + auto-resume, monitoring = bounded reviews, adaptive cadence, explicit wake-up capability, detect-only — its one exception is `run-watch --act` on user-approved rows within their budget) are the
-product — do not trim them. Facts live
+The rails in `SKILL.md` / `procedure-*.md` / `experiment-conventions.md` (check the existing authorisation before every
+submit/launch/cancel and ask only outside it — the user's table in docs/DESIGN.md; cancel only after the identity check, never
+someone else's job or process; a grant records the user's words, never invented or widened, and is no proof of consent; never
+create a conda env, never guess the remote dir, own wandb key only, smokes run `WANDB_MODE=disabled`, formal runs checkpoint +
+auto-resume, monitoring = bounded reviews, adaptive cadence, explicit wake-up capability, detect-only — its exceptions are
+`run-watch --act` on user-approved rows within their budget and rsk actions a user's grant covers) are the product — do not trim
+them (70-docs pins them). Facts live
 once: values in `profile.sh`, limits in `policy.sh`, prose in `reference.md`, keys in `conf-keys.md`. The INDEX stub
 must equal `rs_gen_index OUT ROOT` output with no targets (test `70-docs`): regenerate under bash into a temp file
 (`RS_USER_DIR=/nonexistent RS_PACKS_DIR=/nonexistent`, root `~/.agents/run-skills`; the generator copies Routing

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run-skills remote/launch.sh — the nohup launch, deployed as <REMOTE_DIR>/.ws/launch.sh and run by bin/run-launch over
 # ONE ssh (`cd <dir>; TARGET=<t> bash .ws/launch.sh …`). Linux + bash + coreutils + util-linux setsid (flock if present).
-#   launch.sh [--rs-attempt NONCE] [--rs-mode plan] [--rs-expect HASH] [--same-name-ok] [--gpu-busy-ok]
+#   launch.sh [--rs-attempt NONCE] [--rs-mode plan] [--rs-expect HASH [--rs-warnings N]] [--same-name-ok] [--gpu-busy-ok]
 #             [-d IDS | -n N [-x IDS]] [--nice N] [-N NAME] [--log PATH] -- RUN…
 # Claims .rs/attempts/<NONCE>/ (mkdir) and records everything there FIRST — out, err, stage, receipt, result (EXIT trap) —
 # then replays out/err to the caller, so a dead ssh loses nothing. Gate: env.sh in a subshell, then the venv / conda
@@ -9,9 +9,12 @@
 # GPUs: one nvidia-smi query; CUDA_VISIBLE_DEVICES=<ids> with CUDA_DEVICE_ORDER=PCI_BUS_ID (= nvidia-smi's index order;
 # ids, not UUIDs: some payloads parse it as integers), the UUIDs go to the receipt. A GPU with a compute process (one
 # --query-compute-apps query) is never auto-picked, and -d onto one is exit 6, without --gpu-busy-ok (the user's OK);
-# a failed query = unknown = exit 1 without it. Protocol api=3 (.ws/API): --rs-mode plan runs every check and the env
-# gate, prints ONE `@@plan v1` … `@@end` block and starts nothing; --rs-expect HASH launches only if rs_bound still gives
-# that hash (else the block + ERROR, exit 6, before the wrapper exists). The run is
+# a failed query = unknown = exit 1 without it. Protocol api=3 (.ws/API): --rs-mode plan runs every check except the
+# env gate (env.sh creates the project's cache dirs: a plan creates nothing outside .rs/ — the gate runs at the launch),
+# prints ONE `@@plan v1` … `@@end` block and starts nothing; --rs-expect HASH launches only if rs_bound still gives that
+# hash — the busy GPUs of the landing (busy_ok) and the ENV_HOOK file's sha256 are bound — and this call printed as many
+# `WARNING:` lines as the approved card counted (--rs-warnings N, default 0), else the block + ERROR, exit 6, before the
+# wrapper exists. The run is
 # setsid'd under a wrapper (pid = pgid = <log>.pid) that starts the payload only after the receipt is on disk
 # (.rs/attempts/<NONCE>/gate -> go; anything else = never started), forwards TERM/INT once and ends the log with
 # `[<date>] EXIT rc=N term=0|1 …` + <log>.rc (`rc= term= at=`). RUN is one shell string, parsed once (as before).
@@ -22,15 +25,17 @@ unset RS_ATTEMPT RS_CONF_FILE RS_RUN RS_ACKS    # a launch from inside a run nev
 _l0=" $(compgen -v 2>/dev/null | tr '\n' ' ') "             # the shell's own + inherited names: everything else below is launch.sh's
 SELF=$(cd "$(dirname "$0")" && pwd) && PROJ=$(cd "$SELF/.." && pwd) || { echo "ERROR: cannot resolve the project dir" >&2; exit 2; }
 trap '' HUP                                     # decide and record even if the session hangs up (inherited by the run, as nohup)
-GPUS=""; NPICK=""; EXCL=""; NICE=""; NAME=""; LOG=""; SAME=0; NONCE=""; RA=0; uerr=""; MODE=""; EXPECT=""; BOK=0
+GPUS=""; NPICK=""; EXCL=""; NICE=""; NAME=""; LOG=""; SAME=0; NONCE=""; RA=0; uerr=""; MODE=""; EXPECT=""; BOK=0; RS_WARN=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    -d|-n|-x|-N|--nice|--log|--rs-attempt|--rs-mode|--rs-expect)
+    -d|-n|-x|-N|--nice|--log|--rs-attempt|--rs-mode|--rs-expect|--rs-warnings)
       [ "$#" -ge 2 ] || { uerr=${uerr:-"$1 needs a value"}; shift; continue; }
       case "$1" in -d) GPUS=$2 ;; -n) NPICK=$2 ;; -x) EXCL=$2 ;; -N) NAME=$2 ;; --nice) NICE=$2 ;; --log) LOG=$2 ;;
         --rs-mode) [ -z "$MODE" ] && [ "$2" = plan ] && MODE=plan || uerr=${uerr:-"--rs-mode takes one value, plan, once"} ;;
         --rs-expect) [ -z "$EXPECT" ] && [ "${#2}" = 64 ] && [ -n "${2##*[!0123456789abcdef]*}" ] && EXPECT=$2 \
                        || uerr=${uerr:-"--rs-expect takes one bound_hash (64 lowercase hex), once"} ;;
+        --rs-warnings) [ -z "$RS_WARN" ] && [ -n "$2" ] && [ -n "${2##*[!0123456789]*}" ] && [ "${#2}" -le 4 ] && RS_WARN=$2 \
+                         || uerr=${uerr:-"--rs-warnings takes one count (digits), once"} ;;
         *) NONCE=$2; RA=1 ;; esac
       shift 2 ;;
     --same-name-ok) SAME=1; shift ;;
@@ -40,6 +45,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 RUN_CMD="$*"; PLAN=0; [ "$MODE" != plan ] || PLAN=1
+[ -z "$RS_WARN" ] || [ -n "$EXPECT" ] || uerr=${uerr:-"--rs-warnings goes with --rs-expect (the approved card's count)"}
 
 # ---- the claim: mkdir of the attempt dir (never -p for the leaf); a caller's NONCE that exists = it ran already ----
 AN=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789   # spelled out: [A-Z] ranges follow the locale (as submit.sh)
@@ -77,7 +83,7 @@ trap on_exit EXIT; trap 'exit 143' TERM; trap 'exit 130' INT
 stage pre-policy
 echo "attempt: .rs/attempts/$NONCE"
 die2() { echo "ERROR: $*" >&2; exit 2; }
-[ -z "$uerr" ] || die2 "$uerr (usage: launch.sh [--rs-attempt NONCE] [--rs-mode plan] [--rs-expect HASH] [--same-name-ok] [--gpu-busy-ok] [-d ids | -n N [-x ids]] [--nice N] [-N name] [--log logs/<name>-<YYYYmmdd-HHMMSS>.log] -- <cmd>)"
+[ -z "$uerr" ] || die2 "$uerr (usage: launch.sh [--rs-attempt NONCE] [--rs-mode plan] [--rs-expect HASH [--rs-warnings N]] [--same-name-ok] [--gpu-busy-ok] [-d ids | -n N [-x ids]] [--nice N] [-N name] [--log logs/<name>-<YYYYmmdd-HHMMSS>.log] -- <cmd>)"
 
 # ---- target, arguments -------------------------------------------------------------------------------------------
 [ -f "$SELF/profile.sh" ] || die2 "MISSING $SELF/profile.sh (partial sync?)"
@@ -108,7 +114,7 @@ fi
 command -v setsid >/dev/null 2>&1 || { echo "ERROR: setsid not found (util-linux): cannot detach the run" >&2; exit 1; }
 BOOT=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null) && [ -n "$BOOT" ] || { echo "ERROR: no /proc boot_id: launch.sh needs Linux /proc" >&2; exit 1; }
 cd "$PROJ" || exit 1; export PROJ TARGET
-mkdir -p logs || { echo "ERROR: cannot create $PROJ/logs" >&2; exit 1; }
+[ "$PLAN" = 1 ] || mkdir -p logs || { echo "ERROR: cannot create $PROJ/logs" >&2; exit 1; }   # a plan creates nothing
 
 # ---- one launch of this project at a time from here to the gate; then the duplicate guard by live triple ----------
 if command -v flock >/dev/null 2>&1; then
@@ -177,34 +183,50 @@ else   # the NPICK idlest by memory.used among the free ones (busy ones last, an
   [ -z "$b" ] || echo "WARNING: the pick includes GPU(s) $b with a compute process ($BUSY); --gpu-busy-ok: launching onto them" >&2
 fi
 
-# ---- plan / --rs-expect: ONE bound list + hash for both; env_kind/env_name as env.sh will resolve them (profile, then the
-#      conf; <TAG>_ENV_NAME first), read in a child bash without rc files and handed back as data, never eval'd ----------
+BUSYOK=""   # the busy GPUs this landing accepts (bound): only ever with --gpu-busy-ok; 'unknown' when it cannot tell
+if [ "$BUSY" = unknown ]; then BUSYOK=unknown; elif [ -n "$b" ]; then BUSYOK=$(printf %s "$b" | tr ',' '\n' | sort -n | paste -sd, -); fi
+
+# ---- plan / --rs-expect: ONE bound list + hash for both; env_kind/env_name/ENV_HOOK/VENV_DIR/UV_SYNC_ARGS as env.sh
+#      resolves them (profile, then the conf; <TAG>_ENV_NAME / <TAG>_VENV_DIR first), read in a child bash without rc
+#      files and handed back as data, never eval'd; the hook file is bound by its sha256 -------------------------------
 rs_sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | cut -d' ' -f1; }   # stdin -> hex
 rs_bound() {   # THE bound list (the plan block's lines kind= … env_name=; bound_hash = sha256 of them): what an approval covers;
   local r=n=$NPICK; [ -z "$GPUS" ] || r=ids=$GPUS   # free text %q-quoted, the validated tokens (name, ids, counts) as they are
-  printf 'kind=nohup\ntarget=%q\nname=%s\ngpus_req=%s\nexclude=%s\nnice=%s\npayload=%q\nenv_kind=%q\nenv_name=%q\n' \
-    "$TN" "$NAME" "$r" "$EXCL" "$NICE" "$RUN_CMD" "$EK" "$EN"; }
-rs_plan() {   # rs_plan check|print: `check` (--rs-expect) returns on a match, else prints the block + ERROR, exit 6; `print` = exit 0
-  local b h w; b=$(rs_bound) && h=$(printf '%s\n' "$b" | rs_sha) && [ "${#h}" = 64 ] \
+  printf 'kind=nohup\ntarget=%q\nname=%s\ngpus_req=%s\nexclude=%s\nnice=%s\nbusy_ok=%s\npayload=%q\nenv_kind=%q\nenv_hook=%q\nvenv_dir=%q\nuv_sync_args=%q\nenv_name=%q\n' \
+    "$TN" "$NAME" "$r" "$EXCL" "$NICE" "$BUSYOK" "$RUN_CMD" "$EK" "$EH" "$EV" "$EU" "$EN"; }
+rs_plan() {   # rs_plan check|print: `check` (--rs-expect) returns when the hash AND WCOUNT (the WARNING: lines so far, counted
+  local b h; b=$(rs_bound) && h=$(printf '%s\n' "$b" | rs_sha) && [ "${#h}" = 64 ] \
     || { echo "ERROR: cannot hash the plan (no sha256sum or shasum here?) — nothing launched" >&2; exit 2; }
-  if [ "$1" = check ]; then [ "$h" != "$EXPECT" ] || { echo "plan: bound_hash=$h = --rs-expect (the approved plan)"; return 0; }; stage expect; fi
-  w=$(cat "$A/out" "$A/err" | grep -c '^WARNING: ' || true)
-  printf '@@plan v1\napi=3\n%s\ninfo_gpus=%s\ninfo_uuids=%s\ninfo_busy=%s\nwarnings=%s\nbound_hash=%s\n@@end\n' "$b" "$DEV" "$UUIDS" "$BUSY" "${w:-0}" "$h"
-  [ "$1" = print ] || { VERDICT=refused; echo "ERROR: the resolved submission differs from the approved plan (bound_hash $h, --rs-expect $EXPECT) — nothing launched; plan it again" >&2; exit 6; }
+  if [ "$1" = check ]; then   # at the same point in both modes, before the payload is echoed) match; else the block + ERROR, exit 6
+    [ "$h" != "$EXPECT" ] || [ "$WCOUNT" != "${RS_WARN:-0}" ] || { echo "plan: bound_hash=$h = --rs-expect (the approved plan); warnings $WCOUNT = the approved card's"; return 0; }
+    stage expect; fi
+  printf '@@plan v1\napi=3\n%s\ninfo_gpus=%s\ninfo_uuids=%s\ninfo_busy=%s\nwarnings=%s\nbound_hash=%s\n@@end\n' "$b" "$DEV" "$UUIDS" "$BUSY" "$WCOUNT" "$h"
+  [ "$1" = print ] || { VERDICT=refused
+    if [ "$h" != "$EXPECT" ]; then echo "ERROR: the resolved submission differs from the approved plan (bound_hash $h, --rs-expect $EXPECT) — nothing launched; plan it again" >&2
+    else echo "ERROR: the resolved submission differs from the approved plan: $WCOUNT warning(s) now, ${RS_WARN:-0} on the approved card — nothing launched; plan it again" >&2; fi
+    exit 6; }
   VERDICT=planned; exit 0; }
 if [ "$PLAN" = 1 ] || [ -n "$EXPECT" ]; then
-  BASH_ENV= PROJ="$PROJ" TARGET="$TN" "$BASH" --noprofile --norc -c 'unset ENV_KIND ENV_NAME "$3"; . "$1" >&2 && . "$2" >&2 || exit 1
-    unset -f printf builtin; unalias -a; builtin printf "%s\0%s\0" "${ENV_KIND:-uv}" "${!3:-${ENV_NAME:-}}"' rs-conf \
-    "$SELF/profile.sh" "$PROJ/.ws.conf" "${TAG}_ENV_NAME" </dev/null > "$A/env.kv" && { IFS= read -r -d '' EK && IFS= read -r -d '' EN; } < "$A/env.kv" \
+  BASH_ENV= PROJ="$PROJ" TARGET="$TN" "$BASH" --noprofile --norc -c 'unset ENV_KIND ENV_NAME ENV_HOOK VENV_DIR UV_SYNC_ARGS "$3" "$4"
+    . "$1" >&2 && . "$2" >&2 || exit 1
+    unset -f printf builtin; unalias -a
+    builtin printf "%s\0%s\0%s\0%s\0%s\0" "${ENV_KIND:-uv}" "${!3:-${ENV_NAME:-}}" "${ENV_HOOK:-}" "${!4:-${VENV_DIR:-}}" "${UV_SYNC_ARGS:-}"' rs-conf \
+    "$SELF/profile.sh" "$PROJ/.ws.conf" "${TAG}_ENV_NAME" "${TAG}_VENV_DIR" </dev/null > "$A/env.kv" \
+    && { IFS= read -r -d '' EK && IFS= read -r -d '' EN && IFS= read -r -d '' EH && IFS= read -r -d '' EV && IFS= read -r -d '' EU; } < "$A/env.kv" \
     || die2 "sourcing $PROJ/.ws.conf (after profile.sh) failed — fix it (values with spaces must be double-quoted)"
-  rm -f "$A/env.kv"; [ -z "$EXPECT" ] || rs_plan check
+  rm -f "$A/env.kv"
+  if [ -n "$EH" ]; then if [ -f "$PROJ/$EH" ]; then EH="$EH:$(rs_sha < "$PROJ/$EH")"; else EH="$EH:missing"; fi; fi
+  WCOUNT=$(cat "$A/out" "$A/err" | grep -c '^WARNING: ' || true); WCOUNT=${WCOUNT:-0}   # (`WARNING (lint):` is not one)
+  [ -z "$EXPECT" ] || rs_plan check
 fi
 
 # ---- launch: env gate in a subshell (the conf/hook cannot touch this shell), then setsid the wrapper ----------------
-if [ "$PLAN" = 1 ]; then stage plan; echo "[$TN] plan: GPU(s) [$DEV] -> $PROJ/$LOG (nothing is started)"
-else stage launch; echo "[$TN] launching on GPU(s) [$DEV] -> $PROJ/$LOG"; fi
+if [ "$PLAN" = 1 ]; then   # a plan stops here: the env gate (env.sh mkdirs the project's caches) runs at the launch
+  stage plan; echo "[$TN] plan: GPU(s) [$DEV] -> $PROJ/$LOG (nothing is started; the env gate runs at the launch)"
+  echo "          RUN: $RUN_CMD"; rs_plan print; fi
+stage launch; echo "[$TN] launching on GPU(s) [$DEV] -> $PROJ/$LOG"
 echo "          RUN: $RUN_CMD"
-[ "$PLAN" = 1 ] || { printf '_rw_a=%q _rw_log=%q _rw_nice=%q _rw_t=%q _rw_n=%q _rw_dev=%q _rw_wait=120\n' "$A" "$PROJ/$LOG" "$NICE" "$TN" "$NONCE" "$DEV"
+{ printf '_rw_a=%q _rw_log=%q _rw_nice=%q _rw_t=%q _rw_n=%q _rw_dev=%q _rw_wait=120\n' "$A" "$PROJ/$LOG" "$NICE" "$TN" "$NONCE" "$DEV"
   cat <<'WRAP'
 # the run's wrapper: session + group leader, pid in <log>.pid; starts the payload only once the gate says go
 _rw_run=$1; exec >>"$_rw_log" 2>&1 </dev/null || exit 1
@@ -238,7 +260,6 @@ WRAP
   exec 3>&- 4>&- 9>&-; trap - TERM INT   # nothing below (env.sh, a hook's helper, the run) holds the ssh channel or the lock
   # env.sh sources the conf and the hook into THIS shell: from here on only _rl_ copies are read (a conf may set LOG=, A=, …)
   _rl_a=$A _rl_log=$PROJ/$LOG _rl_dev=$DEV _rl_n=$NONCE _rl_t=$TN _rl_proj=$PROJ _rl_cmd=$RUN_CMD _rl_bash=$BASH _rl_p="" _rl_v="" _rl_f=""
-  _rl_plan=$PLAN
   _rl_env=$SELF/env.sh _rl_w=" $(printf %s "$RUN_CMD" | tr -c '[:alnum:]_' ' ') "   # RUN's words: the names it can expand
   unset RUN_ENV_READY HPC_ENV_READY WS_ENV_READY CONDA_DEFAULT_ENV   # the sentinel shape: judge THIS env.sh run
   for _rl_k in ENV_KIND ENV_NAME ENV_HOOK VENV_DIR WANDB_MODE; do unset "$_rl_k" "${TAG}_$_rl_k"; done   # the conf alone sets them
@@ -257,7 +278,6 @@ WRAP
     *) _rl_p=$(command -v python || true); [ -n "$_rl_p" ] && [ "$_rl_p" -ef "${RS_VENV:-/nonexistent}/bin/python" ] \
          || { echo "ERROR: uv venv not active (python=${_rl_p:-none}, want ${RS_VENV:-?}/bin/python; run: TARGET=$_rl_t bash ~/.agents/run-skills/bin/run-bootstrap)" >&2; exit 1; } ;;
   esac
-  [ "$_rl_plan" = 0 ] || { rm -f "$_rl_a/vars.before"; exit 0; }   # a plan: the gate passed; nothing is created or started
   ( set -C; : > "$_rl_log" ) 2>/dev/null || { echo "ERROR: $_rl_log appeared meanwhile — retry" >&2; exit 2; }
   export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES="$_rl_dev" PYTHONUNBUFFERED=1   # no RS_ATTEMPT: env.sh drops it outside Slurm
   # the new plain (unexported) variables that RUN names: its expansion sees them as in a login shell. After the exports
@@ -277,7 +297,6 @@ WRAP
   exec setsid "$_rl_bash" "$_rl_f" "$_rl_cmd" </dev/null >/dev/null 2>&1
 ) &
 SUB=$!; subrc=""; i=0
-if [ "$PLAN" = 1 ]; then wait "$SUB"; subrc=$?; [ "$subrc" = 0 ] || { [ "$subrc" = 2 ] || VERDICT=failed; exit "$subrc"; }; rs_plan print; fi
 while [ ! -f "$LOG.pid" ]; do   # env.sh takes as long as it takes; once it is through, the pid file has 30 s
   if [ -z "$subrc" ] && ! kill -0 "$SUB" 2>/dev/null; then
     wait "$SUB"; subrc=$?

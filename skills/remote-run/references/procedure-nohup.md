@@ -2,8 +2,10 @@
 
 `$ROOT` = line 1 of `INDEX.md`; `<t>` = the target name (its `<TAG>` = the name uppercased, non-alphanumerics
 dropped: `ws-box` → `WSBOX_`); `<host>` = its ssh alias from the table. Run everything with the **project root as
-cwd** (where `.ws.conf` lives). `TARGET=<t>` selects the target (`STATION=<t>` is accepted too). No scheduler: the run
-is `nohup`'d over one ssh and tracked by PID + log. The harness is deployed to `~/<WS_REMOTE_DIR>/.ws/` on every sync.
+cwd** (where `.ws.conf` lives). `TARGET=<t>` selects the target (`STATION=<t>` is accepted too);
+`rsk sync|bootstrap|pull|avail -T <t> …` run the same scripts, and `rsk launch` / `rsk cancel` wrap `run-launch` / the
+kill with the plan card, the authorisation check and the ledger (SKILL.md §3). No scheduler: the run is `nohup`'d over
+one ssh and tracked by PID + log. The harness is deployed to `~/<WS_REMOTE_DIR>/.ws/` on every sync.
 
 `.ws.conf` (sourced as shell; double-quote values with spaces) is the only per-project state: `WS_REMOTE_DIR`
 (relative to the box's `$HOME`, e.g. `projects/<name>`; `<TAG>_REMOTE_DIR` per box), `ENV_KIND` (uv default | conda,
@@ -11,7 +13,8 @@ then `ENV_NAME`), `RUN`; full list in `conf-keys.md`. Missing → follow `projec
 
 ## 1. Sync — push code, deploy the harness
 ```
-TARGET=<t> bash $ROOT/bin/run-sync        # additive; -n dry-run; -D also delete remote files gone locally; --also <path>
+rsk sync -T <t> [-n] [--also <path>]      # = TARGET=<t> bash $ROOT/bin/run-sync …; additive; -n dry-run; -D also delete
+                                          #   remote files gone locally: only on the user's words at the time, never a grant
 ```
 First line printed: `[<t>] remote: <host>:<dir>  tag: <TAG>  deploy: .ws`. Never deletes remote `.venv* .cache
 .local .config bin tmp wandb wandb-artifacts logs run_logs ckpts checkpoints runs outputs videos data .wandb_env .rs`
@@ -27,7 +30,7 @@ checkout running) re-run with `--take-over`. `--also <path>` force-pushes one ex
 
 ## 2. Bootstrap the env — first run, and after any dependency change (idempotent)
 ```
-TARGET=<t> bash $ROOT/bin/run-bootstrap   # = ssh <host> "cd <WS_REMOTE_DIR> && export PROJ=$PWD TARGET=<t> && bash .ws/bootstrap.sh"
+rsk bootstrap -T <t>                      # = TARGET=<t> bash $ROOT/bin/run-bootstrap = ssh <host> "cd <WS_REMOTE_DIR> && export PROJ=$PWD TARGET=<t> && bash .ws/bootstrap.sh"
 ```
 uv (default): puts `uv` on PATH (the box's own, `~/.local/bin/uv`, else a private copy in `<project>/bin`) and
 `uv sync`s the per-box venv (`.venv`, never rsynced, so each box compiles its own wheels) — or runs `BOOTSTRAP_HOOK`
@@ -35,18 +38,22 @@ instead. conda: only *verifies* `ENV_NAME` exists in the box's conda (`T_CONDA_I
 creates it**; on `conda env 'X' MISSING`, stop and ask. none: builds nothing (runs `BOOTSTRAP_HOOK` if set; the
 payload brings its own runtime). Ends with `bootstrap done (<t>).`
 
-## 3. Check GPUs, then CONFIRM (required)
-Unless the user fixed the placement, `run-avail` first (INDEX Routing: Placement) — it also shows the Slurm clusters,
-which may fit better; the plan cites what is free there. On the chosen box:
+## 3. Check GPUs, plan, then check the authorisation (required)
+Unless the user fixed the placement, `run-avail` (`rsk avail`) first (INDEX Routing: Placement) — it also shows the Slurm
+clusters, which may fit better; the plan cites what is free there. On the chosen box:
 ```
-ssh <host> "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --format=csv,noheader"
+rsk exec -T <t> -- nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --format=csv,noheader   # no rsk: ssh <host> "nvidia-smi …"
 ssh <host> "ps -eo pid,etime,cmd | grep -i '[p]ython'"      # what is already running, and whose
 ```
 Auto-pick takes the **idlest** GPUs by `memory.used` among those with no compute process (`launch.sh` asks
 `nvidia-smi --query-compute-apps` once and names them `GPU(s) in use (id:user:pid)`); memory alone is not "free": read the
-table and use `-d` when the pick would land on a busy card. **Print a one-line plan (target / GPU ids / run command / `ref: <reference path>` —
-re-read it if only a summary of it is in context) and wait for an explicit go.** Never launch onto a GPU another job
-is using without the user's OK.
+table and use `-d` when the pick would land on a busy card. **`rsk launch` (§4) plans first and checks whether the
+user's recorded words already cover that plan** (SKILL.md §3): covered → it launches and you report which record
+covered it; not covered (exit 4) → show its card verbatim (GPU request, `busy now` = who uses which GPU) with `ref:
+<reference path>` (re-read it if only a summary of it is in context) and wait for the user's words. Installed
+without rsk: the same check against the user's words; outside them, print a one-line plan (target / GPU ids / run
+command / `ref: <reference path>`) and wait for their go. Never launch onto a GPU another job is using without the
+user's words naming it: with `-d <ids> --gpu-busy-ok` (rsk takes it only with `-d`), a card that lands on one (`ON A BUSY GPU`) is never grant-covered.
 Classify and name the run per `experiment-conventions.md` (run class, structured `-N` name, wandb mapping). A smoke
 goes out with `WANDB_MODE=disabled` (prepend `env WANDB_MODE=disabled` to the payload). A pilot/train/ablate must
 checkpoint and resume: nothing restarts a nohup run after a crash or reboot. A relaunch must use the logical run's
@@ -54,11 +61,17 @@ checkpoint dir even when its attempt suffix changes; confirm that resume behavio
 
 ## 4. Launch (nohup, detached)
 ```
-TARGET=<t> bash $ROOT/bin/run-launch [-d 0,1 | -n <count>] [-N <name>] [--same-name-ok] [--gpu-busy-ok] -- <RUN>
+rsk launch -T <t> [-d 0,1 [--gpu-busy-ok] | -g <count>] [-N <name>] [--nice N] [--same-name-ok] [--class C] [-- <RUN>]
+rsk launch --plan <id> [--plan <id>]... --approve "<the user's words>"     # the card(s) the user approved: launch
+TARGET=<t> bash $ROOT/bin/run-launch [-d 0,1 | -n <count>] [-N <name>] [--same-name-ok] [--gpu-busy-ok] -- <RUN>   # without rsk
 ```
-With rsk installed the launch goes through `rsk launch -T <t> …` (plan → the user's words → launch): `run-launch` called
-directly then prints `use: rsk launch -T <t> …` and exits 2 (rsk runs it with `RS_VIA_RSK=1`); without rsk (an install
-without uv) it launches as below, with a one-line NOTE.
+`rsk launch` runs `run-launch` (with `RS_VIA_RSK=1`) twice: `--rs-mode plan` for the card, then, once a record covers
+the plan, the launch with `--rs-expect <bound_hash> --rs-warnings <the card's count>` (`--gpu-busy-ok` only when the
+approved card's own landing was on a busy GPU, pinned to it with `-d`; the busy set is bound: another GPU busy since is
+exit 6). Exit as for Slurm (procedure-slurm §4: 0 launched, 3 refused, 4 needs the user,
+5 reply lost = SUBMIT_UNKNOWN, 6 stale plan / drift / a live ledger run of that name / a busy `-d` GPU / `needs: sync`),
+plus 8: too few free GPUs now. `run-launch` called directly while rsk is installed (on PATH, or in `uv tool dir --bin`)
+prints `use: rsk launch -T <t> …` and exits 2; installed without rsk it launches as below, with a one-line NOTE. That steers; it is not a guard.
 `-d ids` uses exactly those GPUs (bypasses `GPU_EXCLUDE`); `-n N` picks the N idlest free ones (no compute process),
 skipping `GPU_EXCLUDE` (default `DEFAULT_NGPU`, 1; positive integer; fewer than N free is a hard error, exit 1, never a
 silent smaller world size). A `-d` GPU with a compute process is exit 6, and a failed `--query-compute-apps` (busy state
@@ -73,11 +86,14 @@ the conda env is active → start `<RUN>` detached (`setsid` + `nohup`, `PYTHONU
 `logs/<name>-<timestamp>.log`; it prints `[<t>] started PID … ; log …` + a `verify:` line. Report PID + log path.
 Address GPUs as `cuda:0…` in the program. Exit: 0 launched, 1 failed (env gate, nvidia-smi, start) or too few free GPUs,
 2 usage, 6 same name alive / a busy `-d` GPU / not the approved plan, 75 that attempt already ran, 255 ssh.
-rsk's protocol (api=3, the deployed `.ws/API`): `--rs-mode plan` runs every step above, the env gate included, then prints ONE
-`@@plan v1` … `@@end` block and starts nothing (bound: `name gpus_req exclude nice payload env_kind env_name`; `info_gpus=`
-`info_uuids=` `info_busy=<id:user:pid,…>|unknown`; `warnings=N` `bound_hash=`; result `verdict=planned`). `--rs-expect
-<bound_hash>` launches only while the request still hashes the same — else the current block + `ERROR: the resolved
-submission differs from the approved plan`, exit 6, before anything starts. The picked ids are envelope: a GPU that got busy since the
+rsk's protocol (api=3, the deployed `.ws/API`): `--rs-mode plan` runs every step above except the env gate (env.sh creates
+the project's cache dirs; a plan creates nothing outside `.rs/` — the gate runs at the launch, exit 1 there), then prints ONE
+`@@plan v1` … `@@end` block and starts nothing (bound: `name gpus_req exclude nice busy_ok payload env_kind env_hook venv_dir
+uv_sync_args env_name` — `busy_ok` = the busy GPUs the landing accepts with `--gpu-busy-ok`, `env_hook` = `<ENV_HOOK>:<sha256
+of the file>`; `info_gpus=` `info_uuids=` `info_busy=<id:user:pid,…>|unknown`; `warnings=N` `bound_hash=`; result
+`verdict=planned`). `--rs-expect <bound_hash> [--rs-warnings N]` launches only while the request still hashes the same and the
+call printed N `WARNING:` lines (the card's count, default 0) — else the current block + `ERROR: the resolved submission
+differs from the approved plan`, exit 6, before anything starts. The picked ids are envelope: a GPU that got busy since the
 plan moves the pick, never the request. A plan is a card for the user, not an approval.
 
 launch.sh records before it prints: the attempt dir holds `out`/`err` (every line it printed), `stage`, `result`
@@ -110,12 +126,18 @@ started, its launch was not confirmed). Once the pid is gone status.sh reads the
 (else `(the log's EXIT footer)`, which must name that pid; `exit=unknown` when neither exists); a run
 launched before launch.sh existed has neither: there `proc=gone` + the last lines + the final artifact ARE the evidence. Idle = ALL of the run's GPUs under ~5 % util
 AND the log not advancing across two checks — never one sample. A nohup'd run survives ssh disconnect, not a reboot:
-relaunch with the next `a<attempt>` (conventions §3) and confirm it resumed. **Never `kill` a process without explicit approval**; after an
-OK: `ssh <host> "kill <pid>"` (the `<log>.pid` wrapper: it forwards TERM to the run once and records `term=1`), and only if
-the run's group outlives that, `ssh <host> "kill -- -<pid>"` (the whole process group).
+relaunch with the next `a<attempt>` (`rsk launch --relaunch <run>`, conventions §3) and confirm it resumed.
+**Stop a run only through `rsk cancel <run> [--job <pid>] [--approve "<the user's words>"]`**: the same ssh first checks
+the pid against the run's receipt (pid, process start time, boot id, your user, the group leader) — exit 6 = mismatch
+(a reused pid), nothing signalled; someone else's process: never — then sends TERM to the run's process group, waits
+`--grace` (30 s) and KILLs what is left; `<log>.rc` is read back. It acts on the user's words naming that run, or — for
+your own judgment that it should stop — on a `cancel_own` grant (runs rsk launched only); else exit 4: ask. Without
+rsk, on the same terms: `ssh <host> "kill <pid>"` (the `<log>.pid` wrapper: it forwards TERM to the run once and records
+`term=1`), and only if the run's group outlives that, `ssh <host> "kill -- -<pid>"` (the whole process group).
 
 **Many runs or long waits: `run-watch`** (cwd = project root; `bin/run-watch` header = the contract). A table
-`#@ run-watch v1` lists rows `name target done-path -` (the name = the log prefix `logs/<name>-<timestamp>.log`). Each
+`#@ run-watch v1` lists rows `name target done-path -` (the name = the log prefix `logs/<name>-<timestamp>.log`;
+`rsk watch <table> …` runs it under the project's lease). Each
 round: one read-only ssh per box, one dated event per change (ADOPT DONE STALL WARN ATTENTION). On workstations it
 only detects: it never launches, relaunches or kills. Run it as this session's background task with a lease (`--for`,
 default 2 h) and follow its output; every exit is a review point. Without that, run `--once` at each review. Never
@@ -123,8 +145,8 @@ detach it (no `nohup`, `setsid`, cron). ATTENTION is a finding — report it.
 
 ## 6. Pull results back — only with `run-pull`
 ```
-TARGET=<t> bash $ROOT/bin/run-pull -n <path>...   # dry run: file count + total size (rsync --stats); writes nothing
-TARGET=<t> bash $ROOT/bin/run-pull <path>...      # copy them into the local project
+rsk pull -T <t> -n <path>...      # = TARGET=<t> bash $ROOT/bin/run-pull -n …: dry run, file count + total size (rsync --stats); writes nothing
+rsk pull -T <t> <path>...         # copy them into the local project
 ```
 Paths are relative to the project dir and land at the same path locally (`logs/<file>`, `results/`); plain paths
 only (no wildcards, no `..`) — for anything outside the project dir, ask the user. Additive: a local file newer than
@@ -148,7 +170,8 @@ is exported only when every step succeeded; launch.sh refuses without it.
 
 ## Safety rails (every time)
 - Files move only through `run-sync` / `run-pull` (the target's transfer host, if any); no hand-rolled `rsync`/`scp`.
-- Confirm before every launch; never launch onto a busy GPU or `kill` a run without an OK (shared boxes).
+- Check the user's recorded words before every launch or stop (`rsk launch` / `rsk cancel`); outside them, ask. Never
+  launch onto a busy GPU without the user's words naming it; never signal someone else's process (shared boxes).
 - wandb: your key only (`.wandb_env`), never the box's `~/.netrc`; no key → offline. Never create conda envs.
   Keep outputs/caches under the project dir; report PID + log after every launch.
 - Every pilot/train/ablate checkpoints + resumes (a relaunch must not retrain from step 0); smokes run

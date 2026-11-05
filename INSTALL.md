@@ -52,7 +52,11 @@ command -v claude codex pi
   path line 2 printed (`<uv tool dir --bin>/rsk`), written out each time (shell variables do not survive between
   your commands). Putting that dir on PATH (`uv tool update-shell`) edits shell rc files: the user's call (rule 4).
 - `rsk` found (either line) → **update mode**: `rsk update` (upgrades rsk, fast-forwards clean pack clones, re-runs
-  setup, which also replaces the older `hpc-run` / `ws-run` skills with `remote-run`), then Step 6's checks. Offer
+  setup, which also replaces the older `hpc-run` / `ws-run` skills with `remote-run`), then Step 6's checks, then
+  `rsk doctor --legacy-refs` (read-only): project docs that still name those skills or a raw `ssh … submit.sh` /
+  `run-launch` recipe — show the list; edit a project's docs only with the user's OK. rsk honours permissions the user
+  gave earlier (notes, memory, project docs) only once recorded: show them; with the user's OK, `rsk grant add` /
+  `rsk grant import` them in the user's words, with the limits they stated (never invented ones). Offer
   Steps 2–5 only as "Do you want to add another server?" — never re-ask what is already registered, and skip the pack
   question below. `~/.agents/run-skills` without `rsk` = an install from a clone: do Step 1 (same files, now
   updatable with `rsk update`), then the same.
@@ -218,7 +222,8 @@ One table: target · kind · ssh alias · GPUs · default partition · status (r
 - what the user still has to do (`ssh-copy-id`, the wandb key, a new session);
 - where their setup lives: `~/.config/run-skills/{targets,routing,wandb_env}`;
 - updating: `rsk update` (engine, pack clones, then setup);
-- next: in a project, *"set up this project for `<target>`"*, or simply *"run train.py on `<target>`, 1 GPU"*.
+- next: in a project, *"set up this project for `<target>`"*, or simply *"run train.py on `<target>`, 1 GPU"*; a
+  standing permission they state there ("smoke runs on `<target>` are fine") is recorded and not asked again.
 
 Then ask: **"Do you want me to set up existing projects now? Give me their paths."**
 

@@ -29,7 +29,7 @@ the harness already makes logs unique (slurm `logs/<name>_<jobid>.out`, nohup `l
 
 ## 3. Lineage: restart vs fork
 - Same task, config, seed and objective → the SAME logical run; resume the same wandb run when supported.
-  Bump only `a<attempt>` for a separately approved resubmit/relaunch; a `run-watch` resubmit within an approved
+  Bump only `a<attempt>` for a separately authorised relaunch (`rsk launch --relaunch`); a `run-watch` resubmit within an approved
   budget continues the same attempt and keeps the name. A Slurm requeue keeps the full job name;
   its `restart=N` header records the restart. An approved segment chain (§6) also keeps one full name, including
   `a<attempt>`, for all segments; distinguish them by job id. Neither case requires renaming a running job.
@@ -59,7 +59,7 @@ Every smoke goes out with `WANDB_MODE=disabled`: prepend `env WANDB_MODE=disable
 conf key while smoking), plus the trainer's own logger-off flag when it has one. `offline` is NOT enough — it
 creates a syncable local run; never `wandb sync` a smoke dir later. Disable any other remote tracker the
 project uses the same way. If the startup log still prints a wandb URL / run id, report it, get the OK to
-stop it, fix the isolation, rerun. Smoke evidence lives in the log file, not on the experiment dashboard.
+stop it (or act on a `cancel_own` grant the user gave), fix the isolation, rerun. Smoke evidence lives in the log file, not on the experiment dashboard.
 
 ## 6. Checkpoint + resume (every pilot / train / ablate)
 The run must write periodic checkpoints under the project dir (`ckpts/` or the trainer's own dir) AND resume
@@ -82,7 +82,8 @@ corrupts the only resume point.
   precondition absorbs). Two trainer preconditions, verified before the first submit: it resumes from a committed
   checkpoint, and it exits 0 without training once the run is complete (else the spare retrains).
   Singleton also lets the next segment start after a FAILURE (OOM, config error), so a broken run fails once per
-  segment: the segment boundary is a monitoring milestone (§7) — on a failure, report and ask to cancel the rest.
+  segment: the segment boundary is a monitoring milestone (§7) — on a failure, report and ask to cancel the rest
+  (`rsk cancel <run>` stops every live segment), unless the user already authorised that (`cancel_own`, `fail-stop`).
   The plan states the segment count (MaxTime minus a margin each, plus one spare) and the per-segment walltime. A
   save slower than the 120 s warning: `--signal=B:USR1@600` in `SBATCH_EXTRA` (command-line flags override the
   script's `#SBATCH` line).
@@ -127,9 +128,11 @@ and the next check time for re-invocation. Do not promise unattended monitoring 
 - **A check decides only machine-checkable things** (alive / done / crashed / a non-finite value in the log).
   Done = the expected artifact exists, not a state word. "Is the result good" is judged once, after the run
   ends, raw numbers shown before interpretation.
-- **Detect, don't act:** a check never `scancel`s, `kill`s or resubmits (sole exception: `run-watch --act` on rows the
-  user approved, within their `#@ allow` line, `fail-stop` cancels included — procedure §5). Clearly-bad → report the evidence (URL,
-  last metrics, log lines, reason) plus a recommendation, then wait for the OK. The same failure twice after a
-  fix → stop retrying and escalate.
+- **Detect, don't act:** a check never `scancel`s, `kill`s or resubmits; the exceptions are what the user authorised
+  and a tool checks first: `run-watch --act` on rows the user approved, within their `#@ allow` line, `fail-stop`
+  cancels included (procedure §5); `rsk cancel` / `rsk launch --relaunch` under a grant that covers them (SKILL.md §3).
+  Clearly-bad → report the evidence (URL, last metrics, log lines, reason) plus a recommendation, then wait for the OK:
+  your own judgment that a run should stop is the user's call unless they authorised that kind of decision
+  (`cancel_own`). The same failure twice after a fix → stop retrying and escalate.
 - A new session first lists what is running (`rsk status`; `squeue -u $USER`, `ls -t logs/`, `logs/run-watch/`); keep the run's
   receipt (job ids, log path, ckpt dir, URL, ETA; a watched table's state file) where the next session finds it.

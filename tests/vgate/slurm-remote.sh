@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # tests/vgate/slurm-remote.sh — reproductions behind the v3 submit protocol, run ON a Slurm login node, only with the
 # user's OK:  ssh <alias> bash -s -- <scratch-dir> <partition> [VENV=<venv>] [sbatch args...] < tests/vgate/slurm-remote.sh
-# Submits 3 tiny CPU jobs (1 cpu, 1G, <= 5 min): two held and cancelled unrun (duplicate options, SBATCH_* vs CLI,
-# Comment storage), one --requeue job that this script requeues once (env and stored script after a requeue; a
-# login-node dir seen from the compute node; torch arch flags without a GPU when VENV= is given), then cancelled. Also
-# the identity reads rsk cancel and run-watch's fail-stop / --adopt rely on (squeue -O / sacct -o of its own jobs).
+# Submits 5 tiny CPU jobs (1 cpu, 1G, <= 5 min): two held and cancelled unrun (duplicate options, SBATCH_* vs CLI,
+# Comment storage); two of one name with --dependency=singleton (submit.sh --rs-chain), held, the second released: it
+# stays PENDING (Dependency) while the first is pending, both cancelled (the second as soon as the first is gone, before
+# it can run more than `true`); one --requeue job that this script requeues once (env and stored script after a
+# requeue; a login-node dir seen from the compute node; torch arch flags without a GPU when VENV= is given), then
+# cancelled. Also the identity reads rsk cancel and run-watch's fail-stop / --adopt rely on (squeue -O / sacct -o of
+# its own jobs).
 # Prints key=value lines. Writes only under <scratch-dir>; cancels only the jobs it submitted. NOT part of selftest.
 set -u
 D=$1; P=$2; shift 2; VENV=""
@@ -28,6 +31,15 @@ scancel "$j" "$j2"; sleep 8
 echo "comment_sacct=$(sacct -X -n -P -j "$j" -o Comment 2>&1 | head -n 1)"
 # identity of an ended job (run-watch --adopt, rsk cancel's "gone"): JobID|JobName|User|WorkDir, -P (no trailing '|')
 echo "id_sacct=$(sacct -X -n -j "$j" -o JobID,JobName,User,WorkDir -P 2>&1 | head -n 1) (want $j|rs-vgate-dup|$U|$D)"
+
+# 1b. --rs-chain = --dependency=singleton: a second job of the same name and user waits while the first has not ended
+s1=$(sb --hold -t 00:01:00 -J rs-vgate-single --dependency=singleton --wrap true); got "$s1" single1
+s2=$(sb --hold -t 00:01:00 -J rs-vgate-single --dependency=singleton --wrap true); got "$s2" single2
+scontrol release "$s2"; sleep 5   # the second is no longer held: only the first (held, same name) can keep it pending
+echo "singleton_second=$(squeue -h -j "$s2" -O 'State:0|,Reason:0|' 2>&1) (want PENDING|Dependency| while $s1 is held)"
+scancel "$s1"; sleep 5
+echo "singleton_second_after=$(squeue -h -j "$s2" -O 'State:0|,Reason:0|' 2>&1) (want no Dependency: the first is gone)"
+scancel "$s2"
 
 # 2. how far back sacct may look (MaxQueryTimeRange)
 sacct -X -n -P -u "$U" -S now-30days -o JobID > /dev/null 2> sacct.err; echo "sacct_30d_rc=$? err=$(head -c 200 sacct.err | tr '\n' ' ')"

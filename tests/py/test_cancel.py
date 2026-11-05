@@ -23,6 +23,8 @@ SSH = """#!/usr/bin/env bash
 while [ $# -gt 0 ]; do case "$1" in -o) shift 2 ;; -*) shift ;; *) break ;; esac; done
 echo "$1" >> "$STUB/ssh.log"; shift
 [ -z "${SSH_FAIL:-}" ] || { echo "ssh: connect to host: Connection timed out" >&2; exit 255; }
+if [ -n "${SSH_CUT:-}" ]; then   # the connection dies once the remote printed a line matching SSH_CUT (it ran to the end)
+  bash -c "$*" > "$STUB/full.out" 2>&1; sed "/$SSH_CUT/,\\$d" "$STUB/full.out"; exit 255; fi
 exec bash -c "$*"
 """
 SQUEUE = """#!/usr/bin/env bash
@@ -54,7 +56,7 @@ class Base(ScratchHome):
         os.environ["STUB"] = str(self.stub)
         os.environ["PATH"] = f"{self.stub / 'bin'}{os.pathsep}{os.environ['PATH']}"
         os.environ["USER"] = ME
-        for k in ("SSH_FAIL", "SQ_FAIL", "SC_RC"):
+        for k in ("SSH_FAIL", "SQ_FAIL", "SC_RC", "SSH_CUT"):
             os.environ.pop(k, None)
         for name, prof in (("fx", "T_KIND=slurm; T_HOST=fxhost\n"), ("ws", "T_KIND=nohup; T_HOST=wshost\n")):
             d = Path(os.environ["RS_USER_DIR"]) / "targets" / name
@@ -167,6 +169,19 @@ class Slurm(Base):
         self.assertEqual(rc, UNKNOWN, text)
         self.assertIn("nothing was cancelled", text)
         self.assertTrue(all(ap["used"] == [] for ap in self.approvals()))
+
+    def test_l2_an_answer_cut_after_the_identity_passed_gives_nothing_back(self):
+        self.launched("exp--a01", "101")
+        self.queue(f"101|exp--a01|{ME}|{self.remote}|RUNNING|")
+        os.environ["SSH_CUT"] = "^@@scancel"                      # `@@c 101 ok` arrived, then the connection died
+        rc, text = self.cancel("exp", "--approve", "cancel job 101")
+        self.assertEqual(rc, UNKNOWN, text)
+        self.assertIn("the cancel may have been sent", text)
+        self.assertEqual(self.scancelled(), "101\n")
+        self.assertEqual(len(self.approvals()[0]["used"]), 1)       # no refund: it was (or may have been) cancelled
+        self.assertIn("each once", G.describe(self.approvals()[0]))
+        d = G.check(self.led, "cancel", job="101", run="exp", plan={"target": "fx"})
+        self.assertFalse(d.covered)                                  # the approval cannot be used a second time
 
     def test_a_deny_on_cancel_wins_over_the_users_words(self):
         G.add(self.led, G.new_deny("never cancel exp", {"names": ["exp*"]}, ["cancel"]))

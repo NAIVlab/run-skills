@@ -8,8 +8,10 @@ One watcher per project: the lease (the ledger's watch.lease: pid, host, boot_id
 live lease of another process (or one on another host / boot, until it expires) → exit 6, run-watch never starts. Then
 the harness's bin/run-watch runs with every other argument unchanged (bash stays the one implementation; cwd = the
 project, so TABLE paths are relative to it), and the lease is released when it ends — also on SIGTERM / SIGINT /
-SIGHUP, which are passed on to run-watch first. `until` = now + --for (run-watch's lease, default 7200 s) + one
-round (--every, default 300 s) + 15 min of slack for a last submit; `rsk status` shows the lease.
+SIGHUP, which are passed on to run-watch first. `until` = now + --for (run-watch's lease, default 7200 s; the last
+--for / --every given wins, as in run-watch) + one round (--every, default 300 s) + 15 min of slack for a last submit,
+and while run-watch runs rsk moves it forward every minute to now + one round + the slack (a long last round never
+outlives its lease); `rsk status` shows the lease.
 Exit: run-watch's, with its 3 (lease over, or --once with rows still moving) as rsk's 7 (LEASE_ENDED); 0 every row
 done, 2 table/conf/lock error, 4 the rest waits on the user; 6 another watcher holds the lease.
 """
@@ -28,6 +30,7 @@ from remote_run import ledger as L
 from remote_run.errors import LEASE_ENDED, USAGE, RskError
 
 FOR_DEFAULT, EVERY_DEFAULT, SLACK = 7200, 300, 900
+REFRESH_S = 60                     # how often the lease's `until` moves forward while run-watch runs
 RC_MAP = {3: LEASE_ENDED}          # run-watch's exit -> rsk's (the others mean the same in both)
 
 
@@ -37,14 +40,19 @@ def until_of(argv: list[str], now: float | None = None) -> float:
     if "--approve" in argv:
         return t + 300
     def num(flag: str, default: int) -> int:
-        if flag in argv:
-            i = argv.index(flag)
-            v = argv[i + 1] if i + 1 < len(argv) else ""
-            return int(v) if v.isdigit() else default
-        return default
+        return last(argv, flag, default)
     if "--once" in argv:
         return t + SLACK + num("--every", EVERY_DEFAULT)
     return t + num("--for", FOR_DEFAULT) + num("--every", EVERY_DEFAULT) + SLACK
+
+
+def last(argv: list[str], flag: str, default: int) -> int:
+    """The value of the LAST FLAG in ARGV (run-watch's parser: a later one overrides), DEFAULT without one."""
+    v = default
+    for i, w in enumerate(argv[:-1]):
+        if w == flag:
+            v = int(argv[i + 1]) if argv[i + 1].isdigit() else default
+    return v
 
 
 def _foreground() -> bool:
@@ -86,10 +94,13 @@ def run_watch(led: L.Ledger, argv: list[str], cwd: str, env: dict[str, str], cmd
         child = subprocess.Popen(cmd or ["bash", script(), *argv], cwd=cwd, env=env)
         if got:                    # a signal that came while it was starting: it gets it now
             forward(got[-1], None)
+        round_s = last(argv, "--every", EVERY_DEFAULT) + SLACK
         while True:
             try:
-                rc = child.wait()
+                rc = child.wait(timeout=REFRESH_S)
                 break
+            except subprocess.TimeoutExpired:   # still running: its lease covers one more round from now
+                led.refresh_lease(time.time() + round_s)
             except InterruptedError:   # (PEP 475 retries; kept for clarity)
                 continue
     finally:

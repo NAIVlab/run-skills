@@ -28,6 +28,13 @@ has "$C" '^squeue -h -u [^ ]* -O JobID:0|,UserName:0|,Name:0|,WorkDir:0|$' "iden
 has "$C" '^squeue -h -u [^ ]* --states=all -O JobID:0|,Name:0|,UserName:0|,WorkDir:0|,State:0|$' "identity read: run-watch's / rsk cancel's squeue format"
 has "$C" '^squeue -h -j 10[0-9] -O JobID:0|,UserName:0|$' "identity read: squeue -j (another user's job by id)"
 has "$C" '^sacct -X -n -j 10[0-9] -o JobID,JobName,User,WorkDir -P$' "identity read: sacct -j -o JobID,JobName,User,WorkDir -P"
+S=$(cat "$V/sbatch.log" 2>/dev/null)   # --rs-chain's singleton: two held jobs of one name, the second released, both cancelled
+[ "$(printf '%s\n' "$S" | grep -c -- '--hold -t 00:01:00 -J rs-vgate-single --dependency=singleton --wrap true$')" = 2 ] \
+  && ok "singleton repro: two held 1-min jobs of one name with --dependency=singleton" || bad "singleton repro: the two submits"
+has "$C" '^scontrol release 10[0-9]$' "...the second is released (the first stays held)"
+has "$C" '^squeue -h -j 10[0-9] -O State:0|,Reason:0|$' "...its State|Reason read (PENDING|Dependency| wanted)"
+has "$O" '^singleton_second=.*(want PENDING|Dependency| while 10[0-9] is held)$' "...printed as singleton_second="
+[ "$(printf '%s\n' "$C" | grep -c '^scancel 10[0-9]$')" -ge 2 ] && ok "...both cancelled" || bad "singleton repro: both cancelled"
 
 echo "-- slurm-remote.sh: sbatch fails --"
 touch "$V/sbatch-fails"; : > "$V/calls.log"

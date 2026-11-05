@@ -2,16 +2,17 @@
 # run-skills bin/run-launch — launch the project's run on a nohup workstation target, contained (env.sh) and
 # detached. Runs LOCALLY from the repo root (cwd with .ws.conf) after run-sync + run-bootstrap.
 #   TARGET=<name> bash ~/.agents/run-skills/bin/run-launch [-d 0,1 | -n 2] [-N name] [--nice N] [--same-name-ok]
-#                 [--gpu-busy-ok] [--rs-attempt NONCE] [--rs-mode plan] [--rs-expect HASH] [-- <run cmd...>]
+#                 [--gpu-busy-ok] [--rs-attempt NONCE] [--rs-mode plan] [--rs-expect HASH [--rs-warnings N]] [-- <run cmd...>]
 #     -d ids   use exactly these GPU ids (bypasses GPU_EXCLUDE)     -n N   auto-pick the N idlest free GPUs (memory.used)
 #     -N name  job/log name (default: JOB_NAME, else the remote dir basename)   -- cmd   overrides RUN from .ws.conf
 #     --nice N  the run's nice level 0-19 (default: NICE from .ws.conf)
 #     --same-name-ok  launch even if a run of this name from this project is alive (else exit 6)
 #     --gpu-busy-ok   launch onto GPUs with a compute process (else -d onto one = exit 6; auto-pick skips them)
 #     --rs-attempt NONCE  the attempt id ([A-Za-z0-9][A-Za-z0-9._-]{0,63}; default: generated) — reusing one exits 75, never relaunches
-#     --rs-mode plan / --rs-expect HASH  rsk's protocol (api=3): print the @@plan block, start nothing / launch only that plan
-# Driven by rsk (`rsk launch`, which sets RS_VIA_RSK=1): called directly while rsk is on PATH it points there and exits 2;
-# without rsk (an install without uv) it launches, with a NOTE. .ws.conf keys (generic or <TAG>_): RUN DEFAULT_NGPU
+#     --rs-mode plan / --rs-expect HASH [--rs-warnings N]  rsk's protocol (api=3): print the @@plan block, start nothing /
+#              launch only that plan, with as many WARNING: lines as its card counted
+# Driven by rsk (`rsk launch`, which sets RS_VIA_RSK=1): called directly while rsk is installed (on PATH, or in uv's
+# tool bin dir) it points there and exits 2; installed without rsk it launches, with a NOTE. .ws.conf keys (generic or <TAG>_): RUN DEFAULT_NGPU
 # GPU_EXCLUDE NICE JOB_NAME ENV_NAME; generic-only: ENV_KIND.
 # Prints the GPU table (one read-only ssh), then ONE ssh runs the deployed .ws/launch.sh (pick, env gate, receipt in
 # <REMOTE_DIR>/.rs/attempts/<NONCE>/, setsid). Log: <REMOTE_DIR>/logs/<name>-<timestamp>.log (+ .pid, .rc). Exit: launch.sh's
@@ -21,11 +22,19 @@ set -euo pipefail
 RS_HOME=$(cd "$(dirname "$0")/.." && pwd)
 . "$RS_HOME/lib/common.sh"
 rs_init
-[ "$T_KIND" = nohup ] || die "run-launch is for nohup targets; for Slurm use: ssh $T_HOST 'bash <REMOTE_DIR>/.$T_NAME/submit.sh …'"
+rsk_installed() {   # rsk on PATH, or in uv's tool bin dir (uv tool install puts it there; that dir may not be on PATH)
+  command -v rsk >/dev/null 2>&1 && return 0
+  command -v uv >/dev/null 2>&1 || return 1
+  local d; d=$(uv tool dir --bin 2>/dev/null) && [ -n "$d" ] && [ -x "$d/rsk" ]
+}
+if [ "$T_KIND" != nohup ]; then
+  if rsk_installed; then die "run-launch is for nohup targets; $T_NAME is Slurm: rsk launch -T $T_NAME … -- <cmd> (plan → the user's words → submit)"
+  else die "run-launch is for nohup targets; $T_NAME is Slurm: its deployed submit.sh (references/procedure-slurm.md)"; fi
+fi
 if [ -z "${RS_VIA_RSK:-}" ]; then   # P7: steer a direct call to rsk's plan → approval → launch flow (a nudge, not a guard)
-  if command -v rsk >/dev/null 2>&1; then
+  if rsk_installed; then
     echo "use: rsk launch -T $T_NAME … (plan → the user's words → submit) — nothing launched" >&2; exit 2; fi
-  echo "NOTE: no rsk on PATH (installed without uv): run-launch launches directly — the user's go comes first" >&2
+  echo "NOTE: run-skills is installed without rsk: run-launch launches directly — the user's go comes first" >&2
 fi
 rs_load_conf REMOTE_DIR WS_REMOTE_DIR ENV_NAME ENV_KIND ENV_HOOK WANDB_MODE DEFAULT_NGPU GPU_EXCLUDE NICE RUN JOB_NAME
 RDIR=$(rs_remote_dir); HOST=$T_HOST
@@ -38,7 +47,7 @@ if [ -n "$GPUX" ] && ! printf %s "$GPUX" | grep -Eq '^[0-9]+(,[0-9]+)*$'; then
   die "GPU_EXCLUDE must be comma-separated GPU ids (got '$GPUX')"
 fi
 
-GPUS=""; NPICK=""; NONCE=""; SAME=""; BOK=""; PLAN=""; EXPECT=""
+GPUS=""; NPICK=""; NONCE=""; SAME=""; BOK=""; PLAN=""; EXPECT=""; RSW=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -d) GPUS="${2:?-d needs GPU ids}"; shift 2 ;;
@@ -51,8 +60,10 @@ while [ "$#" -gt 0 ]; do
     --rs-mode) [ -z "$PLAN" ] && [ "${2:-}" = plan ] || die "--rs-mode takes one value, plan, once"; PLAN=1; shift 2 ;;
     --rs-expect) h=${2:-}; [ -z "$EXPECT" ] && [ "${#h}" = 64 ] && [ -n "${h##*[!0123456789abcdef]*}" ] || die "--rs-expect takes one bound_hash (64 lowercase hex), once"
                  EXPECT=$h; shift 2 ;;
+    --rs-warnings) h=${2:-}; [ -z "$RSW" ] && [ -n "$h" ] && [ -n "${h##*[!0123456789]*}" ] || die "--rs-warnings takes one count (digits), once"
+                   RSW=$h; shift 2 ;;
     --) shift; break ;;
-    *) echo "unknown arg: $1 (usage: run-launch [-d ids | -n N] [-N name] [--nice N] [--same-name-ok] [--gpu-busy-ok] [--rs-attempt NONCE] [--rs-mode plan] [--rs-expect HASH] -- <cmd>)" >&2; exit 2 ;;
+    *) echo "unknown arg: $1 (usage: run-launch [-d ids | -n N] [-N name] [--nice N] [--same-name-ok] [--gpu-busy-ok] [--rs-attempt NONCE] [--rs-mode plan] [--rs-expect HASH [--rs-warnings N]] -- <cmd>)" >&2; exit 2 ;;
   esac
 done
 if [ -n "$NICE" ] && ! printf %s "$NICE" | grep -Eq '^[0-9]+$'; then   # --nice beats the conf's NICE
@@ -98,6 +109,7 @@ ARGS="--rs-attempt $(sq "$NONCE") -N $(sq "$NAME") --log $(sq "$LOG") $PICK"
 [ -z "$NICE" ] || ARGS="$ARGS --nice $(sq "$NICE")"
 [ -z "$SAME" ] || ARGS="$ARGS --same-name-ok"; [ -z "$BOK" ] || ARGS="$ARGS --gpu-busy-ok"
 [ -z "$PLAN" ] || ARGS="$ARGS --rs-mode plan"; [ -z "$EXPECT" ] || ARGS="$ARGS --rs-expect $EXPECT"   # (an old launch.sh: exit 2)
+[ -z "$RSW" ] || ARGS="$ARGS --rs-warnings $RSW"
 rc=0
 ssh "$HOST" "cd $(sq "$RDIR") || exit 1; test -f .ws/launch.sh || { echo 'ERROR: no .ws/launch.sh in the remote dir: the deploy predates it — run run-sync first' >&2; exit 2; }; \
 TARGET=$(sq "$T_NAME") bash .ws/launch.sh $ARGS -- $(sq "$RUN_CMD")" || rc=$?

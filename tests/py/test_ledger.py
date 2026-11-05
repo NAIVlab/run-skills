@@ -3,6 +3,7 @@ records and attempts, plans created O_EXCL, the audit log, the watch lease."""
 
 import json
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -185,6 +186,16 @@ class Basics(ScratchHome):
                 return 0
         except RskError as exc:
             return exc.code
+
+    def test_l7_a_lease_from_this_host_before_a_reboot_is_dead(self):
+        lease = {"pid": os.getpid(), "pid_start": L._pid_start(os.getpid()), "host": socket.gethostname(),
+                 "boot_id": "00000000-old-boot", "started": L.now(), "until": time.time() + 600, "argv": []}
+        self.assertEqual(L.lease_state(lease), "dead")
+        self.assertEqual(L.lease_state({**lease, "host": "elsewhere"}), "foreign")
+        self.assertEqual(L.lease_state({**lease, "boot_id": L.boot_id()}), "live")
+        self.led.ensure()
+        L.write_json(self.led.dir / "watch.lease", {**lease, "pid": 1})
+        self.assertEqual(self.led.take_lease(time.time() + 60)["pid"], os.getpid())   # replaced, not a conflict
 
     def test_lease(self):
         self.assertEqual(L.lease_state(None), "none")

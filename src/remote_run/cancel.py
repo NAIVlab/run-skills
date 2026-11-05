@@ -17,8 +17,9 @@ Identity, then the action, in ONE ssh (nothing is cancelled that this same read 
          adopted triple) has pid J, gate go, the box's boot_id and /proc/J's start time, the owner is $USER and it
          leads its process group → `kill -TERM -- -<pgid>`, up to --grace seconds (30) for the group to go, then
          `kill -KILL -- -<pgid>`; the run's <log>.rc is read back.
-Recorded: the approval (if any), the grant use (given back when nothing was cancelled), the observation (Slurm:
-CANCELLING until rsk status sees the end; nohup: CANCELLED with its rc) and an audit line.
+Recorded: the approval (if any), the grant use (given back only when nothing can have been cancelled: not once a job
+passed its identity check, even if the answer was cut off after it), the observation (Slurm: CANCELLING until rsk
+status sees the end; nohup: CANCELLED with its rc) and an audit line.
 Exit: 0 cancelled (or already gone) · 2 usage · 3 denied / not this user's · 4 needs the user · 5 the target could
 not be read · 6 the identity does not match (name, WorkDir, receipt) · 1 scancel / kill failed.
 """
@@ -283,7 +284,8 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     facts, verdict, extra = parse(text)
     if "end" not in facts or "fail" in facts:
         why = facts.get("fail") or (f"ssh exited {rc}: {err.strip()[:200]}" if rc else err or "the answer was cut off")
-        sent = "scancel" in facts or "term:" in " ".join(extra)
+        # once a job passed its identity check (`@@c J ok`) the scancel / TERM may have gone out: no use given back
+        sent = "scancel" in facts or "term:" in " ".join(extra) or any(v.startswith("ok") for v in verdict.values())
         for i in items:
             if not sent:
                 refund(led, cover[i.job], i.job, "the identity check did not complete")
@@ -346,7 +348,9 @@ def cmd_cancel(args: argparse.Namespace) -> int:
 
 def add_parser(sub) -> None:
     p = sub.add_parser("cancel", help="stop a run of this project: the user's words or a cancel_own grant, then an "
-                       "identity check and scancel / kill in one ssh — recorded in the ledger")
+                       "identity check and scancel / kill in one ssh — recorded in the ledger",
+                       description=__doc__.split("\n\n")[0], epilog=__doc__.split("\n\n", 1)[1],
+                       formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("run", nargs="?", default="", metavar="RUN", help="a ledger run id (rsk status)")
     p.add_argument("--job", default="", metavar="J", help="Slurm job id, or the nohup run's pid")
     p.add_argument("-T", "--target", default="")

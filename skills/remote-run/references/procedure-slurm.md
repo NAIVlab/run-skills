@@ -2,7 +2,9 @@
 
 `$ROOT` = line 1 of `INDEX.md`; `<t>` = the target name (its `<TAG>` = the name uppercased, non-alphanumerics
 dropped: `my-hpc` → `MYHPC_`); `<host>` = its ssh alias from the table. Run everything with the **project root as cwd**
-(where `.hpc.conf` lives). `TARGET=<t>` selects the target for the local commands (`CLUSTER=<t>` is accepted too).
+(where `.hpc.conf` lives). `TARGET=<t>` selects the target for the local commands (`CLUSTER=<t>` is accepted too);
+`rsk sync|bootstrap|pull|avail -T <t> …` run the same scripts with the same arguments, and `rsk launch` / `rsk cancel`
+wrap `submit.sh` / `scancel` with the plan card, the authorisation check and the ledger (SKILL.md §3).
 The deployed copy of the harness lives at `<REMOTE_DIR>/.<t>/` — `env.sh status.sh submit.sh job.sbatch bootstrap.sh
 profile.sh MANIFEST [policy.sh policy.local.sh]` — and is refreshed by every sync (`MANIFEST`, the sha256 of each file, last).
 
@@ -14,7 +16,8 @@ follow `project-setup.md` (ask for `REMOTE_DIR`, env kind, run command); local a
 
 ## 1. Sync — push code, deploy the harness
 ```
-TARGET=<t> bash $ROOT/bin/run-sync        # additive; -n dry-run; -D also delete remote files gone locally; --also <path>
+rsk sync -T <t> [-n] [--also <path>]      # = TARGET=<t> bash $ROOT/bin/run-sync …; additive; -n dry-run; -D also delete
+                                          #   remote files gone locally: only on the user's words at the time, never a grant
 ```
 First line printed: `[<t>] remote: <host>:<dir>  tag: <TAG>  deploy: .<t>` — check it on a new project (use `-n`). With a
 transfer host it also prints `transfer host: <xfer>` and ends `sync done -> … ; files via <xfer>`.
@@ -33,8 +36,8 @@ checkout running) re-run with `--take-over`. `--also <path>` force-pushes one ex
 
 ## 2. Bootstrap the env — first run, and after any dependency change (idempotent)
 ```
-TARGET=<t> bash $ROOT/bin/run-bootstrap   # = ssh <host> "cd <REMOTE_DIR> && export PROJ=$PWD TARGET=<t> && bash .<t>/bootstrap.sh"
-TARGET=<t> bash $ROOT/bin/run-bootstrap --job [-p <partition> -c <cpus> -m <mem> -t <time>]   # the same, as a batch job
+rsk bootstrap -T <t>                      # = TARGET=<t> bash $ROOT/bin/run-bootstrap = ssh <host> "cd <REMOTE_DIR> && export PROJ=$PWD TARGET=<t> && bash .<t>/bootstrap.sh"
+rsk bootstrap -T <t> --job [-p <partition> -c <cpus> -m <mem> -t <time>]   # the same, as a batch job
 ```
 uv: finds `uv` (PATH, `~/.local/bin`, else installs into `$RS_ENV_ROOT/bin`), then `uv sync` into the target's venv
 — or runs `BOOTSTRAP_HOOK` instead when the conf sets one. Refuses a venv outside `$PROJ` / `T_ENV_ROOT` / `VENV_DIR`,
@@ -47,16 +50,22 @@ before `uv sync`; a torch-sized env then dies with `memory allocation failed`. B
 `--job` submits `bash <REMOTE_DIR>/.<t>/bootstrap.sh` through `submit.sh` (flags as for any job, `-p` required; default
 = the profile's `T_BOOTSTRAP_JOB`; name `<JOB_NAME>-bootstrap`) and returns with the job id and log path. A CPU partition
 is enough when its nodes reach the internet (uv, PyPI) and share the GPU nodes' OS — the target's reference says
-which partition qualifies. It is a job: state the plan and wait for the go as in §3, then follow it with
-`status.sh <jobid>` until the log shows `bootstrap done (<t>).` `job.sbatch` lets exactly this payload start without a venv.
+which partition qualifies. It is a job that `rsk launch` neither plans nor ledgers: it needs the user's go (or their
+words covering it, §3) like any submit; then follow it with `status.sh <jobid>` until the log shows `bootstrap done
+(<t>).` `job.sbatch` lets exactly this payload start without a venv.
 
-## 3. Decide resources, then CONFIRM (required)
+## 3. Decide resources, plan, then check the authorisation (required)
 Collect partition / GPU count / GPU type / walltime / run command from the user's words, the target's reference and
-the conf defaults. Unless the user fixed the placement, `run-avail` comes first (INDEX Routing: Placement):
+the conf defaults. Unless the user fixed the placement, `run-avail` (`rsk avail`) comes first (INDEX Routing: Placement):
 the plan then cites what is free (`max/node` = GPUs on one node; `planned` = held by backfill for a pending job; free is
-not schedulable — QOS and per-user caps apply), and why this target and partition. **Print a one-line plan, ending
-`ref: <reference path>` (re-read it if only a summary of it is in context), and wait for an explicit "go" / "确认" /
-"跑".** Never submit on implicit consent. Prefer the target's default partition unless the user or the reference says otherwise.
+not schedulable — QOS and per-user caps apply), and why this target and partition. Prefer the target's default
+partition unless the user or the reference says otherwise. **`rsk launch` (§4) plans first and checks whether the
+user's recorded words already cover that plan** (SKILL.md §3): covered → it submits and you report which record
+covered it; not covered (exit 4) → show its card verbatim with `ref: <reference path>` (re-read it if only a
+summary of it is in context) and wait for the user's words ("go" / "确认" / "跑" or anything that approves this card).
+Never submit on implicit consent: a description of a run is not an approval of it. Installed without rsk: the same
+check against the user's words in the conversation; outside them, print a one-line plan ending `ref: <reference path>`
+and wait. A charged partition, more resources or a wider scope than the user authorised always goes back to them.
 Classify and name the run per `experiment-conventions.md` (run class, structured `-n` name, wandb mapping). A smoke
 goes out with `WANDB_MODE=disabled` (prepend `env WANDB_MODE=disabled` to the payload). For a pilot/train/ablate,
 confirm the command checkpoints AND auto-resumes — jobs are submitted `--requeue`, so a requeued job re-runs the
@@ -65,13 +74,29 @@ partition's MaxTime → a singleton segment chain (conventions §6): the plan st
 
 ## 4. Submit (runs on the login node)
 ```
-ssh <host> 'bash <REMOTE_DIR>/.<t>/submit.sh -p <partition> -g <ngpu> [-G <gputype>] [-t <time>] [-m <mem>] [-c <cpus>] [-n <name>] [-y] -- <RUN>'
+rsk launch -T <t> -p <partition> -g <ngpu> [-G <gputype>] [-t <time>] [-m <mem>] [-c <cpus>] [-n <name>] [--chain N] [--class C] [--<policy-flag>] -- <RUN>
+rsk launch --plan <id> [--plan <id>]... --approve "<the user's words>"     # the card(s) the user approved: submit
+ssh <host> 'bash <REMOTE_DIR>/.<t>/submit.sh -p <partition> -g <ngpu> [-G <gputype>] [-t <time>] [-m <mem>] [-c <cpus>] [-n <name>] [-y] -- <RUN>'   # without rsk
 ```
+`rsk launch` drives this `submit.sh`: one ssh with `--rs-mode plan` (below) for the card, then, once a record covers
+the plan (an approval made by `--approve`, or a grant), one ssh per submit with `--rs-expect <bound_hash> --rs-warnings
+<the card's count>`. `-y` is never sent as typed: only when the approved card showed warnings, and submit.sh recounts its
+`WARNING:` lines (another number: exit 6), so it never passes a new one; `--force` / `--rs-*` are never policy flags
+(exit 2). `--chain N` = N singleton segments (conventions §6) under one approval. A `--…-user-asked` policy flag is the
+user's own OK for that gate: the card shows it, no grant covers it. A name carrying a class (`<exp>--<class>--…`) is that
+class: a different `--class` is exit 2. The card's `TIME` / `RESOURCES` lines show an `SBATCH_EXTRA` `--time` (sbatch
+takes it over `-t`) and resources (`--nodes`, `--gpus*`, `--ntasks*`, `--mem-per-*`, `--gres`, `--exclusive`, …) that no
+grant's caps can read: such a card is the user's call. Before any ssh it refuses (exit 6) a second live ledger run of
+the same name (`--same-name-ok` only when the user wants both; no grant covers it) — and a SUBMIT_UNKNOWN attempt of the
+run even with it. Exit: 0 submitted (job id, log), 1 failed, 2 usage, 3 refused (policy or a deny: final, with its quote), 4 needs
+the user (`needs user: approval — plan <id>`), 5 reply lost (SUBMIT_UNKNOWN: never resubmit; `rsk status` settles it
+from the journal below), 6 a used / superseded / expired plan, drift (`differs from the approved plan`) or `needs:
+sync` (the deploy predates rsk launch) — plan again and show the new card.
 Defaults: `-p`/`-G` ← `<TAG>_DEFAULT_PARTITION` / `<TAG>_DEFAULT_GPU_TYPE` else the profile's; `-g -c -m -t -n` ←
 `DEFAULT_GPUS/CPUS/MEM/TIME`, `JOB_NAME` (`<TAG>_` form wins); `ACCOUNT`, `SBATCH_EXTRA` are appended. CLI flags win.
 Unset cpus/mem fall back to the partition's per-GPU heuristics (policy.sh). `submit.sh` then, in order: runs the
 target's `t_policy` (a refusal propagates its exit code, typically 3, and `-y` does not unlock it), validates the
-partition and `-g` range, rejects a `-t` beyond the partition MaxTime (`exceeds … MaxTime` = it would pend forever; lower `-t`),
+partition and `-g` range, rejects a `-t` — or an `SBATCH_EXTRA` `--time`/`-t`, which sbatch takes over it — beyond the partition MaxTime (`exceeds … MaxTime` = it would pend forever; lower it),
 rejects a payload that calls `sbatch/srun/salloc` and an `SBATCH_EXTRA` carrying `-p/--partition` or a forbidden QOS,
 prints per-node availability and stops with `WARNING: only N free … Re-run -y` when the GPUs are not free (`-y`
 queues anyway), refuses a second live job of the same name from this project (`ERROR: '<name>' is already RUNNING from
@@ -81,7 +106,7 @@ set or one the harness sets itself (warnings only, for now: tell the user), then
 --export=ALL,PROJ,CLUSTER,TARGET … --mem=… --comment=… rs=<NONCE> .<t>/job.sbatch <RUN>` (the early `--requeue` lets a later
 `SBATCH_EXTRA` `--no-requeue` win). The `.hpc.conf` is read in a child shell: only its keys count, never a function or `PATH` it sets.
 Report the job id. Unknown `--word` flags pass through to policy (`--…-user-asked` sets `ACK=1` for it).
-**The journal.** Every call prints `attempt: .rs/attempts/<NONCE>` first and records itself in `<REMOTE_DIR>/.rs/attempts/<NONCE>/`
+**The journal** (rsk status reads it for you). Every call prints `attempt: .rs/attempts/<NONCE>` first and records itself in `<REMOTE_DIR>/.rs/attempts/<NONCE>/`
 before printing anything: `out` / `err` (all it printed), `stage`, `result` (`stage= rc= verdict=submitted|refused|failed|unknown`),
 `receipt` (`job= name= partition= … argv=`, written the moment the job exists) and the `conf`/`profile.sh`/`env.sh`/`hook` the
 job (and every requeued restart) uses. An ssh that died or printed nothing is **never** a reason to resubmit: read
@@ -92,17 +117,20 @@ never started. Exit 75 = that NONCE was already used (`--rs-attempt NONCE` calle
 **rsk's protocol (api=3, the deployed `.<t>/API`).** `--rs-mode plan` (separate words, like `--rs-attempt`) runs every step
 above — policy, limits, MaxTime, availability, duplicate guard, lint — with each `-y` gate acknowledged (it prints its
 `WARNING:` and goes on), then prints ONE `@@plan v1` … `@@end` block instead of submitting: the bound fields (`partition gres
-cpus mem time account name extra payload env_kind env_name wandb_mode chain`), `info_*` lines (availability, sha256 of the
-conf/profile/policy, the `.run-source` commit), `warnings=N`, `bound_hash=` (result `verdict=planned`; only the conf is
-snapshotted, nothing submitted). `--rs-expect <bound_hash>` submits only while the resolved submission still hashes the same —
-else the current block + `ERROR: the resolved submission differs from the approved plan`, exit 6, nothing submitted; a
-`-y` is still needed when the plan showed warnings. `--rs-chain` makes it one singleton chain segment (`--dependency=singleton`;
+cpus mem time account name extra payload env_kind env_name wandb_mode env_hook venv_dir uv_sync_args chain`; `env_hook` =
+`<ENV_HOOK>:<sha256 of the file>`), `info_*` lines (availability, sha256 of the conf/profile/policy, the `.run-source`
+commit), `warnings=N`, `bound_hash=` (result `verdict=planned`; only the conf is snapshotted, nothing submitted).
+`--rs-expect <bound_hash> [--rs-warnings N]` submits only while the resolved submission still hashes the same and the call
+printed N `WARNING:` lines (the card's count, default 0) — else the current block + `ERROR: the resolved submission differs
+from the approved plan`, exit 6, nothing submitted; a `-y` is still needed when the plan showed warnings, and under
+`--rs-expect` a failed squeue is exit 1 (the duplicate check is never a `-y` gate there). `--rs-chain` makes it one singleton chain segment (`--dependency=singleton`;
 the duplicate guard lets it through; another dependency in `SBATCH_EXTRA` is exit 2). An older `submit.sh` exits 2 on these
-flags. A plan is a card to show the user, not an approval: the go is still the user's words.
+flags. A plan is a card to show the user, not an approval: the user's words (or a grant recorded from them) are.
 
 ## 5. Monitor / manage — start reviews with a bounded digest; cadence, milestones, detect-only: `experiment-conventions.md` §7
 ```
-rsk logs -T <t> <jobid> [<ckpt-dir>] [-n 40]                         # the same digest as below, from the local project root (rsk status: all of its jobs)
+rsk status -T <t>                                                    # every job of this project: ledger runs, unledgered jobs, needs user:
+rsk logs -T <t> <jobid> [<ckpt-dir>] [-n 40]                         # the same digest as below, from the local project root
 ssh <host> 'bash <REMOTE_DIR>/.<t>/status.sh <jobid> [<ckpt-dir>]'     # review digest (~2 KB): job state, attempt/footer, hints, last 5 lines, ckpt-dir activity
 ssh <host> 'bash <REMOTE_DIR>/.<t>/status.sh -n 40 <jobid>'            # deep read on an anomaly: 40 lines × 200 chars, still byte-bounded
 ssh <host> 'squeue -u $USER -o "%.10i %.12P %.3t %.11M %.11L %R %j"'   # everything of yours; %R = pending reason, %j last = full name
@@ -133,20 +161,29 @@ saves, then resubmit; sacct may show it as `10:0`); `TIMEOUT` — still running 
 resubmit, resumes it); `OUT_OF_MEMORY` — smaller batch or larger `-m`; `PREEMPTED` / `NODE_FAIL` as the latest state = NOT
 requeued (`--no-requeue`, or a partition that preempts by cancel): resubmit and resume; `CANCELLED`. A requeued job
 instead goes back to `PENDING` and later runs again into the same log with a new `restart=N` header (`sacct -D` lists
-the earlier attempts) — confirm the trainer's own resume line after every restart. `scancel` only with explicit approval.
+the earlier attempts) — confirm the trainer's own resume line after every restart.
+**Cancel** through `rsk cancel <run> [--job <jobid>] [--approve "<the user's words>"]` (`rsk cancel --job <jobid> -T <t>
+…` for a job not in the ledger): the same ssh that runs `scancel` first checks the job's name, user and WorkDir (exit 6 =
+mismatch, nothing cancelled; exit 3 = someone else's job: never). It acts on the user's words naming that job, or —
+for your own judgment that a run should stop — on a `cancel_own` grant (runs rsk launched only); else exit 4: ask.
+Without rsk: the job's line in `ssh <host> 'squeue -h -u $USER --states=all -O "JobID:0|,Name:0|,UserName:0|,WorkDir:0|,State:0|"'`
+(the read `rsk cancel` makes) must show the run's name, your user and this remote dir; then `scancel <jobid>`, on the same terms.
 
 **Many jobs or long waits: `run-watch`** (cwd = project root; `bin/run-watch` header = the full contract). A table
 `#@ run-watch v1` lists rows `name target done-path submit.sh-args -- cmd` (or `-`: watch only; `-p` required, no
-`-n`, no `*-user-asked`, no shell quoting). Each round: one read-only ssh per target, one dated event per change
-(LAUNCH REQUEUE RESUBMIT RETRY DONE STALL WARN ATTENTION CANCEL …). Without `--act` it never submits. To let it act, show
-the user the rows plus `#@ allow launch preempt=N errors=N timeout=N [fail-stop]` (no default: absent = 0; paid partitions:
+`-n`, no `*-user-asked`, no shell quoting; `rsk watch <table> …` runs it under the project's lease). Each round: one
+read-only ssh per target, one dated event per change (LAUNCH REQUEUE RESUBMIT RETRY DONE STALL WARN ATTENTION CANCEL …).
+Without `--act` it never submits. To let it act, show the user the rows plus `#@ allow launch preempt=N errors=N timeout=N [fail-stop]` (no default: absent = 0; paid partitions:
 the cost of first submits plus N resubmits); only after their explicit OK run `run-watch <table> --approve "<their
 words>"`. Any later edit to those rows, the budget or `.hpc.conf` makes them detect-only again (the `#@ ok` line
 carries `conf=`, and the submit ssh checks the deployed copy; an older line without it stays valid). `fail-stop` makes
 the table one group: once an approved row fails (FAILED/OUT_OF_MEMORY before its time limit) with its `errors` budget
 spent, it cancels the table's other live jobs — only those whose name, user and WorkDir it verified in that same ssh —
 and holds the rows not yet submitted; preemption, timeouts and CANCELLED never trigger it, workstation rows are never
-touched, and `--release <that row>` resumes the group. It resubmits only a job the
+touched, and `--release <that row>` resumes the group; a row whose submit outcome was unknown then is cancelled once it is
+tracked (its receipt, or `--adopt`). A row is one run by its name: renamed or copied into another table, it keeps its
+state and spent budgets (from the other `logs/run-watch/*.state`). Row words never carry `--rs-*` (run-watch sends its
+own `--rs-attempt`). It resubmits only a job the
 controller has purged with a terminal sacct state, never a CANCELLED one, never past an unknown submit outcome (each
 submit carries its own attempt nonce; the next read settles it from the remote attempt journal, else it stays unknown
 until `--adopt NAME=JOBID`, which checks the job's name, user and WorkDir, or a user-approved `--release`); a
@@ -160,8 +197,8 @@ resume (or set `#@ resume /<the trainer's resume line>/`); ATTENTION is a findin
 
 ## 6. Pull results back — only with `run-pull`
 ```
-TARGET=<t> bash $ROOT/bin/run-pull -n <path>...   # dry run: file count + total size (rsync --stats); writes nothing
-TARGET=<t> bash $ROOT/bin/run-pull <path>...      # copy them into the local project
+rsk pull -T <t> -n <path>...      # = TARGET=<t> bash $ROOT/bin/run-pull -n …: dry run, file count + total size (rsync --stats); writes nothing
+rsk pull -T <t> <path>...         # copy them into the local project
 ```
 Paths are relative to the project dir and land at the same path locally (`logs/<file>`, `results/`); plain paths
 only (no wildcards, no `..`) — for anything outside the project dir, ask the user. Additive: a local file newer than
@@ -191,7 +228,8 @@ Exported for project scripts: `TARGET`, `CLUSTER=<t>`, `RS_TARGET`, `RS_KIND=slu
 
 ## Safety rails (every time)
 - Files move only through `run-sync` / `run-pull` (the target's transfer host, if any); no hand-rolled `rsync`/`scp`.
-- Confirm before every submit. Never `scancel` without an explicit OK. Partition/QOS are submit.sh's call only.
+- Check the user's recorded words before every submit or cancel (`rsk launch` / `rsk cancel`); outside them, ask.
+  `scancel` only after the identity check, never someone else's job. Partition/QOS are submit.sh's call only.
 - wandb: your key only (`.wandb_env`), never the cluster's `~/.netrc`; no key → offline. Never `wandb login` there.
 - Always `--mem` (cons_tres) — submit.sh sets it. Never create conda envs. Keep outputs/caches under `REMOTE_DIR`.
 - Every pilot/train/ablate checkpoints + resumes (jobs go out `--requeue`); smokes run `WANDB_MODE=disabled`;
