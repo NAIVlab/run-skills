@@ -6,7 +6,6 @@ process group; real processes here: TERM, the grace, KILL). Uses are given back 
 import contextlib
 import io
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -25,6 +24,8 @@ SSH = """#!/usr/bin/env bash
 while [ $# -gt 0 ]; do case "$1" in -o) shift 2 ;; -*) shift ;; *) break ;; esac; done
 echo "$1" >> "$STUB/ssh.log"; shift
 [ -z "${SSH_FAIL:-}" ] || { echo "${SSH_FAIL_MSG:-ssh: connect to host fxhost port 22: Connection timed out}" >&2; exit 255; }
+if [ -n "${SSH_FALLBACK:-}" ]; then  # a ProxyCommand's first route refused, the second connected: the body ran there,
+  echo "$SSH_FALLBACK" >&2; bash -c "$*" > /dev/null 2>&1; exit 255; fi   # then the link died before anything came back
 if [ -n "${SSH_HANG:-}" ]; then  # the body arrives and runs there, but nothing comes back before the deadline
   cat > "$STUB/hang.body"; ( bash "$STUB/hang.body" > "$STUB/hang.out" 2>&1 & ); sleep "$SSH_HANG"; exit 0; fi
 if [ -n "${SSH_CUT:-}" ]; then   # the connection dies once the remote printed a line matching SSH_CUT (it ran to the end)
@@ -62,7 +63,8 @@ class Base(ScratchHome):
         os.environ["STUB"] = str(self.stub)
         os.environ["PATH"] = f"{self.stub / 'bin'}{os.pathsep}{os.environ['PATH']}"
         os.environ["USER"] = ME
-        for k in ("SSH_FAIL", "SSH_FAIL_MSG", "SQ_FAIL", "SC_RC", "SC_ERR", "SSH_CUT", "SC_SLEEP", "SSH_HANG"):
+        for k in ("SSH_FAIL", "SSH_FAIL_MSG", "SQ_FAIL", "SC_RC", "SC_ERR", "SSH_CUT", "SC_SLEEP", "SSH_HANG",
+                  "SSH_FALLBACK"):
             os.environ.pop(k, None)
         for name, prof in (("fx", "T_KIND=slurm; T_HOST=fxhost\n"), ("ws", "T_KIND=nohup; T_HOST=wshost\n")):
             d = Path(os.environ["RS_USER_DIR"]) / "targets" / name
@@ -205,40 +207,42 @@ class Slurm(Base):
         self.assertIn("the cancel may have been sent", text)
         self.assertEqual(len(self.approvals()[0]["used"]), 1)     # D6: an approval is used up whatever the outcome
 
-    def test_r5_6_a_session_that_never_opened_sent_nothing_and_gives_the_use_back(self):
-        """R5-cancel-connect-fail-burns-cancel_own: every ssh 255 without @@start kept the cancel_own use, also when ssh
-        never connected — two refused connects used up a max-launches-2 grant. Now ssh's own words that the session
-        never opened (on an empty stdout) are proof: exit 5 'not reached — nothing sent', the use given back."""
+    def test_r6_4_ssh_255_before_start_may_have_been_sent_whatever_its_stderr_says(self):
+        """V5-notreached-cancel-unsent (R6-4 reverts R5-6): a ProxyCommand whose first route printed `ssh: connect to
+        host … Connection refused` before its second route connected, and a link that died before @@start came back:
+        rsk said 'not reached — nothing sent' and gave the cancel_own use back although scancel ran. ssh's exit 255
+        without @@start is 'the cancel may have been sent' (exit 5, the use kept), whatever its stderr says."""
         g = G.add(self.led, G.new_grant("stop your own runs", {"targets": ["fx"]}, ["cancel_own"], max_live=None,
-                                        max_launches=2, expires=None))
+                                        max_launches=None, expires=None))
         self.launched("exp--a01", "101")
         self.queue(f"101|exp--a01|{ME}|{self.remote}|RUNNING|")
-        os.environ["SSH_FAIL"] = "1"
-        for msg in ("ssh: connect to host fxhost port 22: Connection refused",
-                    "ssh: connect to host fxhost port 22: Connection timed out",
-                    "ssh: connect to host fxhost port 22: No route to host",
-                    "ssh: Could not resolve hostname fxhost: Name or service not known",
-                    "me@fxhost: Permission denied (publickey,password).",
-                    "Host key verification failed."):
+
+        def used() -> int:
+            return len(next(r for r in self.led.state().grants if r["id"] == g["id"])["used"])
+        os.environ["SSH_FALLBACK"] = "ssh: connect to host bastion-a port 22: Connection refused"
+        rc, text = self.cancel("exp")
+        self.assertEqual(rc, UNKNOWN, text)
+        self.assertEqual(self.scancelled(), "101\n")                   # it WAS cancelled
+        self.assertIn("the cancel may have been sent", text)
+        self.assertNotIn("nothing sent", text)
+        self.assertEqual(used(), 1)                                     # kept
+        last = [a for a in self.led.read_audit()[0] if a.get("event") == "cancel"][-1]
+        self.assertEqual((last.get("outcome"), last.get("sent")), ("unobservable", "maybe"))
+        os.environ.pop("SSH_FALLBACK")
+        os.environ["SSH_FAIL"] = "1"                                    # the same words, the body never ran: rsk cannot
+        for n, msg in enumerate(("ssh: connect to host fxhost port 22: Connection refused",       # tell the two apart
+                                 "ssh: connect to host fxhost port 22: No route to host",
+                                 "ssh: Could not resolve hostname fxhost: Name or service not known",
+                                 "me@fxhost: Permission denied (publickey,password).",
+                                 "Host key verification failed."), start=2):
             os.environ["SSH_FAIL_MSG"] = msg
             rc, text = self.cancel("exp")
             self.assertEqual(rc, UNKNOWN, (msg, text))
-            self.assertIn("not reached — nothing sent", text)
-            self.assertNotIn("may have been sent", text)
-            self.assertEqual(next(r for r in self.led.state().grants if r["id"] == g["id"])["used"], [], msg)
-        os.environ["SSH_FAIL_MSG"] = "client_loop: send disconnect: Broken pipe"     # the session was up: may be sent
-        rc, text = self.cancel("exp")
-        self.assertEqual(rc, UNKNOWN, text)
-        self.assertIn("the cancel may have been sent", text)
-        self.assertEqual(len(next(r for r in self.led.state().grants if r["id"] == g["id"])["used"]), 1)
-        os.environ.pop("SSH_FAIL")
-        os.environ.pop("SSH_FAIL_MSG")
-        rc, text = self.cancel("exp")                            # the host is back: the last use stops the run
-        self.assertEqual(rc, OK, text)
+            self.assertIn("the cancel may have been sent", text)
+            self.assertNotIn("not reached", text)
+            self.assertEqual(used(), n, msg)
         self.assertEqual(self.scancelled(), "101\n")
-        self.assertEqual(C.not_reached(255, "@@start\n", "ssh: connect to host h port 22: Connection refused"), "")
-        self.assertEqual(C.not_reached(1, "", "ssh: connect to host h port 22: Connection refused"), "")
-        self.assertEqual(C.not_reached(255, "", "bash: line 1: x: Permission denied"), "")
+        self.assertEqual(L.attempt_state(self.led.read_run("exp").data["attempts"]["a01"]), "SUBMITTED")   # unchanged
 
     def test_r5_5_a_failing_scancel_is_unknown_unless_its_own_words_say_there_was_nothing(self):
         """R5-scancel-nonzero-refunds-cancel_own: any non-zero scancel exit gave the cancel_own use back and said 'not
@@ -280,6 +284,34 @@ class Slurm(Base):
         self.assertEqual(C.scancel_moot("x\nscancel: error: Kill job error on job id 7_3: Invalid job id specified\n",
                                         "7_3"), "scancel: error: Kill job error on job id 7_3: Invalid job id specified")
         self.assertEqual(C.scancel_moot("scancel: error: Kill job error on job id 7_3: Invalid job id specified", "7"), "")
+
+    def test_r6_8_the_unknown_message_quotes_scancel_s_line_for_that_job(self):
+        """V5-scancel-msg-other-id: in a multi-job cancel the UNKNOWN line quoted scancel's LAST line — job 102's
+        message could read job 101's `already completing or completed`. Each job's message (and the ledger detail)
+        now quotes the line naming it; failing that the last line naming no job id; failing that none."""
+        G.add(self.led, G.new_grant("stop your own runs", {"targets": ["fx"]}, ["cancel_own"], max_live=None,
+                                    max_launches=None, expires=None))
+        self.launched("sw1--a01", "101", nonce="n1")
+        self.launched("sw1--a01", "102", nonce="n2")                    # a chain: two live segments of one attempt
+        self.queue(f"101|sw1--a01|{ME}|{self.remote}|RUNNING|", f"102|sw1--a01|{ME}|{self.remote}|PENDING|")
+        timed = "scancel: error: Kill job error on job id 102: Socket timed out on send/recv operation"
+        done = "scancel: error: Kill job error on job id 101: Job/step already completing or completed"
+        os.environ["SC_RC"] = "1"
+        for err in (f"{timed}\n{done}", f"{done}\n{timed}"):          # either order
+            os.environ["SC_ERR"] = err
+            rc, text = self.cancel("sw1")
+            self.assertEqual(rc, UNKNOWN, text)
+            self.assertIn(f"UNKNOWN: job 102 (sw1 a01): scancel exit 1 ({timed})", text)
+            self.assertNotIn("102 (sw1 a01): scancel exit 1 (scancel: error: Kill job error on job id 101", text)
+            self.assertIn(f"nothing to cancel: job 101 (sw1 a01) — scancel exit 1: {done}", text)
+            sub = next(s for s in self.led.read_run("sw1").data["attempts"]["a01"]["submissions"] if s["job"] == "102")
+            self.assertNotIn("job id 101", str(sub.get("seen")) + str(self.led.read_run("sw1").data["attempts"]["a01"]
+                                                                       .get("observed")))
+        self.assertEqual(C.scancel_line(f"{done}\n{timed}\n", "102"), timed)
+        self.assertEqual(C.scancel_line(f"{done}\nscancel: error: Unable to contact slurm controller\n", "102"),
+                         "scancel: error: Unable to contact slurm controller")      # a line naming no id: the call's
+        self.assertEqual(C.scancel_line(done, "102"), "")                            # only another job's: none
+        self.assertEqual(C.scancel_line("x job id 1020: y", "102"), "")              # 1020 is not 102
 
     def test_l2_an_answer_cut_after_the_identity_passed_gives_nothing_back(self):
         self.launched("exp--a01", "101")
@@ -405,28 +437,6 @@ class Slurm(Base):
             rc, text = self.cancel(*argv)
             self.assertEqual(rc, code, (argv, text))
         self.assertFalse((self.stub / "ssh.log").exists())
-
-
-class SshWords(unittest.TestCase):
-    """No stubs: the real local ssh client (when there is one)."""
-
-    def test_r5_6_ssh_words_for_a_session_that_never_opened(self):
-        """The OpenSSH client's own lines NOT_REACHED reads, reproduced offline with the local client (-F /dev/null: no
-        user config): nothing listens on 127.0.0.1 port 1; a numeric IPv4 host under AddressFamily=inet6 never resolves
-        (no DNS query)."""
-        ssh = shutil.which("ssh")
-        if not ssh:
-            self.skipTest("no ssh client here")
-        for argv in (["-p", "1", "127.0.0.1"], ["-o", "AddressFamily=inet6", "-p", "1", "127.0.0.1"]):
-            try:
-                done = subprocess.run([ssh, "-F", os.devnull, "-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
-                                       "-o", "UserKnownHostsFile=/dev/null", *argv, "true"], capture_output=True,
-                                      text=True, timeout=20, stdin=subprocess.DEVNULL)
-            except subprocess.TimeoutExpired:
-                self.skipTest(f"ssh {argv} did not end within 20 s here")
-            if done.returncode != 255 or not done.stderr.startswith("ssh: "):
-                self.skipTest(f"ssh {argv}: rc {done.returncode} {done.stderr[:80]!r} (something answers here)")
-            self.assertTrue(C.not_reached(done.returncode, done.stdout, done.stderr), done.stderr)
 
 
 def pstart(pid: int) -> str:

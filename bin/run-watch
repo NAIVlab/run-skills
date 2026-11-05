@@ -23,7 +23,8 @@
 # Every round, every fail-stop (`#failstop`, each with its `#failstop-pending`) in any other state file with a line naming one
 # of a table's rows holds that table too (the row was in the stopped group), whatever state the row has here; a table keeps
 # every stop that holds it (R5-7), and --release TRIGGER clears only the stops it triggered (`#failstop-released` keeps them
-# from being taken again): while another stop remains, every row stays held, the trigger's own row too. A row's target
+# from being taken again): while another stop remains, every row stays held, the trigger's own row too; a stop that holds a
+# table only later in the watch withdraws its rows' --release not used yet (release-withdrawn). A row's target
 # is a target name rs_targets lists, spelled exactly (R5-8). A row moved to another target keeps only its spent
 # budgets and an unknown submit; so does a line of its own table from before the target column unless that file watched
 # one target only and the row was not removed. Row submit words never carry --rs-*
@@ -385,6 +386,9 @@ fs_release() {   # fs_release TABLE NAME: the user's --release of a trigger: eve
   TB_FSR[ti]="${TB_FSR[ti]}$gone"; TB_FS[ti]=$keep; TB_FSP[ti]=$p; [ -z "$keep" ] || return 0   # held are pending again only once no stop remains
   for ((x = 0; x < NR; x++)); do j=${R_J[x]}; [ "${R_TB[x]}" = "$ti" ] && [ "${S_ST[j]}" = held ] && [ "${S_NOTE[j]}" = fail-stop ] && { S_ST[j]=pending; S_NOTE[j]=-; }; done
 }
+rel_drop() {   # rel_drop TABLE TRIGGERS: a stop that holds TABLE only now (formed here, or taken after the start) withdraws the
+  local x j; for ((x = 0; x < NR; x++)); do j=${R_J[x]}; [ "${R_TB[x]}" = "$1" ] && [ "${S_REL[j]}" != - ] || continue; S_REL[j]=-; R_WAIT[x]=1   # --release
+    ev ATTENTION "$x" "job=${S_JOBS[j]##*,} reason=release-withdrawn fail-stop=$2 -- the --release given at the start predates this fail-stop and was not used yet: no submit past it (--release again, user OK)"; done; }   # not used yet
 inherit() {   # inherit ROW "<file>\t<line>": a row with no state in its own table takes the run's state from another one —
   local i=$1 st note j src   # status and jobs only from a line of the row's target (else only its spent budgets)
   tsplit "$2"; src=${XS[0]}; st=${XS[2]}; note=${XS[15]}
@@ -482,6 +486,7 @@ reconcile() {   # rows <-> state by name; a vanished row is kept as removed (sta
     S_TB[hit]=${R_TB[i]}; S_TGT[hit]=${R_TGT[i]}; R_J[i]=$hit; S_SEENROW[hit]=1
     fs_take "$i" "$fresh"; foreign "$i" "$fresh"
   done
+  for ((x = 0; x < ${#TBL_PATH[@]}; x++)); do [ -z "${FS_TOOK[x]}" ] || rel_drop "$x" "$(fs_trigs "${FS_TOOK[x]}")"; done   # (none at the start: no release yet)
   for ((j = 0; j < NS; j++)); do
     [ "${S_SEENROW[j]}" = 0 ] && [ "${S_ST[j]}" != removed ] || continue
     EVQ="$EVQ$(ts) NOTE name=${S_NAME[j]} removed$([ "${S_ST[j]}" = active ] && echo " still-active job=${S_JOBS[j]##*,}")$NL"
@@ -952,7 +957,7 @@ fail_stop() {   # a table whose approved errors-class failure spent its budget: 
     [ -n "${FS_NEW[ti]}" ] || continue; i=${FS_NEW[ti]%%|*}; e=${FS_NEW[ti]#*|}; FS_NEW[ti]=""
     j=${R_J[i]}; sid=${R_NAME[i]}:${S_JOBS[j]##*,}; TB_FS[ti]="${TB_FS[ti]} $sid"; S_ST[j]=held; S_NOTE[j]=failed
     ev ATTENTION "$i" "job=${S_JOBS[j]##*,} reason=fail-stop $e -- #@ allow fail-stop: the table's live rows are cancelled (identity checked), the rest held; --release ${R_NAME[i]} resumes"
-    for ((k = 0; k < NK; k++)); do FS_CAN[k]=""; done
+    rel_drop "$ti" "${R_NAME[i]}"; for ((k = 0; k < NK; k++)); do FS_CAN[k]=""; done
     for ((x = 0; x < NR; x++)); do
       [ "${R_TB[x]}" = "$ti" ] && [ "$x" != "$i" ] || continue; j=${R_J[x]}; k=${R_K[x]}; cur=${S_JOBS[j]##*,}
       [ "${Q_ROW[k]}" != "$x" ] || Q_ROW[k]=""   # queued this round: never submitted

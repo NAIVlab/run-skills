@@ -15,7 +15,8 @@
     rsk cancel RUN | --job J -T T [--approve "the user's words"]   identity checked, then scancel / kill (recorded)
     rsk watch TABLE... [run-watch flags]   bin/run-watch under the project's watch lease (one watcher per project)
     rsk sync|bootstrap|pull -T T [args] / rsk avail [args]   the harness's bin/run-* (cwd = project, TARGET set)
-    rsk doctor                      offline checks: install, the remote-run skill, packs, targets, ssh aliases, config
+    rsk doctor                      offline checks: install, the remote-run skill, packs, targets, ledger grants naming an
+                                    unknown target/partition, ssh aliases, config
     rsk doctor --legacy-refs [DIR]  read-only: project docs still naming hpc-run/ws-run or raw submit.sh/run-launch recipes
     rsk config [--template]         rsk's own settings (~/.config/run-skills/config.toml)
 
@@ -312,6 +313,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             continue
         report("ok", f"{t.name}: {t.kind} via {t.host}{f', files via {t.xfer_host}' if t.xfer_host else ''} ({t.dir})")
         hosts.update(h for h in (t.host, t.xfer_host) if h)
+    out("== grants ==")             # R6-9: a stored record naming a target / partition the harness does not know
+    stale = grants.stale_records(tlist)
+    for line in stale:
+        report("WARN", line)
+    if not stale:
+        report("ok", f"no grant or deny in the ledgers under {paths.state_dir() / 'projects'} names a target or "
+                     "partition the harness does not know")
     out("== local tools ==")
     for tool in ("bash", "ssh", "rsync", "git"):
         report("ok" if shutil.which(tool) else "FAIL", f"{tool}: {shutil.which(tool) or 'not found'}")

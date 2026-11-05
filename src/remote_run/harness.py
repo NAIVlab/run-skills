@@ -12,10 +12,12 @@ from pathlib import Path
 from remote_run import paths
 from remote_run.errors import USAGE, RskError
 
+# ok: name kind host xfer_host dir, then the profile's T_PARTITIONS (tabs/newlines as spaces; '' = not listed)
 _LIST_TARGETS = r'''
 . "$RS_HOME/lib/common.sh"
 for t in $(rs_targets); do
-  if out=$( (rs_load_target "$t" >/dev/null 2>&1 && printf 'ok\t%s\t%s\t%s\t%s\t%s\n' "$t" "$T_KIND" "$T_HOST" "${T_XFER_HOST:-}" "$T_DIR") ); then
+  if out=$( (rs_load_target "$t" >/dev/null 2>&1 && printf 'ok\t%s\t%s\t%s\t%s\t%s\t%s\n' "$t" "$T_KIND" "$T_HOST" "${T_XFER_HOST:-}" "$T_DIR" \
+      "$(printf %s "${T_PARTITIONS:-}" | tr '\t\n' '  ')") ); then
     printf '%s\n' "$out"
   else
     printf 'err\t%s\t%s\n' "$t" "$( (rs_load_target "$t") 2>&1 >/dev/null | tr '\t\n' '  ')"
@@ -62,6 +64,7 @@ class Target:
     xfer_host: str = ""
     dir: str = ""
     error: str = ""
+    partitions: tuple[str, ...] | None = None   # the profile's T_PARTITIONS; None = it lists none (or does not load)
 
 
 def env(src: Path) -> dict[str, str]:
@@ -81,8 +84,8 @@ def targets(src: Path) -> list[Target]:
     found: list[Target] = []
     for line in done.stdout.splitlines():
         f = line.split("\t")
-        if f[0] == "ok" and len(f) == 6:
-            found.append(Target(f[1], f[2], f[3], f[4], f[5]))
+        if f[0] == "ok" and len(f) == 7:
+            found.append(Target(f[1], f[2], f[3], f[4], f[5], partitions=tuple(f[6].split()) or None))
         elif f[0] == "err" and len(f) >= 3:
             found.append(Target(f[1], error=f[2].strip()))
     return found

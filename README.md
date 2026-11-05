@@ -35,16 +35,17 @@ guard rails built in, and gives the agent a short, per-site reference instead of
   conda env, which the harness only *verifies* — it never creates or modifies conda envs.
 - **Fail-closed.** A broken conf, a missing venv or a half-applied environment aborts the job instead of running it
   misconfigured. Walltimes above a partition's cap are rejected (they would pend forever), and so is a limit of none;
-  busy GPUs produce a warning that needs an explicit `-y`; site policies can refuse a submission outright.
+  a busy cluster is a warning that needs an explicit `-y`; site policies can refuse a submission outright.
 - **Your authorisation, checked first — asked only when it is missing.** Every submit, launch and cancel is checked
   against what you already allowed: a plan you approved, a sweep (one approval for the set), or a standing permission
   ("smoke runs on mybox are fine", "auto-resume preemptions up to 3 times" — a resume only after an infrastructure end:
   a preemption, a node failure, a reboot; never after a cancel, a failure or a timeout) with the limits you set. The
   agent asks only outside that — a charged partition, more resources, a wider scope, its own idea that a run should
-  stop. Your words are recorded verbatim (`rsk grant`), and a "never" of yours also stops `rsk watch --act`; "cancel job
-  123" is bound to that job, for an hour, once; a cancel first checks the job is this project's and yours, and someone
-  else's job is never touched. The record keeps you from being asked twice; it is bookkeeping, not proof that you
-  agreed, and it cannot make an agent comply — it constrains what goes through `rsk`.
+  stop. Your words are recorded verbatim (`rsk grant`), and a "never" of yours also stops `rsk watch --act` ("never
+  relaunch a" stops every launch of a in its scope: rsk cannot see every earlier attempt); "cancel job 123" is bound
+  to that job, for an hour, once; a cancel first checks the job is this project's and yours, and someone else's job is
+  never touched. The record keeps you from being asked twice; it is bookkeeping, not proof that you agreed, and it
+  cannot make an agent comply — it constrains what goes through `rsk`.
 - **Cheap, honest monitoring.** One deployed script, `status.sh`, returns a ~2 KB digest of a run: scheduler or PID
   state, restarts, exit footer, error/OOM/NaN hint counts, the wandb URL and the last lines — all from byte-bounded
   reads. The agent reviews often while a run is young or odd and backs off while it is healthy.
@@ -204,9 +205,11 @@ These are part of the skill's instructions and are enforced by the harness where
 - Check your existing authorisation before every submit, launch or cancel; ask only outside it. Cancel only after
   an identity check; never someone else's job or process.
 - On a workstation the harness picks the GPUs (`-d` / `-n`, never one another job uses unasked): a run command whose
-  text sets or clears `CUDA_VISIBLE_DEVICES` (or a sibling variable) anywhere is refused, and a launcher given its own
-  GPU flags (`deepspeed --num_gpus`, `accelerate launch --gpu_ids`) is a warning on the plan you approve. What the
-  payload does once it starts is its own code — no harness can check that.
+  text sets or clears `CUDA_VISIBLE_DEVICES` (or a sibling variable) anywhere is refused, as is one that empties the
+  environment (`env -i`, `exec -c`); a launcher given its own GPU flags (`deepspeed --num_gpus`, `accelerate launch
+  --gpu_ids`) is a warning on the plan you approve, and so are a launcher config's GPU ids and a container started with
+  GPUs of its own (`docker run --gpus`, `apptainer --cleanenv`). What the payload does once it starts is its own code —
+  no harness can check that.
 - Partition and QOS are `submit.sh`'s decision — no raw `sbatch`/`srun`, no `--partition` smuggled in via
   `SBATCH_EXTRA`. A policy refusal is final; `-y` acknowledges a plan's warnings (availability, occupancy, cost), and
   rsk sends it only when the approved card showed warnings or the covering grant's kind covers the plan's warnings
@@ -240,7 +243,8 @@ Update: `rsk update` (alias `upgrade`) upgrades rsk through uv, fast-forwards cl
 `rsk setup`. `--check` only reports, `--to <tag|commit>` installs that version (to roll back; a later `rsk update` stays
 on it, `rsk update --to main` follows main again; a version from before `remote-run` brings back `hpc-run` / `ws-run`
 and leaves `~/.agents/skills/remote-run` and its `~/.claude/skills` link for you to remove). `rsk doctor` checks the
-install offline. A change to `remote/` reaches a project at its next sync.
+install offline and flags a recorded permission or "never" naming a target or partition the harness does not know. A
+change to `remote/` reaches a project at its next sync.
 
 Uninstall: `uv tool uninstall remote-run`; remove `~/.agents/run-skills`, `~/.agents/skills/remote-run`, the symlinks
 `~/.claude/skills/remote-run` and `~/.claude/run-skills`, and the clone. `~/.config/run-skills` holds your targets, packs

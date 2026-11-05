@@ -10,7 +10,7 @@
 # nohup: busy GPU never grant-covered, approved card -> --gpu-busy-ok, cancel TERM/KILL; the watch lease. The P3 review
 # findings (H1 H2 H3 M1 M3 M4 M5 M6 M7 L2 L3 L4 L5), the round-3 decisions (D1 D3 D5 D6 D8 D9 D10; C-stale-API,
 # F-unknown, grants#1/3/4, H1-owner/msg, G-space), the round-4 ones (R4-1 R4-2 R4-4 R4-6 R4-8 R4-15) and the round-5 ones
-# (R5-1 R5-4 R5-5 R5-6 R5-8 R5-9), each end to end.
+# (R5-1 R5-4 R5-5 R5-8 R5-9) and the round-6 ones (R6-1 R6-4 R6-5 R6-7 R6-8 R6-9), each end to end.
 # Run by selftest.sh with RS_HOME set:  bash tests/62-rsk-launch.sh
 set -u
 . "$RS_HOME/tests/lib.sh"
@@ -29,11 +29,14 @@ cat > "$T/bin/ssh" <<EOS
 #!/usr/bin/env bash
 # executing ssh stub: -o options dropped, the host logged, the command run here (cd \$H, HOME=\$H) as the remote would;
 # \`bash -s\` takes its body on stdin. \$T/ssh.drop: the next submit (--rs-expect) runs, then its reply is lost (255).
-# \$T/ssh.noconnect: ssh's own refusal, nothing run (the session never opened).
+# \$T/ssh.noconnect: ssh's own refusal, nothing run (the session never opened). \$T/ssh.fallback: a ProxyCommand's first
+# route refused (the same line on stderr), its second connected: the command RUNS there, then the link dies (255, no output).
 while [ \$# -gt 0 ]; do case "\$1" in -o) shift 2 ;; -*) shift ;; *) break ;; esac; done
 echo "\$1" >> "$T/ssh-host.log"
 [ ! -f "$T/ssh.noconnect" ] || { echo "ssh: connect to host \$1 port 22: Connection refused" >&2; exit 255; }
 shift; cmd="\$*"
+if [ -f "$T/ssh.fallback" ]; then echo "ssh: connect to host bastion-a port 22: Connection refused" >&2
+  [ "\$cmd" != "bash -s" ] || cmd=\$(cat); ( cd "$H" && HOME="$H" bash -c "\$cmd" ) >/dev/null 2>&1; exit 255; fi
 if [ "\$cmd" = "bash -s" ]; then body=\$(cat); printf '%s\n' "\$body" >> "$T/ssh-body.log"
   if [ -f "$T/ssh.drop" ] && printf '%s' "\$body" | grep -q -- '--rs-expect'; then
     rm -f "$T/ssh.drop"; ( cd "$H" && HOME="$H" bash -c "\$body" ) >/dev/null 2>&1; exit 255; fi
@@ -469,25 +472,75 @@ rsk grant deny --quote "never launch b on fx-slurm" -T fx-slurm --name b >/dev/n
 O=$(rsk watch s.tsv --approve "run b"); RC=$?
 [ "$RC" = 3 ] && cmp -s "$R/s.tsv" "$T/s.before" && has "$O" 'never launch b on fx-slurm' "R5-8: a row on 'fx-slurm/' meets the -T fx-slurm deny (exit 3, no '#@ ok')" || bad "R5-8 (rc=$RC)"
 
-echo "-- round 5 R5-5: a failing scancel is unknown (the use kept); R5-6: a session that never opened sent nothing (the use back) --"
-rsk grant add --quote "you may stop your own a runs" -T fx-slurm --name 'a*' --action cancel_own --max-live none --max-launches 1 --expires none >/dev/null
+echo "-- round 5 R5-5: a failing scancel is unknown (the use kept); R6-4: ssh 255 before the first marker is unknown, whatever its stderr says --"
+rsk grant add --quote "you may stop your own a runs" -T fx-slurm --name 'a*' --action cancel_own --max-live none --max-launches 3 --expires none >/dev/null
 J2=$(pyl 'a = L.Ledger(sys.argv[2]).read_run("a2").data["attempts"]["a01"]; print(a["submissions"][-1]["job"])' "$R")
 touch "$T/ssh.noconnect"; : > "$T/scancel.log"; O=$(rsk cancel a2); RC=$?; rm -f "$T/ssh.noconnect"
-[ "$RC" = 5 ] && has "$O" 'not reached — nothing sent' "R5-6: ssh 'Connection refused' -> exit 5, not reached" || bad "R5-6 (rc=$RC)"
-has "$(rsk grant list)" 'uses 0/1' "...the cancel_own use is given back"; [ ! -s "$T/scancel.log" ] && ok "...nothing ran there" || bad "...scancel ran"
+[ "$RC" = 5 ] && has "$O" 'the cancel may have been sent' "R6-4: ssh 'Connection refused', exit 255, no @@start -> exit 5, may have been sent" || bad "R6-4 cancel (rc=$RC)"
+hasnt "$O" 'not reached' "...never 'not reached — nothing sent' (ssh's words are no proof)"
+has "$(rsk grant list)" 'uses 1/3' "...the cancel_own use is kept"; has "$(att a2 a01)" '^SUBMITTED submitted' "...the ledger unchanged"
 printf 'scancel: error: Kill job error on job id %s: Socket timed out on send/recv operation\n' "$J2" > "$T/scancel.err"
 O=$(rsk cancel a2); RC=$?; rm -f "$T/scancel.err"
-[ "$RC" = 5 ] && has "$O" "^UNKNOWN: job $J2 (a2 a01): scancel exit 1" "R5-5: scancel exit 1 (the cancel was applied) -> exit 5, unknown" || { bad "R5-5 (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
-hasnt "$O" 'not cancelled' "...never 'not cancelled'"; has "$(rsk grant list)" 'uses 1/1' "...the use is kept"
+[ "$RC" = 5 ] && has "$O" "^UNKNOWN: job $J2 (a2 a01): scancel exit 1 (scancel: error: Kill job error on job id $J2: Socket timed out" "R5-5: scancel exit 1 (the cancel was applied) -> exit 5, unknown, quoting its own line (R6-8)" || { bad "R5-5 (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
+hasnt "$O" 'not cancelled' "...never 'not cancelled'"; has "$(rsk grant list)" 'uses 2/3' "...the use is kept"
 has "$(att a2 a01)" '^CANCELLING? submitted' "...the ledger: CANCELLING? (not confirmed)"
-O=$(rsk launch -T fx-slurm -n c -p gpu -g 1 -t 1:00:00 -- python c.py); PC=$(pid_of "$O")   # R5-6's proof for a submit (integration)
+O=$(rsk launch -T fx-slurm -n a3 -p gpu -g 1 -t 1:00:00 -- python train.py); RC=$?; J3=$(jid "$O")
+[ "$RC" = 0 ] && [ -n "$J3" ] || bad "R6-4 setup: a3 launched under the grant (rc=$RC)"
+touch "$T/ssh.fallback"; : > "$T/scancel.log"; O=$(rsk cancel a3); RC=$?; rm -f "$T/ssh.fallback"
+[ "$RC" = 5 ] && has "$O" 'the cancel may have been sent' "R6-4: a fallback route's 'Connection refused', the body ran, 255 -> exit 5, may have been sent" || bad "R6-4 fallback cancel (rc=$RC)"
+has "$(cat "$T/scancel.log")" "^$J3\$" "...scancel DID run there (what 'not reached' used to deny)"; has "$(rsk grant list)" 'uses 3/3' "...the use is kept"
+O=$(rsk launch -T fx-slurm -n c -p gpu -g 1 -t 1:00:00 -- python c.py); PC=$(pid_of "$O")   # R6-4 for a submit (integration)
 touch "$T/ssh.noconnect"; : > "$T/sbatch.log"; O=$(rsk launch --plan "$PC" --approve "run c"); RC=$?; rm -f "$T/ssh.noconnect"
-[ "$RC" = 5 ] && has "$O" 'not reached — nothing sent: ssh: connect to host fx port 22: Connection refused' "R5-6 for rsk launch: an approved submit whose session never opened -> exit 5, not reached" \
-  || { bad "R5-6 submit (rc=$RC, plan '$PC')"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
-has "$O" "plan $PC is free again" "...the plan is free again"; nosub "...nothing submitted"
-has "$(att c a01)" '^NOT_SUBMITTED not_submitted' "...the ledger: NOT_SUBMITTED (not SUBMIT_UNKNOWN: nothing blocks the run)"
+[ "$RC" = 5 ] && has "$O" '^SUBMIT_UNKNOWN: c a01 ' "R6-4 for rsk launch: ssh 'Connection refused', 255 -> exit 5, SUBMIT_UNKNOWN" \
+  || { bad "R6-4 submit (rc=$RC, plan '$PC')"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
+hasnt "$O" 'is free again' "...the plan is not released"; nosub "...nothing reached sbatch"
+has "$(att c a01)" '^SUBMIT_UNKNOWN unknown' "...the ledger: SUBMIT_UNKNOWN (sticky)"
 O=$(rsk launch --plan "$PC"); RC=$?
-[ "$RC" = 0 ] && [ "$(grep -c . "$T/sbatch.log")" = 1 ] && ok "...the host back: rsk launch --plan submits it under the same approval" || bad "R5-6 submit retry (rc=$RC)"
+[ "$RC" = 6 ] && has "$O" 'was used already' "...the retry is refused (exit 6): never resubmitted blind" || bad "R6-4 submit retry (rc=$RC)"
+nosub "...nothing submitted"
+O=$(rsk launch -T fx-slurm -n d -p gpu -g 1 -t 1:00:00 -- python d.py); PD=$(pid_of "$O")
+touch "$T/ssh.fallback"; : > "$T/sbatch.log"; O=$(rsk launch --plan "$PD" --approve "run d once"); RC=$?; rm -f "$T/ssh.fallback"
+[ "$RC" = 5 ] && has "$O" '^SUBMIT_UNKNOWN: d a01 ' "R6-4: a fallback route's 'Connection refused', the submit ran there, 255 -> SUBMIT_UNKNOWN" || bad "R6-4 fallback submit (rc=$RC)"
+[ "$(grep -c . "$T/sbatch.log")" = 1 ] && ok "...the job exists (1 sbatch)" || bad "...sbatch calls: $(grep -c . "$T/sbatch.log")"
+jobstate "$(cat "$T/jobid")" COMPLETED                       # it ended: the remote duplicate guard no longer stops a retry
+O=$(rsk launch --plan "$PD"); RC=$?
+[ "$RC" = 6 ] && [ "$(grep -c . "$T/sbatch.log")" = 1 ] && ok "...the retry is refused: still 1 sbatch (was: submitted again)" || bad "R6-4 fallback retry (rc=$RC)"
+rsk status >/dev/null
+has "$(att d a01)" '^[A-Z]* submitted [0-9][0-9]* ' "...rsk status reconciles it from the journal's receipt (the job id)"
+
+echo "-- round 6 R6-1: a relaunch deny naming a run stops every launch of it, also on a target whose journal never saw it --"
+U6=$T/user-r61; cp -R "$RS_USER_DIR" "$U6"; mkdir -p "$U6/targets/fx2"; cp "$R/.hpc.conf" "$T/r.conf"
+sed 's/T_HOST=fx;/T_HOST=fx2;/' "$U6/targets/fx-slurm/profile.sh" > "$U6/targets/fx2/profile.sh"; cp "$U6/targets/fx-slurm/policy.sh" "$U6/targets/fx2/"
+( export RS_USER_DIR=$U6
+  R2=$(mk_proj fx2 'x'); printf 'FX2_REMOTE_DIR=%s\n' "$R2" >> "$R/.hpc.conf"; cp "$R/.hpc.conf" "$R2/.hpc.conf"
+  rsk grant add --quote "run the a* experiments on fx2 too" -T fx2 --name 'a*' --action launch --max-live 4 --max-launches 10 --expires none >/dev/null
+  : > "$T/sbatch.log"; O=$(rsk launch -T fx2 -n a -p gpu -g 1 -t 1:00:00 -- python train.py); RC=$?
+  [ "$RC" = 3 ] && has "$O" 'do not relaunch a, it is broken' "R6-1: run a on fx2 (run-watch ran it on fx-slurm) -> the relaunch deny naming a stops it (exit 3)" \
+    || { bad "R6-1 xtarget (rc=$RC)"; printf '%s\n' "$O" | grep -E 'covered|denied|submitted|prior' | sed 's/^/    | /'; }
+  has "$O" '— launch on fx2' "...the card says launch (fx2's journal holds no attempt of a)"
+  has "$O" 'rsk cannot see every earlier attempt' "...the refusal says why a launch meets a relaunch deny"; nosub "...nothing submitted"
+  rsk grant deny --quote "never relaunch anything on fx2" -T fx2 --action relaunch >/dev/null
+  O=$(rsk launch -T fx2 -n a5 -p gpu -g 1 -t 1:00:00 -- python train.py); RC=$?
+  [ "$RC" = 0 ] && has "$O" '— launch on fx2' "R6-1: a relaunch deny naming no run keeps the derived action: a fresh a5 is a covered launch" \
+    || { bad "R6-1 unnamed (rc=$RC)"; printf '%s\n' "$O" | grep -E 'covered|denied|submitted|prior' | sed 's/^/    | /'; } )
+cp "$T/r.conf" "$R/.hpc.conf"
+
+echo "-- round 6 R6-5: a partition the profile does not list is refused; R6-9: grant list flags a stored deny naming an unknown target; R6-7 --"
+R6=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\n' "$R6" > "$R6/.hpc.conf"; CWD=$R6
+O=$(rsk grant deny --quote "never use the forbidden queue" -T fx-slurm --partition forbiden); RC=$?
+[ "$RC" = 2 ] && has "$O" "unknown partition 'forbiden'" "R6-5: a misspelt --partition -> exit 2 (the deny would match nothing)" || bad "R6-5 (rc=$RC)"
+has "$O" 'fx-slurm list gpu, forbidden (T_PARTITIONS)' "...the profile's list is named"; hasnt "$(rsk grant list)" 'forbidden queue' "...nothing recorded"
+O=$(rsk grant deny --quote "never the gt-zz GPUs" -T fx-slurm --gpu-type gt-zz --action cancel_own); RC=$?
+[ "$RC" = 0 ] && has "$O" 'NOTE: GPU type gt-zz is not checked' "R6-5: a GPU type is not checked (no list), echoed" || bad "R6-5 gpu type (rc=$RC)"
+pyl 'G.add(L.Ledger(sys.argv[2]), G.new_deny("never launch anything on fx-slurm again", {"targets": ["fx-slrum"]}))' "$R6"
+has "$(rsk grant list)" 'WARNING: d-[^ ]* (deny): target fx-slrum is not one the harness knows .* never matches .* fix or revoke' "R6-9: grant list flags a stored deny naming an unknown target"
+rsk grant deny --quote "do not cancel job 555 (the other project's eval)" --job 555 --action cancel >/dev/null
+printf '#@ run-watch v1\n#@ allow launch\nw fx-slurm - -p gpu -g 1 -t 1:00:00 -- python w.py\n' > "$R6/w.tsv"
+O=$(rsk watch w.tsv --approve "run w under the watch"); RC=$?
+[ "$RC" = 0 ] && has "$(cat "$R6/w.tsv")" '^#@ ok ' "R6-7: a deny of job 555's cancel does not bind a table without fail-stop (approved)" || { bad "R6-7 (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
+printf '#@ run-watch v1\n#@ allow launch fail-stop\nf fx-slurm - -p gpu -g 1 -t 1:00:00 -- python f.py\n' > "$R6/f.tsv"; cp "$R6/f.tsv" "$T/f.before"
+O=$(rsk watch f.tsv --approve "run f, stop the rest if one fails"); RC=$?
+[ "$RC" = 3 ] && cmp -s "$R6/f.tsv" "$T/f.before" && has "$O" 'do not cancel job 555' "R6-7: under fail-stop it binds (the row's job is not known here): exit 3, no '#@ ok'" || bad "R6-7 fail-stop (rc=$RC)"
 CWD=$P
 
 echo "-- watch: the lease (one watcher per project) --"

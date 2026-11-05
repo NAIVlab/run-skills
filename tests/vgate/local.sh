@@ -10,7 +10,8 @@
 # table, and the compute processes: `--query-compute-apps=gpu_uuid,pid --format=csv,noheader` — one `<uuid>, <pid>` line
 # each, or a "No running processes found" line — with `ps -o user=` of the first pid), read-only; and the box's `env`
 # argument rules launch.sh's RUN check relies on (a quoted NAME=VALUE word before the command sets NAME; `-- -` = -i; options
-# end at the first non-option) — on throwaway values, nothing launched. Writes only under <scratch-dir>. NOT in selftest.
+# end at the first non-option; -i after a wrapper and after env's other options, -S's string read as options: R6-6) — on
+# throwaway values, nothing launched. Writes only under <scratch-dir>. NOT in selftest.
 set -u
 H=$1; D=$2; K=${3:-slurm}; A=${4:-}; B=${5:-}
 case "$D" in *'~'*) echo "vgate=fail: <scratch-dir> without '~' (a relative path starts at the remote home)"; exit 2 ;; esac
@@ -38,5 +39,6 @@ if [ "$K" = nohup ]; then
   echo "proc=$("${S[@]}" 'echo boot_id=$(cat /proc/sys/kernel/random/boot_id) self_start=$(sed "s/.*) //" /proc/self/stat | cut -d" " -f20) clk_tck=$(getconf CLK_TCK) shell=$0')"
   echo "gpus=$("${S[@]}" 'nvidia-smi --query-gpu=index,uuid,memory.used --format=csv,noheader,nounits 2>&1 | head -n 16 | tr "\n" ";"') (want <index>, <uuid>, <MiB>;…)"
   echo "env_facts=$("${S[@]}" 'env --version 2>&1 | head -n 1; CUDA_VISIBLE_DEVICES=5 env "CUDA_VISIBLE_DEVICES=7" printenv CUDA_VISIBLE_DEVICES; CUDA_VISIBLE_DEVICES=5 env -- - printenv CUDA_VISIBLE_DEVICES; echo "rc=$?"; CUDA_VISIBLE_DEVICES=5 env A=1 -i printenv CUDA_VISIBLE_DEVICES 2>/dev/null; echo "rc=$?"' | tr '\n' ' ') (want: env (GNU coreutils) …; 7; rc=1; rc=127)"
+  echo "env_anywhere=$("${S[@]}" 'for o in "-v -i" "-u X -i" "--ignore-e" "-S-i"; do CUDA_VISIBLE_DEVICES=5 timeout 5 env $o printenv CUDA_VISIBLE_DEVICES 2>/dev/null; echo "rc=$?"; done; CUDA_VISIBLE_DEVICES=5 timeout 5 env --i printenv CUDA_VISIBLE_DEVICES 2>/dev/null; echo "rc=$?"' | tr '\n' ' ') (want rc=1 four times — after a wrapper and env's other options the environment is empty — then rc=125 (--i ambiguous) or rc=1 (an older env: --ignore-environment))"
   echo "apps=$("${S[@]}" 'a=$(nvidia-smi --query-compute-apps=gpu_uuid,pid --format=csv,noheader 2>&1); r=$?; echo "rc=$r $(printf "%s\n" "$a" | head -n 16 | tr "\n" ";")"; p=$(printf "%s\n" "$a" | sed -n "1s/.*, *//p" | tr -cd 0-9); [ -z "$p" ] || echo "user_of_$p=$(ps -o user= -p "$p" 2>&1)"' | tr '\n' ' ') (want <uuid>, <pid>;… or No running processes found)"
 fi

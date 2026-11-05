@@ -12,7 +12,8 @@
 # table's fail-stop taken every round also by rows with their own state (R4-13), the settle path's and the submit ssh's
 # WorkDir, older state lines' targets (R4-14), the rsk watch steer and RS_WATCH_PARENT (exit 7 once it is gone: R4-7);
 # round 5: a table keeps every fail-stop that holds it, --release clears only its own (R5-7); a row's target is a plain
-# target name rs_targets lists (R5-8).
+# target name rs_targets lists (R5-8); round 6: a --release not used yet is withdrawn once a fail-stop holds its table later in
+# the same watch (several rounds: a sleep stub runs the world's next step between them).
 set -u
 . "$RS_HOME/tests/lib.sh"
 export WORLD=$T/world RBIN=$T/rbin TBIN=$T/bin; mkdir -p "$WORLD" "$RBIN"
@@ -772,3 +773,42 @@ if [ "$(id -u)" != 0 ]; then   # a target whose profile resolves but which rs_ta
   [ "$RC" = 2 ] && has "$O" "target 'fx-slurm' is not a target name this harness lists" "a target rs_targets does not list is refused (exit 2)" || bad "unlisted target (rc=$RC)"
   [ ! -s "$WORLD/ssh.log" ] && [ "$(nsub)" = 0 ] && ok "  ...before any ssh" || bad "  ...ssh or sbatch ran"
 else ok "running as root (permissions not enforced): the unlisted-target check SKIP"; fi
+
+echo "-- round 6: a --release not used yet is withdrawn once a fail-stop holds its table later in the same watch --"
+mkdir -p "$T/sbin"; RSL=$(command -v sleep)   # several rounds: the between-rounds sleep runs the world's next step (none left: TERM)
+cat > "$T/sbin/sleep" <<EOS
+#!/usr/bin/env bash
+case "\$1" in [0-9]|[0-4][0-9]) exec "$RSL" "\$@" ;; esac   # a watchdog or the lock wait: the real sleep
+n=\$(( \$(cat "\$WORLD/step" 2>/dev/null || echo 0) + 1 )); echo "\$n" > "\$WORLD/step"
+if [ -f "\$WORLD/step\$n.sh" ]; then . "\$WORLD/step\$n.sh"; else kill -TERM "\$PPID"; fi
+EOS
+chmod +x "$T/sbin/sleep"
+wstep() {   # wstep N "QUEUE-ROWS" SACCT-ROWS...: the world after the Nth between-rounds sleep (queue rows: no spaces)
+  local n=$1 r; { printf 'printf "%%s\\n" %q' "$OTHER"; for r in $2; do printf ' %q' "$r"; done; echo ' > "$WORLD/squeue"'; shift 2
+    printf 'printf "%%s\\n"'; for r in "$@"; do printf ' %q' "$r"; done; echo ' > "$WORLD/sacct"'; } > "$WORLD/step$n.sh"; }
+rwm() { ( cd "$P" && PATH="$T/sbin:$T/bin:$PATH" RS_WATCH_OBS_TIMEOUT=15 RS_WATCH_SUBMIT_TIMEOUT=15 bash "$RS_HOME/bin/run-watch" "$@" 2>&1 ); }
+rel6() {   # t = c (never launched) b (its job 1001 cancelled: held) [a (1000 running)]; c's launch takes round 1's one submit
+  reset; approved "#@ allow launch errors=0 fail-stop" "c fx-slurm - $ROW" "b fx-slurm - $ROW" "$@"
+  q "1000|a|RUNNING|None|0|$NOW|$P|" "1001|b|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --adopt b=1001 $([ "$#" = 0 ] || echo --adopt a=1000) >/dev/null
+  q "1000|a|RUNNING|None|0|$NOW|$P|"; acct "1001|b|CANCELLED by 1|0:0|$P"; rw t.tsv --once >/dev/null; echo 2000 > "$WORLD/nextjid"; }
+rel6 "a fx-slurm - $ROW"; [ "$(st b 2):$(st c 2):$(st a 2):$(nsub)" = held:pending:active:0 ] && ok "setup: b held (its job cancelled), c never launched, a running" || bad "round 6 setup ($(st b 2):$(st c 2):$(st a 2))"
+wstep 1 "2000|c|RUNNING|None|0|$NOW|$P|" "1001|b|CANCELLED by 1|0:0|$P" "1000|a|FAILED|1:0|$P"
+wstep 2 "" "1001|b|CANCELLED by 1|0:0|$P" "1000|a|FAILED|1:0|$P" "2000|c|CANCELLED by 1|0:0|$P"
+O=$(rwm t.tsv --act --max-active 5 --every 60 --release b)
+has "$O" 'LAUNCH name=c .*job=2000' "round 1: c launched (the target's one submit); b's released resubmit waits a round"
+has "$O" 'ATTENTION name=a .*reason=fail-stop trigger=a:1000' "round 2: a FAILED, errors spent: the group stops"; has "$O" 'CANCEL name=c .*job=2000 by=fail-stop' "  ...c cancelled"
+has "$O" 'ATTENTION name=b .*job=1001 reason=release-withdrawn fail-stop=a' "  ...b's --release, given before that stop and not used yet, is withdrawn"
+hasnt "$O" 'RESUBMIT name=b' "  ...b is never resubmitted past the stop (HEAD did, in round 3)"
+[ "$(nsub):$(st b 2)" = 1:held ] && ok "  ...one sbatch (c), b held" || bad "  ...$(nsub) sbatch, b $(st b 2)"
+rel6; mk5 v.tsv x d; q "1002|x|RUNNING|None|0|$NOW|$P|"; rw v.tsv --once --adopt x=1002 >/dev/null   # v = x d: x fails, v stops (d held)
+q; acct "1001|b|CANCELLED by 1|0:0|$P" "1002|x|FAILED|1:0|$P"; rw v.tsv --once --act --max-active 2 >/dev/null; echo 2000 > "$WORLD/nextjid"
+grep -q '^#failstop x 1002$' "$P/logs/run-watch/v.state" && [ "$(nsub)" = 0 ] && ok "setup: v stopped (x:1002), d never launched" || bad "round 6 v setup ($(nsub))"
+wstep 1 "2000|c|RUNNING|None|0|$NOW|$P|" "1001|b|CANCELLED by 1|0:0|$P" "1002|x|FAILED|1:0|$P"
+printf 'printf "d fx-slurm - %s\\n" >> t.tsv; bash %q t.tsv --approve "and d" > /dev/null\n' "$ROW" "$RS_HOME/bin/run-watch" >> "$WORLD/step1.sh"   # the user adds d (v's group)
+O=$(rwm t.tsv --act --max-active 5 --every 60 --release b)
+has "$O" 'reason=fail-stop-inherited trigger=x:1002 from=logs/run-watch/v.state' "round 2: d, added and approved during the watch, brings v's stop to t"
+has "$O" 'ATTENTION name=b .*job=1001 reason=release-withdrawn fail-stop=x' "  ...b's --release not used yet is withdrawn"
+hasnt "$O" 'RESUBMIT name=b' "  ...no resubmit of b past it (HEAD resubmitted it in round 2)"; [ "$(nsub)" = 1 ] && ok "  ...one sbatch (c)" || bad "  ...$(nsub) sbatch"
+reset; approved "#@ allow preempt=1" "a fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --adopt a=1000 >/dev/null
+q; acct "1000|a|CANCELLED by 1|0:0|$P"; echo 2000 > "$WORLD/nextjid"; O=$(rwm t.tsv --act --every 60 --release a); has "$O" 'RESUBMIT name=a .*release=1' "control: with no stop, the release is used (one resubmit)"
+hasnt "$O" 'release-withdrawn' "  ...and never withdrawn"

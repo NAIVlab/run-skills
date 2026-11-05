@@ -41,7 +41,7 @@ def block(kind="slurm", target="fx", name="exp--train--a--scratch--s0--a01", war
                  ("exclude", ""), ("nice", ""), ("busy_ok", kw.get("busy_ok", "")), ("payload", payload.replace(" ", "\\ ")),
                  ("env_kind", "none"), ("env_hook", "''"), ("venv_dir", "''"), ("uv_sync_args", "''"), ("env_name", "''")]
         info = [("info_gpus", kw.get("info_gpus", "1")), ("info_uuids", "GPU-x"), ("info_busy", kw.get("busy", "")),
-                ("info_run_gpu", "checked"), ("info_prior", kw.get("prior", "0"))]
+                ("info_run_gpu", "checked"), ("info_prior", kw.get("prior", "0")), ("info_launchers", "checked")]
     info = [(k, v) for k, v in info if k not in kw.get("drop", ())]
     bound = [(k, v) for k, v in bound if k not in kw.get("drop", ())]
     lines = [f"{k}={v}" for k, v in bound]
@@ -948,37 +948,77 @@ class Round5(Fixture):
         att = self.led.read_run("r").data["attempts"]["a01"]
         self.assertEqual(att["request"]["action"], "relaunch")
 
-    def test_r5_6_a_submit_whose_session_never_opened_sent_nothing(self):
-        """R5-6's proof (cancel.not_reached) for a Slurm submit: ssh's own exit 255, no answer, and its words that the
-        session never opened = nothing sent — NOT_SUBMITTED, the approval's use given back, the plan free again (was:
-        SUBMIT_UNKNOWN, sticky until rsk status could read the journal). Any other 255 may have been sent: unknown."""
+    def test_r6_4_a_slurm_submit_s_ssh_255_is_unknown_whatever_its_stderr_says(self):
+        """V5-notreached-submit-resubmit (R6-4 reverts R5-6 for submits): ssh's exit 255 with no answer and a
+        `Connection refused` line in its stderr was taken as proof that nothing was sent — NOT_SUBMITTED, the use given
+        back, the plan released — but a ProxyCommand's fallback route prints that line on a session that did open: the
+        job existed, and `rsk launch --plan <id>` submitted it again (a --chain approval: every segment again). Now it
+        is SUBMIT_UNKNOWN (sticky), the use kept, the plan used: the retry is refused (exit 6) and nothing is sent."""
         self.answers = [self.plan_reply()]
         pid = self.plan_id(self.cli("launch", "-T", "fx", "--", "c")[1])
-        self.answers = [X.Reply(255, "", "ssh: connect to host fxhost port 22: Connection refused\n")]
-        rc, text = self.cli("launch", "--plan", pid, "--approve", "yes, run it")
+        self.answers = [X.Reply(255, "", "ssh: connect to host bastion-a port 22: Connection refused\n")]
+        rc, text = self.cli("launch", "--plan", pid, "--approve", "run the exp smoke once")
         self.assertEqual(rc, UNKNOWN, text)
-        self.assertIn("fx not reached — nothing sent: ssh: connect to host fxhost port 22: Connection refused", text)
-        self.assertIn(f"plan {pid} is free again", text)
+        self.assertIn("SUBMIT_UNKNOWN: exp--train--a--scratch--s0 a01", text)
+        self.assertIn("ssh's own words are no proof that nothing was sent", text)
+        self.assertNotIn("not reached", text)
+        self.assertNotIn("is free again", text)
         att = self.led.read_run("exp--train--a--scratch--s0").data["attempts"]["a01"]
-        self.assertEqual(L.attempt_state(att), "NOT_SUBMITTED")
-        self.assertFalse(L.is_live(att))
+        self.assertEqual(L.attempt_state(att), "SUBMIT_UNKNOWN")
+        self.assertTrue(L.is_live(att))
         aps = [r for r in self.led.state().grants if r["kind"] == "approval"]
-        self.assertEqual((len(aps), aps[0]["used"]), (1, []))
-        self.answers = [self.submitted("101")]
-        rc, text = self.cli("launch", "--plan", pid)                     # the host is back: the same approval
-        self.assertEqual(rc, OK, text)
-        for i, r in enumerate((X.Reply(255, "", "Connection to fxhost closed by remote host.\n"),      # the session was up
+        self.assertEqual((len(aps), len(aps[0]["used"])), (1, 1))      # the use kept
+        n = len(self.calls)
+        rc, text = self.cli("launch", "--plan", pid)                     # the retry rsk used to offer
+        self.assertEqual(rc, CONFLICT, text)
+        self.assertIn("was used already", text)
+        self.assertEqual(len(self.calls), n)                             # nothing sent
+        name = "exp--train--c--scratch--s0"                              # a chain approval: the first segment's 255
+        self.answers = [self.plan_reply(name=name, chain="1")]           # stops the chain, nothing released
+        p2 = self.plan_id(self.cli("launch", "-T", "fx", "-n", name, "--chain", "2", "--", "c")[1])
+        self.answers = [X.Reply(255, "", "ssh: connect to host bastion-a port 22: Connection refused\n")]
+        n = len(self.calls)
+        rc, text = self.cli("launch", "--plan", p2, "--approve", "run c as a 2-segment chain")
+        self.assertEqual(rc, UNKNOWN, text)
+        self.assertIn("the chain stops: 1 later segment(s) not sent", text)
+        self.assertEqual(len(self.calls), n + 1)
+        self.assertEqual(self.cli("launch", "--plan", p2)[0], CONFLICT)
+        self.assertEqual(len(self.calls), n + 1)
+        for i, r in enumerate((X.Reply(255, "", "Connection to fxhost closed by remote host.\n"),
                                X.Reply(255, "@@api api=3\n", "ssh: connect to host fxhost port 22: Connection refused\n"),
-                               X.Reply(1, "", "ssh: connect to host fxhost port 22: Connection refused\n"))):
+                               X.Reply(None, why="no answer from fxhost within 180 s"))):
             name = f"exp--train--u{i}--scratch--s0"
             self.answers = [self.plan_reply(name=name)]
             p = self.plan_id(self.cli("launch", "-T", "fx", "-n", name, "--", "c")[1])
             self.answers = [r]
             rc, text = self.cli("launch", "--plan", p, "--approve", "go")
+            self.assertEqual(rc, UNKNOWN, text)
             self.assertNotIn("not reached", text)
-            if r.rc == 255:
-                self.assertEqual(rc, UNKNOWN, text)
-                self.assertEqual(L.attempt_state(self.led.read_run(name).data["attempts"]["a01"]), "SUBMIT_UNKNOWN")
+            self.assertEqual(L.attempt_state(self.led.read_run(name).data["attempts"]["a01"]), "SUBMIT_UNKNOWN")
+
+
+class Round6(Fixture):
+    """Integration of round 6: launch.sh's launcher / container WARNINGs (R6-2, R6-3) and its env -i refusal (R6-6) say
+    so in the block (info_launchers=checked); a deploy without them prints a block those WARNINGs are missing from."""
+
+    def test_r6_a_box_whose_launch_sh_predates_the_launcher_and_container_checks_needs_a_sync(self):
+        """An un-synced round-5 launch.sh prints info_run_gpu=checked and info_prior but no WARNING for `docker run
+        --gpus all …` or accelerate's config, and lets an `x; env -i …` RUN through: a standing launch grant would cover
+        that card. Without info_launchers the plan is `needs: sync` (nothing launched), and a plan stored without it is
+        refused at --plan."""
+        G.add(self.led, G.new_grant("anything on ws", {"targets": ["ws"]}, ["launch"], max_live=None,
+                                    max_launches=None, expires=None))
+        self.answers = [X.Reply(0, block(kind="nohup", target="ws", name="r", drop=("info_launchers",)), "")]
+        rc, text = self.cli("launch", "-T", "ws", "-N", "r", "--", "docker", "run", "--gpus", "all", "img")
+        self.assertEqual(rc, CONFLICT, text)
+        self.assertIn("needs: sync", text)
+        self.assertIn("lacks info_launchers", text)
+        self.assertEqual(len(self.calls), 1)                          # the plan only: nothing launched
+        self.assertIn("info_launchers", G.NEEDED["nohup"])
+        self.assertNotIn("info_launchers", G.NEEDED["slurm"])         # submit.sh did not change in round 6
+        rec = {"id": "p-old", "kind": "nohup", "created_at": L.now(), "target": "ws", "name": "r",
+               "block": {k: "" for k in G.NEEDED["nohup"] if k != "info_launchers"}}
+        self.assertIn("lacks info_launchers", X.plan_state(self.led, rec))
 
 
 class Nohup(Fixture):

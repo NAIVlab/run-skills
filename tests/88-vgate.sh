@@ -2,7 +2,8 @@
 # tests/88-vgate.sh — phase A: tests/vgate/slurm-remote.sh (the V-gate reproductions, never run against a target here)
 # under stub sbatch/scontrol/squeue/sacct/scancel and an instant sleep: a scratch dir given relative to the remote home
 # reaches sbatch as an absolute --chdir and job.sh writes absolute paths; a failed sbatch stops the gate (exit 1). And
-# tests/vgate/launchers.sh on fake deepspeed / accelerate modules (its plumbing; the facts come from installed copies).
+# tests/vgate/launchers.sh on fake deepspeed / accelerate modules, tests/vgate/containers.sh on stub docker / podman /
+# apptainer / singularity (their plumbing; the facts come from installed copies on a box, with the user's OK).
 set -u
 . "$RS_HOME/tests/lib.sh"
 G=$RS_HOME/tests/vgate/slurm-remote.sh; V=$T/vg; mkdir -p "$V/bin" "$V/home"
@@ -67,27 +68,66 @@ O=$(vg scratch/vg3 gpu); RC=$?; cp "$V/squeue.plain" "$V/bin/squeue"
 [ "$RC" = 0 ] && has "$O" '^scancel_invalid=skipped (squeue -j lists 4000000000 here)$' "an id squeue lists is never scancel'd: skipped" || bad "squeue lists the id: skipped (rc=$RC)"
 hasnt "$(cat "$V/calls.log")" '^scancel 4000000000' "...no scancel of it"
 
-echo "-- launchers.sh (R5-2's launcher facts, read from installed copies): its plumbing, on fake deepspeed / accelerate modules --"
+echo "-- launchers.sh (R5-2's flags, R6-3's configs: launcher facts read from installed copies): its plumbing, on fake modules --"
 LG=$RS_HOME/tests/vgate/launchers.sh
 if command -v python3 >/dev/null 2>&1; then
-  FP=$T/fakepy; mkdir -p "$FP/deepspeed/launcher" "$FP/accelerate/commands" "$FP/accelerate/utils"
+  FP=$T/fakepy; mkdir -p "$FP/deepspeed/launcher" "$FP/accelerate/commands/config" "$FP/accelerate/utils"
   printf '__version__ = "0.0-fake"\n' > "$FP/deepspeed/__init__.py"; : > "$FP/deepspeed/launcher/__init__.py"
   printf '%s\n' 'import argparse, os' 'def parse_args(args=None):' '    p = argparse.ArgumentParser()' \
     '    p.add_argument("-i", "--include", default=""); p.add_argument("--num_gpus", "--num_accelerators", type=int, default=-1)' \
     '    p.add_argument("--num_nodes", type=int, default=-1); p.add_argument("user_script"); return p.parse_args(args)' \
-    'def main(args=None):' '    visible_devices_env = "CUDA_VISIBLE_DEVICES"' '    print("but ignoring it")' '    del os.environ[visible_devices_env]' \
+    'def main(args=None):' '    visible_devices_env = "CUDA_VISIBLE_DEVICES"' '    resource_pool = {}' \
+    '    if not resource_pool and len(os.environ.get(visible_devices_env, "")):' '        print("but ignoring it")' '        del os.environ[visible_devices_env]' \
     "DLTS_HOSTFILE = \"$T/no-hostfile\"" > "$FP/deepspeed/launcher/runner.py"
   printf '__version__ = "0.0-fake"\n' > "$FP/accelerate/__init__.py"; : > "$FP/accelerate/commands/__init__.py"; : > "$FP/accelerate/utils/__init__.py"
+  : > "$FP/accelerate/commands/config/__init__.py"
   printf '%s\n' 'import argparse' 'def launch_command_parser():' '    p = argparse.ArgumentParser(allow_abbrev=False)' \
-    '    p.add_argument("--gpu_ids", "--gpu-ids"); p.add_argument("training_script"); return p' > "$FP/accelerate/commands/launch.py"
-  printf '%s\n' 'def prepare_simple_launcher_cmd_env(args, current_env):' '    current_env["CUDA_VISIBLE_DEVICES"] = args.gpu_ids' > "$FP/accelerate/utils/launch.py"
+    '    p.add_argument("--gpu_ids", "--gpu-ids"); p.add_argument("--config_file", "--config-file"); p.add_argument("training_script"); return p' \
+    'def _validate_launch_command(args, defaults):' '    if args.gpu_ids is None:' '        args.gpu_ids = defaults.gpu_ids' > "$FP/accelerate/commands/launch.py"
+  printf '%s\n' 'import os' 'cache_dir = os.path.join(os.path.expanduser(os.environ.get("HF_HOME", "~/.cache/huggingface")), "accelerate")' \
+    'default_json_config_file = os.path.join(cache_dir, "default_config.json")' 'default_yaml_config_file = os.path.join(cache_dir, "default_config.yaml")' \
+    'if os.path.isfile(default_yaml_config_file) or not os.path.isfile(default_json_config_file):' '    default_config_file = default_yaml_config_file' \
+    'else:' '    default_config_file = default_json_config_file' > "$FP/accelerate/commands/config/config_args.py"
+  printf '%s\n' 'def prepare_simple_launcher_cmd_env(args, current_env):' '    if args.gpu_ids != "all" and args.gpu_ids is not None:' \
+    '        current_env["CUDA_VISIBLE_DEVICES"] = args.gpu_ids' > "$FP/accelerate/utils/launch.py"
   O=$(PYTHONPATH=$FP bash "$LG" python3 2>&1); RC=$?
-  [ "$RC" = 0 ] && has "$O" "^ds_version=0.0-fake ds_abbrev=2 ds_short=localhost:1 ds_alias=2 ds_ignores_cvd=yes ds_hostfile=$T/no-hostfile:absent\$" "launchers.sh: the deepspeed line (parse_args and runner.main's source)" \
+  [ "$RC" = 0 ] && has "$O" "^ds_version=0.0-fake ds_abbrev=2 ds_short=localhost:1 ds_alias=2 ds_ignores_cvd=yes ds_hostfile=$T/no-hostfile:absent ds_pool_cvd=yes\$" "launchers.sh: the deepspeed line (parse_args and runner.main's source)" \
     || { bad "launchers.sh on fakes (rc=$RC)"; printf '%s\n' "$O" | head -5 | sed 's/^/    | /'; }
-  has "$O" '^acc_version=0.0-fake acc_hyphen=0,1 acc_abbrev=refused acc_sets_cvd=yes$' "launchers.sh: the accelerate line (launch_command_parser and utils/launch.py's source)"
+  has "$O" '^acc_version=0.0-fake acc_hyphen=0,1 acc_abbrev=refused acc_sets_cvd=yes acc_all=yes acc_cfg_gpu_ids=yes acc_cfg_hyphen=c.yaml acc_cfg_default=$HF_HOME/accelerate/default_config.yaml acc_cfg_json_only=default_config.json$' \
+    "launchers.sh: the accelerate line (launch_command_parser, launch.py's and utils/launch.py's source, config_args under a scratch HF_HOME holding only a .json)"
   printf 'def main(args=None):\n    pass\n' >> "$FP/deepspeed/launcher/runner.py"; printf 'def f(args, current_env):\n    pass\n' > "$FP/accelerate/utils/launch.py"
-  O=$(PYTHONPATH=$FP bash "$LG" python3 2>&1); has "$O" 'ds_ignores_cvd=no ds_hostfile=' "...a runner that keeps the variable reads no"; has "$O" 'acc_sets_cvd=no$' "...and an accelerate that never sets it"
+  printf '%s\n' 'import argparse' 'def launch_command_parser():' '    p = argparse.ArgumentParser(allow_abbrev=False)' \
+    '    p.add_argument("--gpu_ids"); p.add_argument("training_script"); return p' > "$FP/accelerate/commands/launch.py"
+  O=$(PYTHONPATH=$FP bash "$LG" python3 2>&1); has "$O" 'ds_ignores_cvd=no ds_hostfile=.* ds_pool_cvd=no$' "...a runner that keeps the variable reads no (both)"
+  has "$O" 'acc_hyphen=refused acc_abbrev=refused acc_sets_cvd=no acc_all=no acc_cfg_gpu_ids=no acc_cfg_hyphen=refused ' "...and an accelerate that never sets it, nor reads a config: no, refused"
   O=$(PYTHONPATH=$T/nowhere bash "$LG" python3 2>&1); RC=$?
   [ "$RC" = 0 ] && has "$O" '^deepspeed=absent (' "launchers.sh without the packages: absent, never a guess" || bad "launchers.sh without packages (rc=$RC)"
   O=$(bash "$LG" "$T/no-python" 2>&1); RC=$?; [ "$RC" = 1 ] && has "$O" '^vgate=fail ' "...an interpreter that does not run: vgate=fail, exit 1" || bad "launchers.sh, no interpreter (rc=$RC)"
 else echo "  SKIP: no python3 here: launchers.sh's plumbing not exercised"; fi
+
+echo "-- containers.sh (R6-2's container facts, read on a box): its plumbing, on stub docker / podman / apptainer / singularity --"
+CG=$RS_HOME/tests/vgate/containers.sh; CB=$T/cbin; mkdir -p "$CB"
+for rt in docker podman; do   # a docker-like stub: `run` passes in no host environment, only -e NAME[=VALUE]; image bad = exit 125
+  printf '%s\n' '#!/usr/bin/env bash' 'case "$1" in' "  --version) echo '$rt version 0.0-stub' ;;" '  info) echo nvidia ;;' \
+    '  run) shift; [ "$1" = --help ] && { echo "      --gpus gpu-request   GPU devices to add"; exit 0; }; e=()' \
+    '    while [ $# -gt 0 ]; do case "$1" in --rm) shift ;; -e) case "$2" in *=*) e+=("$2") ;; *) [ -z "${!2+x}" ] || e+=("$2=${!2}") ;; esac; shift 2 ;; *) break ;; esac; done' \
+    '    [ "$1" != bad ] || exit 125; shift; exec env -i ${e[@]+"${e[@]}"} "$@" ;;' 'esac' > "$CB/$rt"; done
+for rt in apptainer singularity; do   # an apptainer-like stub: the host environment passes in unless --cleanenv / --containall;
+  P=APPTAINERENV_; [ "$rt" = apptainer ] || P=SINGULARITYENV_   # <PREFIX>CUDA_VISIBLE_DEVICES sets it inside either way
+  printf '%s\n' '#!/usr/bin/env bash' 'case "$1" in' "  --version) echo '$rt version 0.0-stub' ;;" \
+    '  exec) shift; c=0; while :; do case "$1" in --cleanenv|--containall) c=1; shift ;; -*) shift ;; *) break ;; esac; done; shift' \
+    "    p=\${${P}CUDA_VISIBLE_DEVICES:-}" '    if [ "$c" = 1 ]; then exec env -i ${p:+CUDA_VISIBLE_DEVICES=$p} "$@"; else exec env ${p:+CUDA_VISIBLE_DEVICES=$p} "$@"; fi ;;' \
+    'esac' > "$CB/$rt"; done
+chmod +x "$CB"/*
+O=$(PATH="$CB:$PATH" bash "$CG" img img.sif 2>&1); RC=$?
+[ "$RC" = 0 ] && has "$O" '^docker_version=docker_version_0.0-stub docker_gpus_flag=yes docker_env=unset (want unset) docker_env_e=5 (want 5) docker_default_runtime=nvidia$' \
+  "containers.sh: the docker line (--gpus in run --help, the environment inside without and with a bare -e, DefaultRuntime)" || { bad "containers.sh on stubs (rc=$RC)"; printf '%s\n' "$O" | head -5 | sed 's/^/    | /'; }
+has "$O" '^podman_version=podman_version_0.0-stub podman_gpus_flag=yes podman_env=unset (want unset) podman_env_e=5 (want 5)$' "containers.sh: the podman line"
+has "$O" '^apptainer_version=apptainer_version_0.0-stub apptainer_env=5 (want 5) apptainer_cleanenv=unset (want unset) apptainer_containall=unset (want unset) apptainer_prefix=7 (want 7)$' \
+  "containers.sh: the apptainer line (passed in; --cleanenv / --containall drop it; APPTAINERENV_ sets it inside)"
+has "$O" '^singularity_version=singularity_version_0.0-stub singularity_env=5 .* singularity_prefix=7 (want 7)$' "containers.sh: the singularity line (SINGULARITYENV_)"
+O=$(PATH="$CB:$PATH" bash "$CG" bad - 2>&1); has "$O" '^docker_.* docker_env=fail(rc=125) ' "...a container that does not start: fail(rc=N), never read as unset"
+has "$O" '^apptainer_version=[^ ]* apptainer_env=skipped (no image)$' "...'-': that kind's container checks skipped"
+O=$(PATH=/usr/bin:/bin bash "$CG" img img.sif 2>&1); RC=$?; e=0
+for rt in docker podman apptainer singularity; do PATH=/usr/bin:/bin command -v "$rt" >/dev/null 2>&1 || { printf '%s\n' "$O" | grep -qx "$rt=absent" || e=1; }; done
+[ "$RC" = 0 ] && [ "$e" = 0 ] && ok "containers.sh: a runtime that is not installed: <rt>=absent, never a guess" || bad "containers.sh: absent runtimes (rc=$RC)"
