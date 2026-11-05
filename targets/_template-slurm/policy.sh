@@ -11,6 +11,10 @@
 #     may rewrite SB_ARGS/PART/GTYPE or exit — its exit code propagates verbatim (use 3 for a policy refusal).
 #     Must end with `return 0`: its status is the verdict, so a trailing failed `&&` test would abort the submit.
 #     ACK=1 when an unknown --*-user-asked flag was passed; other unknown --flags are collected in T_FLAGS.
+#     For a plan (PLAN=1, FORCE=1) and an approved submit (--rs-expect) submit.sh first probes `( FORCE=0; t_policy )` in a
+#     subshell — as a submit without -y sees it, so a -y gate (`[ "$FORCE" -ne 1 ] && { echo "WARNING: …" >&2; exit 1; }`)
+#     reaches the card — then runs it for real: t_policy may run twice and must have no side effects. A probe exit 1 with
+#     no WARNING: line of its own gets a fixed one; any other non-zero exit ends the plan or submit with that code.
 # submit.sh runs this code in a subshell after its journal claim: an EXIT trap or fds set here stay there (3/4 are closed).
 # An overlay ~/.config/run-skills/targets/<name>/policy.local.sh extends the shipped policy by wrapping t_policy:
 #   eval "$(declare -f t_policy | sed '1s/^t_policy/t_policy_shipped/')"

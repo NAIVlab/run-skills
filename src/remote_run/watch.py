@@ -5,33 +5,48 @@
     rsk watch [-C DIR] TABLE --approve "the user's words"
 
 One watcher per project: the lease (the ledger's watch.lease: pid, host, boot_id, started, until) is taken first — a
-live lease of another process (or one on another host / boot, until it expires) → exit 6, run-watch never starts. Then
-the harness's bin/run-watch runs with every other argument unchanged (bash stays the one implementation; cwd = the
-project, so TABLE paths are relative to it), and the lease is released when it ends — also on SIGTERM / SIGINT /
-SIGHUP, which are passed on to run-watch first. `until` = now + --for (run-watch's lease, default 7200 s; the last
---for / --every given wins, as in run-watch) + one round (--every, default 300 s) + 15 min of slack for a last submit,
-and while run-watch runs rsk moves it forward every minute to now + one round + the slack (a long last round never
-outlives its lease); `rsk status` shows the lease.
+live lease of another process (or one on another host / boot, until it expires) → exit 6, run-watch never starts; so
+is a run-watch that still holds logs/run-watch/.lock and runs on this host (an orphan whose rsk watch was killed) →
+exit 6 naming it. Then the harness's bin/run-watch runs with every other argument unchanged (bash stays the one
+implementation; cwd = the project, so TABLE paths are relative to it), and the lease is released when it ends — also
+on SIGTERM / SIGINT / SIGHUP, which are passed on to run-watch first. `until` = now + --for (run-watch's lease, default
+7200 s; the last --for / --every given wins, as in run-watch) + one round (--every, default 300 s) + 15 min of slack
+for a last submit, and while run-watch runs rsk moves it forward every minute to now + one round + the slack (a long
+last round never outlives its lease); `rsk status` shows the lease and a live run-watch lock holder.
+Denies bind run-watch too: with --act (and --approve), every row of every table (target, -p, -G, -g, -t, name / run
+id, class) is checked against the ledger's denies for what its `#@ allow` line lets run-watch do (launch → launch,
+preempt/errors/timeout → resubmit + relaunch, fail-stop → cancel) — a match → exit 3 with the deny's quote, nothing
+started (--approve: no `#@ ok` written); and again on every lease refresh — a new matching deny → run-watch gets TERM,
+exit 3. A damaged record that may be a deny matches every row (fail closed).
 Exit: run-watch's, with its 3 (lease over, or --once with rows still moving) as rsk's 7 (LEASE_ENDED); 0 every row
-done, 2 table/conf/lock error, 4 the rest waits on the user; 6 another watcher holds the lease.
+done, 2 table/conf error, 3 a deny matches a row, 4 the rest waits on the user; 6 another watcher holds the lease or
+the run-watch lock (rsk's check above, or run-watch's own: a live holder here, or any holder on another host — its
+pid, host, start and act printed, nothing run). Numeric flags are read as run-watch reads them: base 10, leading zeros
+dropped, at most 9 significant digits.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import re
 import signal
+import socket
 import subprocess
 import sys
 import time
+from collections.abc import Callable
+from pathlib import Path
 
-from remote_run import harness, paths
+from remote_run import grants, harness, paths
 from remote_run import ledger as L
-from remote_run.errors import LEASE_ENDED, USAGE, RskError
+from remote_run.errors import CONFLICT, LEASE_ENDED, REFUSED, USAGE, RskError
 
 FOR_DEFAULT, EVERY_DEFAULT, SLACK = 7200, 300, 900
 REFRESH_S = 60                     # how often the lease's `until` moves forward while run-watch runs
 RC_MAP = {3: LEASE_ENDED}          # run-watch's exit -> rsk's (the others mean the same in both)
+VALUE_FLAGS = ("--every", "--for", "--stall-after", "--max-active", "--release", "--adopt", "--approve")
+LOCK = Path("logs/run-watch/.lock")   # bin/run-watch's lock dir: pid (alone) + info "host started act"
 
 
 def until_of(argv: list[str], now: float | None = None) -> float:
@@ -47,12 +62,116 @@ def until_of(argv: list[str], now: float | None = None) -> float:
 
 
 def last(argv: list[str], flag: str, default: int) -> int:
-    """The value of the LAST FLAG in ARGV (run-watch's parser: a later one overrides), DEFAULT without one."""
+    """The value of the LAST FLAG in ARGV (run-watch's parser: a later one overrides), DEFAULT without one — read as
+    run-watch's dec10 reads it (ASCII digits, base 10, leading zeros dropped, <= 9 significant digits; anything else
+    is run-watch's usage error, exit 2: DEFAULT here)."""
     v = default
     for i, w in enumerate(argv[:-1]):
         if w == flag:
-            v = int(argv[i + 1]) if argv[i + 1].isdigit() else default
+            v = int(argv[i + 1]) if re.fullmatch(r"0*[0-9]{1,9}", argv[i + 1]) else default
     return v
+
+
+def tables(argv: list[str]) -> list[str]:
+    """The TABLE words of a run-watch argv (its own grammar: every flag in VALUE_FLAGS takes the next word)."""
+    out, i = [], 0
+    while i < len(argv):
+        w = argv[i]
+        if w in VALUE_FLAGS:
+            i += 2
+            continue
+        if not w.startswith("-"):
+            out.append(w)
+        i += 1
+    return out
+
+
+def table_rows(path: Path, kinds: dict[str, str]) -> tuple[set[str], list[dict]]:
+    """(the actions the table's `#@ allow` line lets run-watch take, one plan-like dict per row) — read only to check
+    denies (run-watch parses and validates the table itself). Row: `name target done submit-words` (-p -g -G -t …
+    before `--`), `#@ allow launch preempt=N errors=N timeout=N fail-stop`. An unreadable file → no rows (run-watch
+    refuses it)."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return set(), []
+    acts: set[str] = set()
+    rows: list[dict] = []
+    for raw in text.splitlines():
+        line = raw.rstrip("\r")
+        if line.startswith("#@ allow"):
+            for w in line.split()[2:]:
+                key, _, val = w.partition("=")
+                if key == "launch":
+                    acts.add("launch")
+                elif key in ("preempt", "errors", "timeout") and val.isdigit() and int(val, 10) > 0:
+                    acts |= {"resubmit", "relaunch"}
+                elif key == "fail-stop":
+                    acts.add("cancel")
+            continue
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        f = line.split()
+        if len(f) < 3:
+            continue
+        name, tgt, words = f[0], f[1], f[3:]
+        opt: dict[str, str] = {}
+        i = 0
+        while i < len(words) and words[i] != "--":
+            if words[i] in ("-p", "-g", "-G", "-t") and i + 1 < len(words):
+                opt[words[i]] = words[i + 1]
+                i += 2
+                continue
+            i += 1
+        plan = {"target": tgt, "kind": kinds.get(tgt, ""), "name": name, "warnings": "0"}
+        if "-p" in opt:
+            plan["partition"] = opt["-p"]
+        if "-G" in opt or "-g" in opt:
+            plan["gres"] = f"gpu:{opt['-G']}:{opt.get('-g', '1')}" if "-G" in opt else f"gpu:{opt['-g']}"
+        if "-t" in opt:
+            plan["time"] = opt["-t"]
+        rows.append(plan)
+    return acts, rows
+
+
+def deny_hit(led: L.Ledger, proj: Path, argv: list[str], kinds: dict[str, str]) -> str:
+    """'' unless a deny in the ledger matches a row of the tables in ARGV for an action their `#@ allow` lines permit;
+    else the line saying which (row, deny id, quote)."""
+    st = led.state()
+    for t in tables(argv):
+        acts, rows = table_rows(proj / t, kinds)
+        for row in rows:
+            for a in sorted(acts):
+                d, why, _own = grants.deny_match(row, (a,), st, job=None)
+                if d:
+                    return f"{t}: row {row['name']} on {row['target']} ({a}): {why}"
+    return ""
+
+
+def lock_holder(proj: Path) -> dict | None:
+    """bin/run-watch's lock in PROJ (logs/run-watch/.lock): {pid, host, started, act, alive} — alive: its pid runs on
+    this host (another host's cannot be checked: alive None). None without a lock."""
+    d = proj / LOCK
+    if not d.is_dir():
+        return None
+    try:
+        pid = (d / "pid").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        pid = ""
+    try:
+        info = (d / "info").read_text(encoding="utf-8", errors="replace").split()
+    except OSError:
+        info = []
+    host = info[0] if info else ""
+    alive: bool | None = None
+    if host and host != socket.gethostname() and host != os.uname().nodename:
+        alive = None
+    elif pid.isdigit() and int(pid) > 0:
+        alive = L._alive(int(pid))
+    else:
+        alive = False
+    return {"pid": pid, "host": host, "started": info[1] if len(info) > 1 else "",
+            "act": info[2] if len(info) > 2 else "", "alive": alive}
 
 
 def _foreground() -> bool:
@@ -69,12 +188,26 @@ def script() -> str:
     return str(s)
 
 
-def run_watch(led: L.Ledger, argv: list[str], cwd: str, env: dict[str, str], cmd: list[str] | None = None) -> int:
-    """Take the lease, run CMD (default: bash bin/run-watch ARGV), release the lease however it ends."""
+def run_watch(led: L.Ledger, argv: list[str], cwd: str, env: dict[str, str], cmd: list[str] | None = None,
+              guard: Callable[[], str] | None = None) -> int:
+    """Take the lease, run CMD (default: bash bin/run-watch ARGV), release the lease however it ends. GUARD: '' or why
+    run-watch must not act (a deny matching a row) — asked before anything starts (→ exit 3) and on every refresh
+    (→ TERM to run-watch, exit 3)."""
+    if guard is not None:
+        why = guard()
+        if why:
+            print(f"denied: {why}", flush=True)
+            raise RskError(f"a deny matches a row of the table(s): nothing started — {why}", REFUSED)
+    h = lock_holder(Path(cwd))
+    if h and h["alive"]:
+        raise RskError(f"a run-watch still holds {LOCK}: pid {h['pid']} on {h['host'] or 'this host'} since "
+                       f"{h['started'] or '?'} (act={h['act'] or '?'}), alive here — its rsk watch lease is gone (an "
+                       "orphan); one watcher per project: stop it (with the user's OK) or let it end first", CONFLICT)
     led.take_lease(until_of(argv), argv)
     child: subprocess.Popen | None = None
     got: list[int] = []
     old = {}
+    denied = ""
 
     def forward(signum, _frame) -> None:
         got.append(signum)
@@ -100,6 +233,20 @@ def run_watch(led: L.Ledger, argv: list[str], cwd: str, env: dict[str, str], cmd
                 rc = child.wait(timeout=REFRESH_S)
                 break
             except subprocess.TimeoutExpired:   # still running: its lease covers one more round from now
+                if guard is not None:
+                    try:
+                        denied = guard()
+                    except (RskError, OSError) as exc:     # the ledger cannot be read: never act unchecked
+                        denied = f"the ledger's denies cannot be read ({exc})"
+                    if denied:
+                        print(f"denied: {denied} — run-watch gets TERM", flush=True)
+                        child.terminate()
+                        try:
+                            rc = child.wait(timeout=30)
+                        except subprocess.TimeoutExpired:
+                            child.kill()
+                            rc = child.wait()
+                        break
                 led.refresh_lease(time.time() + round_s)
             except InterruptedError:   # (PEP 475 retries; kept for clarity)
                 continue
@@ -113,6 +260,8 @@ def run_watch(led: L.Ledger, argv: list[str], cwd: str, env: dict[str, str], cmd
         led.release_lease()
         for s, h in old.items():
             signal.signal(s, h)
+    if denied:
+        raise RskError(f"a deny now matches a row: run-watch was stopped (TERM) — {denied}", REFUSED)
     if rc < 0:                     # killed by a signal: the shell's 128+N
         return 128 - rc
     return RC_MAP.get(rc, rc)
@@ -124,11 +273,17 @@ def cmd_watch(args: argparse.Namespace) -> int:
     if argv[:1] == ["--"]:
         argv = argv[1:]
     proj = project_dir(args.dir)
-    env = harness.env(paths.harness_src())
+    src = paths.harness_src()
+    env = harness.env(src)
     env["RS_VIA_RSK"] = "1"
     for k in ("CLUSTER", "STATION", "TARGET"):
         env.pop(k, None)
-    return run_watch(L.Ledger(proj), argv, str(proj), env)
+    led = L.Ledger(proj)
+    guard = None
+    if "--act" in argv or "--approve" in argv:
+        kinds = {t.name: t.kind for t in harness.targets(src)}
+        guard = lambda: deny_hit(led, proj, argv, kinds)   # noqa: E731
+    return run_watch(led, argv, str(proj), env, guard=guard)
 
 
 def add_parser(sub) -> None:

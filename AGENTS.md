@@ -54,8 +54,10 @@ hardcode the check count.
 2. **Local:** `bin/run-sync`, `bin/run-pull`, `bin/run-bootstrap`, `bin/run-launch` + `lib/common.sh` (sourced; never deployed);
    `bin/run-avail` (free GPUs on every target before an open placement: one parallel read-only ssh each, one deadline);
    `bin/run-probe` (INSTALL.md's discovery: ssh hosts, one read-only BatchMode probe, wandb key state; `tests/85-probe.sh`);
-   `bin/run-watch` (batch watch of a run table: one read-only ssh per target per round, events, state in `logs/run-watch/`;
-   acts only with `--act` on `#@ ok`-approved rows within `#@ allow`; `tests/47-watch.sh`).
+   `bin/run-watch` (batch watch of a run table: one read-only ssh per target per round, events, state in `logs/run-watch/`
+   — each line names its target: status/jobs carry over only on the same target, unknown submits and fail-stop from any
+   state file naming the row; acts only with `--act` on `#@ ok`-approved rows within `#@ allow`; one per project, lock →
+   exit 6; `tests/47-watch.sh`).
    Prologue: `RS_HOME=$(cd "$(dirname "$0")/.." && pwd)`; `TARGET` (aliases `CLUSTER`/`STATION`) → `rs_load_target`.
 3. **Remote:** `remote/env.sh`, `remote/bootstrap.sh`, `remote/status.sh` (both kinds; status.sh = the agent's one bounded
    monitoring read), `remote/submit.sh`, `remote/job.sbatch` (slurm),
@@ -127,39 +129,65 @@ NONCE = `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, the set spelled out; taken = exit 75)
 `result` (`stage= rc= verdict=submitted|launched|refused|failed|unknown`), THEN replays out/err (`trap '' PIPE`): a dead ssh
 (SIGPIPE on the first write) loses nothing, the exit status is unchanged. Slurm adds the snapshots `conf hook profile.sh env.sh`;
 `/.rs/` is an anchored sync exclude, refused by run-pull; nothing deletes attempts. 6 = a live same-name job of the project.
-**api=3** (`remote/API`, deployed for both kinds, in MANIFEST): both pre-scan `--rs-mode plan`, `--rs-expect <64 hex>` and
-`--rs-warnings N` (with `--rs-expect` only; submit.sh also `--rs-chain`) as separate words before `--` — an older parser exits 2
-(tested against `git show 8560838:` / `650d7d6:` / `e612ef6:` submit.sh and launch.sh); an unknown `--rs-*` is exit 2. Plan
-mode runs every check (`FORCE=1`: a -y gate prints its `WARNING:` and goes on; launch.sh skips the env gate — env.sh mkdirs
-the project's caches, a plan creates nothing outside `.rs/`) and prints ONE `@@plan v1` … `@@end` block: `api= kind= target=`,
-the bound fields (`rs_bound`, one function; also `env_hook=<path>:<sha256>`, `venv_dir`, `uv_sync_args`, nohup `busy_ok` = the
-busy GPUs its landing accepts), `info_*` (envelope), `warnings=` (the `WARNING:` lines in out+err, not `WARNING (lint)`),
-`bound_hash=` (sha256 of the lines `kind=` … the last bound field, each + newline); it stops before the snapshots / the wrapper
-(`stage=plan rc=0 verdict=planned`). `--rs-expect H` recomputes that hash and recounts the `WARNING:` lines right before the
-snapshots and sbatch (nohup: before the env gate's subshell): another hash, or a count other than `--rs-warnings` (default 0),
-prints the block + `ERROR: … differs from the approved plan`, exit 6 (`stage=expect`, refused) — -y never passes a new warning;
-under it a failed squeue is exit 1. `--rs-chain` adds `--dependency=singleton` (another dependency: exit 2) and passes the
-duplicate guard. An `SBATCH_EXTRA` `--time`/`-t` is held to MaxTime like `-t`. launch.sh: a GPU with a compute process
-(`--query-compute-apps`) is never auto-picked (too few free: exit 1), `-d` onto one is exit 6, an unknown state exit 1 — unless
-`--gpu-busy-ok`. P7: run-launch without `RS_VIA_RSK` while rsk is installed (on PATH or `$(uv tool dir --bin)/rsk`) prints
-`use: rsk launch …` and exits 2 (else it launches, with a NOTE; a Slurm target points at `rsk launch`) — a nudge, not a guard;
-`tests/lib.sh` exports `RS_VIA_RSK`.
+**api=3** = the line `# rs-api=3` inside the deployed `submit.sh` / `launch.sh`: rsk's plan ssh reads it in the script it is
+about to run, run-launch checks `.ws/launch.sh` before passing any `--rs-` word (else exit 2 `does not speak rs-api=3`);
+`remote/API` (`api=3`, in MANIFEST) is still deployed but proves nothing (an older run-sync leaves it while rewriting the
+script). Both pre-scan `--rs-mode plan`, `--rs-expect <64 hex>` and `--rs-warnings <warnings_id: 64 hex>` (with `--rs-expect`
+only; submit.sh also `--rs-chain`) as separate words before `--` — an older parser exits 2 (tested against `git show
+8560838:` / `650d7d6:` / `e612ef6:` submit.sh and launch.sh; rsk maps its `unknown arg` to `needs: sync`, exit 6); an unknown
+`--rs-*`, and an `--rs-` word as an option's value, is exit 2 (submit.sh, launch.sh, run-launch, rsk launch). Plan mode runs
+every check (`FORCE=1`: a -y gate prints its `WARNING:` and goes on; submit.sh probes the policy first, below; launch.sh
+checks the env gate read-only — the venv's python executable, a conda env that activates in a throwaway shell, the `ENV_HOOK`
+file, a valid `ENV_KIND`: else exit 1, no card — and creates nothing outside `.rs/`) and prints ONE `@@plan v1` … `@@end`
+block: `api= kind= target=`, the bound fields (`rs_bound`, one function; also `env_hook=<path>:<sha256>`, `venv_dir`,
+`uv_sync_args`; slurm `conf_extra` = the conf's own SBATCH_EXTRA words, right before `chain`, the last; nohup
+`busy_ok=<id>:<uuid>:<user>,…` sorted by id, or `unknown`), `info_*` (envelope), `warnings=` (the distinct `WARNING:` lines
+in out+err, not `WARNING (lint)`), `warnings_avail=` (the availability gate's share), `warnings_id=` (sha256 of those lines,
+sorted, digit runs → `#`), `bound_hash=` (sha256 of the lines `kind=` … the last bound field, each + newline); it stops
+before the snapshots / the wrapper (`stage=plan rc=0 verdict=planned`). `--rs-expect H` recomputes that hash and the
+warnings_id right before the snapshots and sbatch (nohup: before the env gate's subshell): another hash, or a warnings_id
+other than `--rs-warnings` (none given: no warning at all), prints the block, `changed: <keys>` (against the approved plan's
+block in its own journal entry) and `ERROR: … differs from the approved plan`, exit 6 (`stage=expect`, refused) — -y never
+passes a new warning, nor one swapped for another; under it a failed squeue is exit 1. `--rs-chain` adds
+`--dependency=singleton` (another dependency: exit 2) and passes the duplicate guard. Every time limit sbatch could read
+(`-t`, `DEFAULT_TIME`, each `--time`/`-t` of the policy's or SBATCH_EXTRA's words, a value word included) must be explicit (0
+/ UNLIMITED / INFINITE / -1 / unreadable: exit 2) and within MaxTime; an SBATCH_EXTRA word that is no option and no option's
+value, or a trailing value option, is exit 2 (sbatch's `+` getopt runs it as the script: `tests/vgate` `bare_word=`).
+launch.sh: a GPU with a compute process (`--query-compute-apps`, parsed without a temp file; unreadable = unknown) is never
+auto-picked (too few free: exit 1), `-d` onto one is exit 6, an unknown state exit 1 — unless `--gpu-busy-ok`. P7: run-launch
+without `RS_VIA_RSK` while rsk is installed (on PATH or `$(uv tool dir --bin)/rsk`) prints `use: rsk launch …` and exits 2
+(else it launches, with a NOTE; a Slurm target points at `rsk launch`) — a nudge, not a guard; `tests/lib.sh` exports
+`RS_VIA_RSK`.
 
 ### Authorisation (`grants.py`, `ledger.py`; used by `launch.py`, `cancel.py`; docs/DESIGN.md "Authorization")
 
 The user's policy: never ask again for what they already allowed, but check every action against it. Every launch, relaunch,
 chain and cancel calls `grants.check()` first — a deny → 3 (its quote), a covering record → act and record the use, else
-`needs user:` → 4. One record type in the ledger's `grants.json` (`<state>/projects/<sha256(realpath)[:16]>/`, flock, atomic writes
-with `.prev`, single-use `plans/`, append-only `audit.jsonl`): `approval` (the plan ids + bound hashes of the cards the user
-approved, claimed and recorded in one lock hold, expiring with the plans (24 h) — a sweep is one record — or named jobs to
-cancel), `grant` (a standing predicate: scope + actions + `max_live` / `max_launches` / `expires`, all three stated, `none` = the
-user set none; `resubmit` is refused in a new one), `deny` (always wins; one of `launch` stops relaunch/chain too; its name globs
-also match the run id). A record `validate()` rejects covers nothing (a deny: matches everything). The class is the name's.
-Never grant-covered: a plan with warnings (unless `allow_warnings`), a `--*-user-asked` policy flag, `--same-name-ok`, SBATCH_EXTRA
-resources, a workstation plan on a busy GPU; `rsk sync -D` / `rsk bootstrap --job` need `--approve` (audited); never at all:
-someone else's job or process.
-`cancel_own` covers only ledger attempts rsk launched. run-watch keeps its own approvals (`#@ ok`, bash) — `rsk watch` adds only
-the lease. A record is bookkeeping, not proof of consent: an agent can write any quote; rsk constrains only what goes through it.
+`needs user:` → 4. One record type in the ledger's `grants.json` (`<state>/projects/<sha256(realpath)[:16]>/`, flock, atomic
+writes with `.prev`, single-use `plans/`, append-only `audit.jsonl`): `approval` (the plan ids + bound hashes of the cards
+the user approved, claimed and recorded in one lock hold, expiring with the plans (24 h) — a sweep is one record — or named
+jobs to cancel, each bound to its identity in `scope.idents` (Slurm target, job id, run name, WorkDir; nohup target, pid,
+start, boot_id), for 1 h, used up by its first cancel that passed authorisation, never refunded; one without `idents` covers
+nothing), `grant` (a standing predicate: scope + actions + `max_live` / `max_launches` / `expires`, all three stated, `none`
+= the user set none; `resubmit` is refused in a new one; `allow_warnings` = `availability` (warnings == warnings_avail) |
+`any`, a stored `true` = `any`; `cancel_own` cancels count against `max_launches`, refunded only when the answer proves
+nothing was signalled), `deny` (always wins; one of `launch` stops relaunch/chain too; its name globs also match the run id).
+A deny `validate()` rejects, an id `d-…` or a missing / damaged `kind` is a deny matching everything until fixed or revoked
+(a non-object: until removed by hand); any other invalid record covers nothing. The action is derived
+(`launch.plan_actions`): a run with attempts that may have run (not only NOT_SUBMITTED, not the plan's own) → relaunch,
+`chain=1` → chain; every one applies (a deny of any matches, a record must allow all). The class is the name's, sticky from
+the run's first attempt. Never grant-covered: warnings the grant's `allow_warnings` kind does not cover (`-y` is sent only
+for a card that showed warnings, under a record that covers them), a `--*-user-asked` policy flag, `--same-name-ok`, a
+`conf_extra` word outside `grants.EXTRA_ALLOW` (the card's `NO GRANT`; policy words never count), a time over `max_time_s` in
+any limit sbatch could read (0 / UNLIMITED = unlimited), a relaunch whose previous attempt did not end in `INFRA_END`
+(PREEMPTED NODE_FAIL BOOT_FAIL REBOOT), a workstation plan on a busy GPU; `rsk sync -D` (run-sync's grammar: `--also -n` is a
+path) / `rsk bootstrap --job` (any `--job` word) need `--approve` (audited); never at all: someone else's job or process. A
+provably unsent submit (refused / failed with no receipt, no attempt dir, run-launch before its ssh) is NOT_SUBMITTED: the
+use is refunded and the plan's claim released (`rsk launch --plan P` retries it under the same record). `cancel_own` covers
+only ledger attempts rsk launched. run-watch keeps its own approvals (`#@ ok`, bash) — `rsk watch` adds the lease, checks
+every row against the denies under `--act` / `--approve` (and at each lease refresh: TERM, exit 3) and refuses (6) beside an
+orphaned run-watch lock. A record is bookkeeping, not proof of consent: an agent can write any quote; rsk constrains only
+what goes through it.
 
 ### Storage policy (env.sh, driven by `T_*`)
 
@@ -177,23 +205,29 @@ check reuses it) is static on purpose (hand-built `.venv-foo` dirs must survive 
 
 ### policy.sh API (slurm; bash; sourced only by submit.sh)
 
-`t_partition NAME` sets `P_GPUS=min-max P_CPU_PER_GPU P_MEM_PER_GPU P_GTYPE P_GTYPE_DEFAULT P_PREEMPT P_MAXTIME
-P_CPU_ONLY P_MEM_PER_CPU P_NOTE` (submit.sh resets all to '' first), may `SB_ARGS+=(…)`, returns 1 for unknown. `t_policy`
-(optional; every target should define it so an overlay can wrap it as `t_policy_shipped`) runs right after arg
-parsing with `PART PART_FROM_CLI NGPU GTYPE GTYPE_FROM_CLI TIME FORCE ACK T_FLAGS SB_ARGS SB_EXTRA NAME PROJ CLUSTER
-TAG PLAN` visible (`PLAN=1`: plan mode, with `FORCE=1` — so a -y gate prints its `WARNING:` before testing `FORCE`, and the plan
-shows it); its exit code propagates verbatim (3 = refusal; `-y` never unlocks it). Unknown `--word` flags land in
-`T_FLAGS`, `--*-user-asked` sets `ACK=1`. Then: partition → `-g` range → cpu/mem heuristics → MaxTime (`P_MAXTIME` else
-`T_MAXTIME`) → payload guard → `SBATCH_EXTRA` scan (`-p`, `T_FORBIDDEN_QOS`, dangling flag) → sinfo availability
-(`WARNING: only … Re-run -y`) → duplicate guard (`--same-name-ok`, singleton chains and `--rs-chain` skip it) → `SBATCH_EXTRA` lint (WARN: not in the
-allowlist + `T_SBATCH_EXTRA_ALLOW`, or a harness option) → plan block / `--rs-expect` check → snapshots → `sbatch` (env `RS_ATTEMPT`,
-last `--comment` + ` rs=<NONCE>`). Nothing
-cluster-named lives in shared code; a policy's own EXIT trap, `exit` or fds stay in submit.sh's subshell, away from the journal.
+`t_partition NAME` sets `P_GPUS=min-max P_CPU_PER_GPU P_MEM_PER_GPU P_GTYPE P_GTYPE_DEFAULT P_PREEMPT P_MAXTIME P_CPU_ONLY
+P_MEM_PER_CPU P_NOTE` (submit.sh resets all to '' first), may `SB_ARGS+=(…)`, returns 1 for unknown. `t_policy` (optional;
+every target should define it so an overlay can wrap it as `t_policy_shipped`) runs right after arg parsing with `PART
+PART_FROM_CLI NGPU GTYPE GTYPE_FROM_CLI TIME FORCE ACK T_FLAGS SB_ARGS SB_EXTRA NAME PROJ CLUSTER TAG PLAN` visible
+(`PLAN=1`: plan mode, with `FORCE=1`); its exit code propagates verbatim (3 = refusal; `-y` never unlocks it). In plan mode
+and under `--rs-expect` submit.sh first probes `( FORCE=0; t_policy )` in a subshell (output journaled and counted), then
+runs the real one — so `t_policy` may run twice and must have no side effects: a gate in the old idiom (`[ "$FORCE" -ne 1 ]
+&& { echo WARNING…; exit 1; }`) is shown and counted, an exit 1 with no `WARNING:` line of its own gets a fixed one, a probe
+exit other than 0/1 ends the plan or submit with that code. Unknown `--word` flags land in `T_FLAGS`, `--*-user-asked` sets
+`ACK=1`. Then: partition → `-g` range → cpu/mem heuristics → MaxTime (`P_MAXTIME` else `T_MAXTIME`; explicit limits only) →
+payload guard → `SBATCH_EXTRA` scan (`-p`, `T_FORBIDDEN_QOS`, every word an option or its option's value, no trailing value
+option) → every `--time`/`-t` in `SB_ARGS` vs MaxTime → sinfo availability (`WARNING: only … Re-run -y`) → duplicate guard
+(`--same-name-ok`, singleton chains and `--rs-chain` skip it) → `SBATCH_EXTRA` lint (WARN: not in the allowlist +
+`T_SBATCH_EXTRA_ALLOW`, or a harness option) → plan block / `--rs-expect` check → snapshots → `sbatch` (env `RS_ATTEMPT`,
+last `--comment` + ` rs=<NONCE>`). Nothing cluster-named lives in shared code; a policy's own EXIT trap, `exit` or fds stay
+in submit.sh's subshell, away from the journal.
 
 ### Tests contract (`tests/lib.sh`)
 
 Caller sets `RS_HOME`; `$T` is a scratch dir; helpers `ok bad has hasnt nosub mk_proj sub with_path stub_sinfo
-stub_fail stub_rsync last_attempt` (the sbatch stub prints `ARG:<arg>` lines and `ENV:RS_ATTEMPT=`). Stubs live in `$T/bin`, on `PATH` **only** via `sub`/`with_path`/an explicit
+stub_fail stub_rsync last_attempt fulltmp fulltmp_ok` (the sbatch stub prints `ARG:<arg>` lines and `ENV:RS_ATTEMPT=`;
+`fulltmp CMD…` runs CMD with `TMPDIR` on a full tmpfs and `BASH_COMPAT=42` in an `unshare -rm` namespace, `fulltmp_ok`
+says whether this machine reproduces that — SKIP when not). Stubs live in `$T/bin`, on `PATH` **only** via `sub`/`with_path`/an explicit
 `PATH="$T/bin:$PATH"`, and dispatch on literal strings (`ssh` answers `nvidia-smi --query-gpu=…`, logs anything
 else as a launch; `sinfo` returns lines registered with `stub_sinfo PATTERN LINE`) — a reworded remote command or
 a new partition needs a stub case. `mk_proj TARGET CONF` fakes a deploy from `rs_deploy_files` (absolute paths);
@@ -209,10 +243,14 @@ as `agents/openai.yaml` (Codex UI metadata). No sed over scripts. The skill reac
 
 ### Portability
 
-Sourced files (`remote/env.sh`, every `profile.sh`) are zsh-safe: no arrays, `[[ ]]`, `${var^^}`, `${!var}`,
-`BASH_SOURCE`. Local scripts run on macOS bash 3.2 / BSD sed: no `${var^^}` (use `tr`), `declare -A`, `readarray`,
-`sed -i`. Remote scripts run under a bare non-login `ssh host cmd`: no conda/uv on PATH, `$USER` possibly unset
-(`RS_USER=${USER:-$(id -un)}`). `job.sbatch` runs in tests without Slurm: `${SLURM_*:-}` reads, `"$@" & … wait` shape.
+Sourced files (`remote/env.sh`, every `profile.sh`) are zsh-safe: no arrays, `[[ ]]`, `${var^^}`, `${!var}`, `BASH_SOURCE`.
+Local scripts run on macOS bash 3.2 / BSD sed: no `${var^^}` (use `tr`), `declare -A`, `readarray`, `sed -i`. Remote scripts
+run under a bare non-login `ssh host cmd`: no conda/uv on PATH, `$USER` possibly unset (`RS_USER=${USER:-$(id -un)}`).
+`job.sbatch` runs in tests without Slurm: `${SLURM_*:-}` reads, `"$@" & … wait` shape. Remote parsing uses no here-string or
+heredoc (up to bash 5.0 they are temp files in `$TMPDIR`, and a full one fails silently): split by parameter expansion, fail
+closed — `status.sh`, `submit.sh`, `launch.sh` (its run wrapper is a single-quoted literal written with `printf`: never a
+single quote inside it) and run-watch's remote bodies; `fulltmp` tests it. Local parsing (run-watch's, run-probe) may still
+use them.
 
 ## Adding a target
 

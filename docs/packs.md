@@ -43,7 +43,9 @@ every key; [`../AGENTS.md`](../AGENTS.md) documents the `policy.sh` API (`t_part
 - **`policy.sh`** encodes what the scheduler will not tell you up front: per-partition GPU ranges, sensible cpu and
   memory per GPU, partition walltime caps (a request over the cap would pend forever), forced GPU types, preemption
   notes. `t_policy` can refuse a submission (exit 3) or require an acknowledgement flag — use it for queues that
-  must never be hit by accident.
+  must never be hit by accident. A `-y` gate in it (`[ "$FORCE" -ne 1 ] && { echo "WARNING: …" >&2; exit 1; }`) shows on
+  rsk's plan card: for a plan and an approved submit, `submit.sh` first runs `( FORCE=0; t_policy )` in a subshell, then
+  the real one — so `t_policy` may run twice and must have no side effects (no files written, nothing sent).
 - **`reference.md`** is what the agent knows about the site. Keep it to about one screen: a card with the key
   values, the filesystem story (quotas, which disk for what), partitions with their limits, interconnect, and the
   gotchas a newcomer learns the hard way. Write `<user>` / `$USER` instead of anyone's id, and never mention

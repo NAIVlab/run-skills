@@ -8,7 +8,8 @@ exist under a readable parent is "not synced here" (Slurm still matches jobs aga
 stdin inside a function, so a cut-off transfer runs nothing (the same shape as bin/run-watch).
 
 The same read lists the attempt journal (`.rs/attempts/*/`: the newest 50 plus any NONCES asked for, each with its
-result, stage, the identity keys of its receipt and, for asked NONCES, the processes that still name it), the jobs
+result, stage, the identity keys of its receipt, the last 512 bytes of its argv and, for asked NONCES, the processes
+that still name it), the box's boot_id (nohup: a run whose receipt names another boot ended with that boot), the jobs
 whose Slurm comment carries `rs=<NONCE>` (when asked: COMMENTS=1) and, for nohup logs, `<log>.rc` (the wrapper's
 `rc= term= at=`). Every read is byte-bounded. run() is the one ssh runner (rsk adopt uses it too).
 """
@@ -37,6 +38,7 @@ _ATTEMPTS = r'''rs_att() {   # rs_att 1|0 (cwd = the project dir): the newest 50
     [ ! -f "$a/stage" ] || echo "s $(head -c 64 "$a/stage" | head -n 1)"
     [ ! -f "$a/receipt" ] || LC_ALL=C grep -a -E '^(job|name|nonce|at|pid|pgid|start|boot_id|log|gpu_ids|target|partition)=' \
       "$a/receipt" | head -c 2048 | sed 's/^/k /'
+    [ ! -f "$a/receipt" ] || { v=$(LC_ALL=C sed -n 's/^argv=//p' "$a/receipt" | head -n 1 | tail -c 512); [ -z "$v" ] || printf 'v %s\n' "$v"; }
     g=$(readlink "$a/gate" 2>/dev/null) && echo "g $g"
     case " $NONCES " in *" $n "*)   # a process still naming it: the submit/launch may not be over
       if [ "$pl" = "@@unknown" ]; then echo "p ?"
@@ -70,7 +72,7 @@ NOHUP = _ATTEMPTS + "\n" + r'''rs_obs() {
   if [ -d "$RDIR" ]; then cd "$RDIR" 2>/dev/null || { echo "@@fail cd $RDIR"; return; }
   elif ls "$(dirname "$RDIR")" >/dev/null 2>&1; then echo "@@nodir"; echo "@@end"; return   # no dir, no logs, no runs
   else echo "@@fail cd $RDIR (its parent is not readable either)"; return; fi
-  echo "@@pwd $(pwd)|$(pwd -P)"
+  echo "@@pwd $(pwd)|$(pwd -P)"; echo "@@boot $(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
   echo @@ws
   for l in $(ls -1t logs/*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].log 2>/dev/null | head -n 50); do
     s=$(stat -c "%Y %s" "$l") || { echo "@@partial stat"; continue; }; p=nopid
@@ -127,6 +129,7 @@ class Observation:
     attempts_ok: bool = False                      # the journal was listed in full (no @@partial attempts)
     comments: dict[str, str] = field(default_factory=dict)    # Slurm job id -> the NONCE its comment carries
     comments_ok: bool = False                      # asked for, and squeue answered
+    boot_id: str = ""                              # nohup: the box's boot_id now ('' = not read)
 
 
 NONCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -166,6 +169,8 @@ def parse(place: Place, text: str, rc: int, err: str) -> Observation:
                 o.now = _int(rest)
             elif word == "pwd":
                 pwds = {p for p in rest.split("|") if p}
+            elif word == "boot":
+                o.boot_id = rest.strip()
             elif word == "end":
                 o.ok = not o.why
             if word in ("squeue", "sacct", "ws", "attempts", "comments", "end"):   # a note (@@partial stat) is no end
@@ -187,7 +192,7 @@ def parse(place: Place, text: str, rc: int, err: str) -> Observation:
         if tag == "A":
             n, _, m = rest.partition(" ")
             cur_a = o.attempts[n] = {"mtime": _int(m), "missing": m == "missing", "result": {}, "stage": "",
-                                     "receipt": {}, "gate": "", "procs": [], "procs_unknown": False}
+                                     "receipt": {}, "gate": "", "procs": [], "procs_unknown": False, "argv_tail": ""}
         elif cur_a is None:
             continue
         elif tag == "r":
@@ -199,6 +204,8 @@ def parse(place: Place, text: str, rc: int, err: str) -> Observation:
             cur_a["receipt"].setdefault(k, v)
         elif tag == "g":
             cur_a["gate"] = rest.strip()
+        elif tag == "v":
+            cur_a["argv_tail"] = rest
         elif tag == "p":
             if rest.strip() == "?":
                 cur_a["procs_unknown"] = True

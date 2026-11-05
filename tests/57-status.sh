@@ -201,6 +201,14 @@ has "$O" '^starts=1 restart=0 footer=EXIT rc=1' "…and the digest is complete"
 mkdir -p "$T/nosearch"; chmod 600 "$T/nosearch"   # writable but not searchable: the check passes, mktemp still fails
 O=$(TMPDIR="$T/nosearch" PATH="$T/bin:$PATH" bash "$J/.fx-slurm/status.sh" 42 2>&1); RC=$?; chmod 755 "$T/nosearch"
 [ "$RC" = 0 ] && has "$O" '^starts=1 restart=0 footer=EXIT rc=1' "a writable-but-unsearchable TMPDIR still falls back to /tmp" || bad "unsearchable TMPDIR (rc=$RC)"
+hasnt "$(grep -v '^ *#' "$RS_HOME/remote/status.sh")" '<<' "status.sh has no here-string or heredoc (bash <= 5.0 writes them to \$TMPDIR)"
+if fulltmp_ok; then   # a usable but FULL TMPDIR under bash 4.2 here-strings: the rows are still split (2fd4991 died: st unbound)
+  O=$(fulltmp env PATH="$T/bin:$PATH" bash "$J/.fx-slurm/status.sh" 42 2>&1); RC=$?
+  [ "$RC" = 0 ] && has "$O" '^job=42 state=RUNNING reason=None elapsed=00:10:00 left=1-00:00:00 restarts=0 nodes=n1$' "TMPDIR full, BASH_COMPAT=42: the squeue row is read" || bad "TMPDIR full: squeue row (rc=$RC)"
+  O=$(fulltmp env PATH="$T/bin:$PATH" bash "$J/.fx-slurm/status.sh" 46 2>&1); has "$O" '^job=46 state=PENDING reason=Priority .* nodes=none$' "...an empty NodeList is none"
+  O=$(fulltmp env PATH="$T/bin:$PATH" bash "$J/.fx-slurm/status.sh" 43 2>&1)
+  has "$O" '^job=43 state=FAILED exit=1:0 elapsed=00:09:40 end=2026-09-11T10:00:00 (sacct; ' "...and so is the sacct row (squeue's stderr, kept in TMPDIR, may be lost: why= says so)"
+else echo "  SKIP: no user namespace here (unshare -rm) or here-strings do not fail on a full TMPDIR: the full-TMPDIR check runs on Linux"; fi
 
 echo "-- nohup: PID states --"
 W=$(mk_proj ws-box 'WS_REMOTE_DIR=projects/y') || { bad "mk_proj ws-box"; exit 1; }

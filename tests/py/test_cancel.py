@@ -50,13 +50,14 @@ class Base(ScratchHome):
         self.stub = self.home / "stub"
         (self.stub / "bin").mkdir(parents=True)
         for name, text in (("ssh", SSH), ("squeue", SQUEUE),
-                           ("scancel", '#!/usr/bin/env bash\necho "$*" >> "$STUB/scancel.log"; exit ${SC_RC:-0}\n')):
+                           ("scancel", '#!/usr/bin/env bash\n[ -z "${SC_SLEEP:-}" ] || sleep "$SC_SLEEP"\n'
+                                       'echo "$*" >> "$STUB/scancel.log"; exit ${SC_RC:-0}\n')):
             (self.stub / "bin" / name).write_text(text)
             (self.stub / "bin" / name).chmod(0o755)
         os.environ["STUB"] = str(self.stub)
         os.environ["PATH"] = f"{self.stub / 'bin'}{os.pathsep}{os.environ['PATH']}"
         os.environ["USER"] = ME
-        for k in ("SSH_FAIL", "SQ_FAIL", "SC_RC", "SSH_CUT"):
+        for k in ("SSH_FAIL", "SQ_FAIL", "SC_RC", "SSH_CUT", "SC_SLEEP"):
             os.environ.pop(k, None)
         for name, prof in (("fx", "T_KIND=slurm; T_HOST=fxhost\n"), ("ws", "T_KIND=nohup; T_HOST=wshost\n")):
             d = Path(os.environ["RS_USER_DIR"]) / "targets" / name
@@ -131,7 +132,7 @@ class Slurm(Base):
             self.assertEqual(rc, code, text)
             self.assertIn(why, text)
         self.assertEqual(self.scancelled(), "")
-        self.assertTrue(all(ap["used"] == [] for ap in self.approvals()), "every use given back")
+        self.assertTrue(all(len(ap["used"]) == 1 for ap in self.approvals()), "each approval used up, never given back")
 
     def test_another_users_job_and_a_gone_job(self):
         self.queue()
@@ -157,7 +158,7 @@ class Slurm(Base):
         self.assertEqual(rc, OK, text)
         self.assertEqual(self.scancelled(), "101\n")
 
-    def test_scancel_failing_or_no_answer_gives_the_use_back(self):
+    def test_scancel_failing_or_no_answer_gives_back_a_grants_use_never_an_approvals(self):
         self.launched("exp--a01", "101")
         self.queue(f"101|exp--a01|{ME}|{self.remote}|RUNNING|")
         os.environ["SC_RC"] = "1"
@@ -168,7 +169,12 @@ class Slurm(Base):
         rc, text = self.cancel("exp", "--approve", "cancel it")
         self.assertEqual(rc, UNKNOWN, text)
         self.assertIn("nothing was cancelled", text)
-        self.assertTrue(all(ap["used"] == [] for ap in self.approvals()))
+        self.assertTrue(all(len(ap["used"]) == 1 for ap in self.approvals()))   # D6: used up whatever the outcome
+        g = G.add(self.led, G.new_grant("stop your own runs", {"targets": ["fx"]}, ["cancel_own"], max_live=None,
+                                        max_launches=3, expires=None))
+        rc, text = self.cancel("exp")                                         # covered by cancel_own: refunded
+        self.assertEqual(rc, UNKNOWN, text)
+        self.assertEqual(next(r for r in self.led.state().grants if r["id"] == g["id"])["used"], [])
 
     def test_l2_an_answer_cut_after_the_identity_passed_gives_nothing_back(self):
         self.launched("exp--a01", "101")
@@ -182,6 +188,47 @@ class Slurm(Base):
         self.assertIn("each once", G.describe(self.approvals()[0]))
         d = G.check(self.led, "cancel", job="101", run="exp", plan={"target": "fx"})
         self.assertFalse(d.covered)                                  # the approval cannot be used a second time
+
+    def test_g3_flow_2_a_timed_out_answer_keeps_what_arrived(self):
+        self.launched("exp--a01", "101")
+        self.queue(f"101|exp--a01|{ME}|{self.remote}|PENDING|")
+        os.environ["SC_SLEEP"] = "4"                     # `@@c 101 ok` is out, scancel is slow: the deadline cuts in
+        t0 = time.time()
+        rc, text = self.cancel("exp", "--approve", "cancel job 101", "--deadline", "1.5")
+        self.assertLess(time.time() - t0, 4)
+        self.assertEqual(rc, UNKNOWN, text)
+        self.assertIn("the cancel may have been sent: rsk status", text)
+        self.assertNotIn("nothing was cancelled", text)
+        for _ in range(60):                              # the remote went on: scancel ran after all
+            if self.scancelled():
+                break
+            time.sleep(0.1)
+        self.assertEqual(self.scancelled(), "101\n")
+        self.assertEqual(len(self.approvals()[0]["used"]), 1)
+
+    def test_d6_an_approval_is_used_once_and_bound_to_its_job(self):
+        self.launched("exp--a01", "101")
+        self.queue()                                     # gone: nothing to cancel …
+        rc, text = self.cancel("exp", "--approve", "cancel job 101")
+        self.assertEqual(rc, OK, text)
+        self.assertIn("nothing to cancel", text)
+        ap = self.approvals()[0]
+        self.assertEqual(len(ap["used"]), 1)             # … and the approval is used up all the same (no refund)
+        self.assertEqual(ap["scope"]["idents"], [G.cancel_ident("slurm", "fx", "101", "exp--a01", str(self.remote))])
+        self.assertTrue(ap["limits"]["expires"])
+        self.queue(f"101|exp--a01|{ME}|{self.remote}|RUNNING|")
+        rc, text = self.cancel("exp")                    # the same job id later: the old words do not cover it
+        self.assertEqual(rc, NEEDS_USER, text)
+        self.assertEqual(self.scancelled(), "")
+
+    def test_r1_7_an_ended_job_is_recorded_now(self):
+        self.launched("exp--a01", "101")
+        self.queue(f"101|exp--a01|{ME}|{self.remote}|COMPLETED|")
+        rc, text = self.cancel("exp", "--approve", "cancel it")
+        self.assertEqual(rc, OK, text)
+        self.assertIn("nothing to cancel: job 101 (exp a01) is ended (COMPLETED); ledger: exp a01 ended COMPLETED", text)
+        att = self.led.read_run("exp").data["attempts"]["a01"]
+        self.assertEqual(L.attempt_state(att), "COMPLETED")
 
     def test_a_deny_on_cancel_wins_over_the_users_words(self):
         G.add(self.led, G.new_deny("never cancel exp", {"names": ["exp*"]}, ["cancel"]))
@@ -231,7 +278,7 @@ class Nohup(Base):
         super().tearDown()
 
     def spawn(self, script: str = "sleep 30", nonce: str = "n1", start: str | None = None, gate: str = "go",
-              receipt: bool = True, name: str = "r") -> subprocess.Popen:
+              receipt: bool = True, name: str = "r", boot: str | None = None) -> subprocess.Popen:
         p = subprocess.Popen(["bash", "-c", script], start_new_session=True)
         self.procs.append(p)
         time.sleep(0.2)
@@ -239,7 +286,7 @@ class Nohup(Base):
         if receipt:
             a = self.remote / ".rs" / "attempts" / nonce
             a.mkdir(parents=True)
-            (a / "receipt").write_text(f"pid={p.pid}\npgid={p.pid}\nstart={start or pstart(p.pid)}\nboot_id={self.boot}\n"
+            (a / "receipt").write_text(f"pid={p.pid}\npgid={p.pid}\nstart={start or pstart(p.pid)}\nboot_id={boot or self.boot}\n"
                                        f"log={log}\nname={name}\nnonce={nonce}\n")
             (a / "gate").symlink_to(gate)
         self.led.record_attempt(name=name, target="ws", kind="nohup", nonce=nonce, submit="submitted", plan_id="p-1",
@@ -268,6 +315,9 @@ class Nohup(Base):
         rc, text = self.cancel("r", "--approve", "stop r", "--grace", "1")
         self.assertEqual(rc, OK, text)
         self.assertIn("nothing to cancel", text)
+        self.assertIn("its pid now belongs to another process", text)          # r1-7: exit 0, ended, recorded now
+        att = self.led.read_run("r").data["attempts"]["a01"]
+        self.assertEqual((L.attempt_state(att), L.is_live(att)), ("ENDED", False))
         q = self.spawn(nonce="n2", gate="abort", name="g")      # its gate never said go: not the run it claims
         rc, text = self.cancel("g", "--approve", "stop g", "--grace", "1")
         self.assertEqual(rc, CONFLICT, text)
@@ -275,8 +325,13 @@ class Nohup(Base):
         rc, text = self.cancel("o", "--approve", "stop o", "--grace", "1")
         self.assertEqual(rc, CONFLICT, text)
         self.assertIn("noidentity", text)
+        b = self.spawn(nonce="n4", name="b", boot="another-boot")    # the box rebooted since: that run is over
+        rc, text = self.cancel("b", "--approve", "stop b", "--grace", "1")
+        self.assertEqual(rc, OK, text)
+        self.assertIn("the box rebooted", text)
+        self.assertEqual(L.attempt_state(self.led.read_run("b").data["attempts"]["a01"]), "REBOOT")
         time.sleep(0.3)
-        self.assertEqual([x.poll() for x in (p, q, o)], [None, None, None], "none of them was signalled")
+        self.assertEqual([x.poll() for x in (p, q, o, b)], [None, None, None, None], "none of them was signalled")
 
 
 if __name__ == "__main__":

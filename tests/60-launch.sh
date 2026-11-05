@@ -80,8 +80,12 @@ HX=a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1   # a well-f
 O=$(launch "$W" -N t --gpu-busy-ok --rs-mode plan --rs-expect "$HX" -- c); RC=$?; L=$(cat "$T/launch.log")
 has "$L" ' --gpu-busy-ok ' "--gpu-busy-ok passes through"; has "$L" ' --rs-mode plan ' "--rs-mode plan passes through"
 has "$L" " --rs-expect $HX " "--rs-expect HASH passes through"; [ "$RC" = 0 ] && hasnt "$O" 'verify:' "a plan prints no verify line (nothing to verify)" || bad "plan via run-launch (rc=$RC)"
-hasnt "$(launch "$W" -N t -- c; cat "$T/launch.log")" 'gpu-busy-ok\|rs-mode\|rs-expect' "none of them unless asked"
-for a in '--rs-mode apply' '--rs-mode' '--rs-mode plan --rs-mode plan' '--rs-expect abc' "--rs-expect $(printf %s "$HX" | tr a-f A-F)" '--rs-expect' "--rs-expect $HX --rs-expect $HX"; do
+hasnt "$(launch "$W" -N t -- c; cat "$T/launch.log")" 'gpu-busy-ok\|rs-mode\|rs-expect\|rs-api' "none of them unless asked (nor the rs-api=3 check)"
+has "$L" "grep -qx '# rs-api=3' \.ws/launch\.sh || { echo 'ERROR: the deployed \.ws/launch\.sh does not speak rs-api=3" "C: with rsk's words, the ssh first checks the deployed launch.sh's '# rs-api=3' line"
+WX=$(printf '' | sha256sum | cut -d' ' -f1)
+O=$(launch "$W" -N t --rs-expect "$HX" --rs-warnings "$WX" -- c); has "$(cat "$T/launch.log")" " --rs-expect $HX --rs-warnings $WX " "--rs-warnings <warnings_id> passes through"
+for a in '--rs-mode apply' '--rs-mode' '--rs-mode plan --rs-mode plan' '--rs-expect abc' "--rs-expect $(printf %s "$HX" | tr a-f A-F)" '--rs-expect' "--rs-expect $HX --rs-expect $HX" \
+         "--rs-expect $HX --rs-warnings 1" "--rs-expect $HX --rs-warnings ${WX}0" '-N --rs-chain' '-d --rs-mode' '-n --rs-expect' '--nice --rs-x'; do
   O=$(launch "$W" -N t $a -- c); RC=$?; [ "$RC" = 2 ] && noss && ok "'${a:0:30}' refused locally (exit 2, no ssh)" || bad "'${a:0:30}' refused locally (rc=$RC)"; done
 touch "$T/ssh.255"; O=$(launch "$W" -N t --rs-mode plan -- c); RC=$?; rm -f "$T/ssh.255"
 [ "$RC" = 255 ] && has "$O" 'NOTE: ssh failed (exit 255) during a plan: nothing was launched' "ssh 255 during a plan: says nothing was launched" || bad "plan + ssh 255 (rc=$RC)"
@@ -230,6 +234,14 @@ RUN=c'
   [ "$RC" = 0 ] && has "$O" '^\[ws-box\] started PID' "...--rs-expect <its bound_hash>: launches" || bad "run-launch --rs-expect (rc=$RC)"
   O=$(launch "$W" -N pl2 -n 2 --rs-expect "$PH" -- "touch $T/rl-plan-ran"); RC=$?
   [ "$RC" = 6 ] && has "$O" 'differs from the approved plan' "...another name with that hash: exit 6" || bad "run-launch --rs-expect mismatch (rc=$RC)"
+  if OLDL=$(git -C "$RS_HOME" show 2fd4991:remote/launch.sh 2>/dev/null) && [ -n "$OLDL" ]; then   # api=3 by its API file, without the marker
+    cp "$W/.ws/launch.sh" "$T/launch.sh.new"; printf '%s\n' "$OLDL" > "$W/.ws/launch.sh"
+    O=$(launch "$W" -N pl3 -n 2 --rs-attempt old3 --rs-mode plan -- "touch $T/rl-old-ran"); RC=$?
+    [ "$RC" = 2 ] && has "$O" 'does not speak rs-api=3' "C: a deployed launch.sh without the '# rs-api=3' line (2fd4991): rsk's plan exits 2, names it" || bad "old launch.sh + plan (rc=$RC)"
+    [ ! -e "$W/.rs/attempts/old3" ] && ok "...never run (no attempt claimed)" || bad "...the old launch.sh ran"
+    O=$(launch "$W" -N pl4 -n 2 -- "touch $T/rl-old-ran"); RC=$?; [ "$RC" = 0 ] && ok "...a plain launch (no rsk words) still runs it" || bad "plain launch on the old launch.sh (rc=$RC)"
+    cp "$T/launch.sh.new" "$W/.ws/launch.sh"
+  else echo "  SKIP: no git history (2fd4991): the marker check against an old launch.sh runs in the clone"; fi
   printf 'GPU-aaaa0000-0002, %s\n' "$$" > "$T/apps"; export RS_TEST_APPS=$T/apps
   O=$(launch "$W" -N bz -n 1 -- c); has "$O" 'GPU(s) \[3\]' "GPU 2 busy (the compute-apps stub), 0,1 excluded: -n 1 goes around it to 3"
   O=$(launch "$W" -N bz2 -n 2 -- c); [ "$?" = 1 ] && has "$O" 'only 1 GPU id(s) free' "...-n 2 there: exit 1, only 1 free" || bad "busy shortfall via run-launch"; unset RS_TEST_APPS

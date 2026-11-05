@@ -13,6 +13,7 @@ from pathlib import Path
 from helpers import ScratchHome
 
 from remote_run import cli, harness, observe, paths
+from remote_run import status as status_mod
 from remote_run import grants as G
 from remote_run import ledger as L
 from remote_run.errors import FAILED, OK, UNKNOWN, USAGE
@@ -327,6 +328,10 @@ class Ledgered(Base):
         self.journal("rw-20261105T000000Z-1-1", receipt="job=102\nname=exp--b01\nnonce=rw-20261105T000000Z-1-1\n",
                      result="stage=done rc=0 verdict=submitted at=1\n")
         self.journal("rw-20261105T000000Z-1-2", stage="sbatch\n")               # its submit still open
+        argv = (f"sbatch --job-name=proj-bootstrap --chdir={self.remote} {self.remote}/.fx-slurm/job.sbatch bash "
+                f"{self.remote}/.fx-slurm/bootstrap.sh")
+        self.journal("20261105T000000Z-9-1", receipt=f"job=103\nname=proj-bootstrap\nnonce=x\nargv={argv}\n",
+                     result="stage=done rc=0 verdict=submitted at=1\n")
         with (self.stub / "squeue.out").open("a") as f:
             f.write(f"103|proj-bootstrap|RUNNING|None|0|1700000000|{self.remote}|\n")
         rc, text = run("status", "-C", str(self.proj))
@@ -337,7 +342,41 @@ class Ledgered(Base):
         self.assertNotIn("UNLEDGERED", text)
         self.assertNotIn("rsk adopt", text)                                       # nothing to adopt
         doc = json.loads(run("status", "-C", str(self.proj), "--json")[1])
-        self.assertEqual({u["by"] for u in doc["unledgered"]}, {"run-watch"})
+        self.assertEqual({u["by"] for u in doc["unledgered"]}, {"run-watch", "bootstrap"})
+
+    def test_g3_flow_4_a_bootstrap_is_known_by_its_receipts_payload_not_its_name(self):
+        argv = f"sbatch --job-name=resnet--eval--ci-bootstrap {self.remote}/.fx-slurm/job.sbatch python eval.py --bootstrap 1000"
+        self.journal("20261105T000000Z-9-2", receipt=f"job=104\nname=resnet--eval--ci-bootstrap\nnonce=y\nargv={argv}\n",
+                     result="stage=done rc=0 verdict=submitted at=1\n")
+        with (self.stub / "squeue.out").open("a") as f:
+            f.write(f"104|resnet--eval--ci-bootstrap|RUNNING|None|0|1700000000|{self.remote}|\n")
+        rc, text = run("status", "-C", str(self.proj))
+        self.assertEqual(rc, OK, text)
+        self.assertRegex(text, r"RUNNING\s+job 104\s+resnet--eval--ci-bootstrap.*UNLEDGERED")
+        self.assertNotIn("(bootstrap's)", text)
+        self.assertIn("rsk adopt -T fx-slurm", text)
+        self.assertFalse(status_mod.is_bootstrap("python eval.py --bootstrap 1000", ".fx-slurm"))
+        self.assertTrue(status_mod.is_bootstrap(r"x/job.sbatch bash /r/my\ proj/.fx-slurm/bootstrap.sh", ".fx-slurm"))
+        self.assertFalse(status_mod.is_bootstrap("bash /r/p/.other/bootstrap.sh", ".fx-slurm"))
+
+    def test_e_status_an_unwritable_ledger_is_a_warning_not_a_crash(self):
+        self.led.record_attempt(name="exp--b01", target="fx-slurm", kind="slurm", nonce="n-b", submit="unknown")
+        self.journal("n-b", receipt="job=102\nname=exp--b01\nnonce=n-b\n", result="stage=done rc=0 verdict=submitted\n")
+        from unittest import mock
+        with mock.patch.object(L.Ledger, "locked", side_effect=PermissionError(13, "Permission denied", "lock")):
+            rc, text = run("status", "-C", str(self.proj))
+        self.assertEqual(rc, OK, text)
+        self.assertIn("WARNING: ledger not updated (read-only view)", text)
+        self.assertIn("== grants ==", text)                                      # the rest is still printed
+
+    def test_d8_a_live_run_watch_lock_is_shown(self):
+        lock = self.proj / "logs" / "run-watch" / ".lock"
+        lock.mkdir(parents=True)
+        (lock / "pid").write_text(f"{os.getpid()}\n")
+        (lock / "info").write_text(f"{os.uname().nodename} 2026-11-05T00:00:00+0000 1\n")
+        rc, text = run("status", "-C", str(self.proj))
+        self.assertIn(f"run-watch lock: pid {os.getpid()} since 2026-11-05T00:00:00+0000 act=1 — alive on this host — no "
+                      "live rsk watch lease holds it (an orphan", text)
 
     def test_submit_unknown_reconciled_from_the_journal(self):
         self.led.record_attempt(name="exp--b01", target="fx-slurm", kind="slurm", nonce="n-b", submit="unknown")
@@ -419,6 +458,26 @@ class LedgeredNohup(Base):
                                r"term=1, \d+s ago")
         att = led.read_run("exp").data["attempts"]["a01"]
         self.assertEqual((att["result"]["state"], att["result"]["rc"]), ("ENDED", "2"))
+
+    def test_d5_a_run_of_another_boot_ended_with_a_reboot(self):
+        self.target("fx-box", "T_KIND=nohup; T_HOST=fxbox\n")
+        (self.proj / ".ws.conf").write_text(f"WS_REMOTE_DIR={self.remote}\n")
+        (self.remote / "logs").mkdir()
+        led = L.Ledger(self.proj)
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        for name, was in (("old", "another-boot"), ("same", boot)):
+            log = f"logs/{name}--a01-20261103-120000.log"
+            (self.remote / log).write_text("x\n")
+            (self.remote / f"{log}.pid").write_text("999999999\n")              # gone, no .rc
+            led.record_attempt(name=f"{name}--a01", target="fx-box", kind="nohup", nonce=f"n-{name}",
+                               submit="submitted", proc={"pid": "999999999", "pgid": "999999999", "start": "1",
+                                                         "boot_id": was, "log": log, "gpu_ids": "0"})
+        rc, text = run("status", "-C", str(self.proj))
+        self.assertEqual(rc, OK, text)
+        old = led.read_run("old").data["attempts"]["a01"]
+        self.assertEqual(old["result"]["state"], "REBOOT")
+        self.assertIn("the box's boot_id is", old["result"]["evidence"])
+        self.assertEqual(led.read_run("same").data["attempts"]["a01"]["result"]["state"], "ENDED")
 
 
 class Parse(unittest.TestCase):

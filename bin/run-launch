@@ -2,15 +2,17 @@
 # run-skills bin/run-launch — launch the project's run on a nohup workstation target, contained (env.sh) and
 # detached. Runs LOCALLY from the repo root (cwd with .ws.conf) after run-sync + run-bootstrap.
 #   TARGET=<name> bash ~/.agents/run-skills/bin/run-launch [-d 0,1 | -n 2] [-N name] [--nice N] [--same-name-ok]
-#                 [--gpu-busy-ok] [--rs-attempt NONCE] [--rs-mode plan] [--rs-expect HASH [--rs-warnings N]] [-- <run cmd...>]
+#                 [--gpu-busy-ok] [--rs-attempt NONCE] [--rs-mode plan] [--rs-expect HASH [--rs-warnings ID]] [-- <run cmd...>]
 #     -d ids   use exactly these GPU ids (bypasses GPU_EXCLUDE)     -n N   auto-pick the N idlest free GPUs (memory.used)
 #     -N name  job/log name (default: JOB_NAME, else the remote dir basename)   -- cmd   overrides RUN from .ws.conf
 #     --nice N  the run's nice level 0-19 (default: NICE from .ws.conf)
 #     --same-name-ok  launch even if a run of this name from this project is alive (else exit 6)
 #     --gpu-busy-ok   launch onto GPUs with a compute process (else -d onto one = exit 6; auto-pick skips them)
 #     --rs-attempt NONCE  the attempt id ([A-Za-z0-9][A-Za-z0-9._-]{0,63}; default: generated) — reusing one exits 75, never relaunches
-#     --rs-mode plan / --rs-expect HASH [--rs-warnings N]  rsk's protocol (api=3): print the @@plan block, start nothing /
-#              launch only that plan, with as many WARNING: lines as its card counted
+#     --rs-mode plan / --rs-expect HASH [--rs-warnings ID]  rsk's protocol (api=3): print the @@plan block, start nothing /
+#              launch only that plan, with the warnings its card showed (ID = its warnings_id). With any of them the ONE ssh
+#              first checks the deployed .ws/launch.sh for its '# rs-api=3' line: without it (an older deploy) exit 2,
+#              "does not speak rs-api=3", nothing run (rsk: needs sync). An --rs- word is never an option's value.
 # Driven by rsk (`rsk launch`, which sets RS_VIA_RSK=1): called directly while rsk is installed (on PATH, or in uv's
 # tool bin dir) it points there and exits 2; installed without rsk it launches, with a NOTE. .ws.conf keys (generic or <TAG>_): RUN DEFAULT_NGPU
 # GPU_EXCLUDE NICE JOB_NAME ENV_NAME; generic-only: ENV_KIND.
@@ -49,6 +51,7 @@ fi
 
 GPUS=""; NPICK=""; NONCE=""; SAME=""; BOK=""; PLAN=""; EXPECT=""; RSW=""
 while [ "$#" -gt 0 ]; do
+  case "$1:${2:-}" in -d:*--rs-*|-n:*--rs-*|-N:*--rs-*|--nice:*--rs-*|--rs-attempt:*--rs-*) die "$1 '$2': an --rs- word is never an option's value" ;; esac
   case "$1" in
     -d) GPUS="${2:?-d needs GPU ids}"; shift 2 ;;
     -n) NPICK="${2:?-n needs a count}"; shift 2 ;;
@@ -60,10 +63,10 @@ while [ "$#" -gt 0 ]; do
     --rs-mode) [ -z "$PLAN" ] && [ "${2:-}" = plan ] || die "--rs-mode takes one value, plan, once"; PLAN=1; shift 2 ;;
     --rs-expect) h=${2:-}; [ -z "$EXPECT" ] && [ "${#h}" = 64 ] && [ -n "${h##*[!0123456789abcdef]*}" ] || die "--rs-expect takes one bound_hash (64 lowercase hex), once"
                  EXPECT=$h; shift 2 ;;
-    --rs-warnings) h=${2:-}; [ -z "$RSW" ] && [ -n "$h" ] && [ -n "${h##*[!0123456789]*}" ] || die "--rs-warnings takes one count (digits), once"
+    --rs-warnings) h=${2:-}; [ -z "$RSW" ] && [ "${#h}" = 64 ] && [ -n "${h##*[!0123456789abcdef]*}" ] || die "--rs-warnings takes one warnings_id (64 lowercase hex), once"
                    RSW=$h; shift 2 ;;
     --) shift; break ;;
-    *) echo "unknown arg: $1 (usage: run-launch [-d ids | -n N] [-N name] [--nice N] [--same-name-ok] [--gpu-busy-ok] [--rs-attempt NONCE] [--rs-mode plan] [--rs-expect HASH [--rs-warnings N]] -- <cmd>)" >&2; exit 2 ;;
+    *) echo "unknown arg: $1 (usage: run-launch [-d ids | -n N] [-N name] [--nice N] [--same-name-ok] [--gpu-busy-ok] [--rs-attempt NONCE] [--rs-mode plan] [--rs-expect HASH [--rs-warnings ID]] -- <cmd>)" >&2; exit 2 ;;
   esac
 done
 if [ -n "$NICE" ] && ! printf %s "$NICE" | grep -Eq '^[0-9]+$'; then   # --nice beats the conf's NICE
@@ -110,9 +113,11 @@ ARGS="--rs-attempt $(sq "$NONCE") -N $(sq "$NAME") --log $(sq "$LOG") $PICK"
 [ -z "$SAME" ] || ARGS="$ARGS --same-name-ok"; [ -z "$BOK" ] || ARGS="$ARGS --gpu-busy-ok"
 [ -z "$PLAN" ] || ARGS="$ARGS --rs-mode plan"; [ -z "$EXPECT" ] || ARGS="$ARGS --rs-expect $EXPECT"   # (an old launch.sh: exit 2)
 [ -z "$RSW" ] || ARGS="$ARGS --rs-warnings $RSW"
+API3=""   # rsk's protocol words go only to a launch.sh that carries the '# rs-api=3' line (an api=3 file alone proves nothing)
+[ -z "$PLAN$EXPECT$RSW" ] || API3="grep -qx '# rs-api=3' .ws/launch.sh || { echo 'ERROR: the deployed .ws/launch.sh does not speak rs-api=3 (an older deploy) — run-sync, then plan again; nothing launched' >&2; exit 2; }; "
 rc=0
 ssh "$HOST" "cd $(sq "$RDIR") || exit 1; test -f .ws/launch.sh || { echo 'ERROR: no .ws/launch.sh in the remote dir: the deploy predates it — run run-sync first' >&2; exit 2; }; \
-TARGET=$(sq "$T_NAME") bash .ws/launch.sh $ARGS -- $(sq "$RUN_CMD")" || rc=$?
+${API3}TARGET=$(sq "$T_NAME") bash .ws/launch.sh $ARGS -- $(sq "$RUN_CMD")" || rc=$?
 if [ "$rc" = 255 ] && [ -n "$PLAN" ]; then echo "NOTE: ssh failed (exit 255) during a plan: nothing was launched (a plan never starts a run)" >&2
 elif [ "$rc" = 255 ]; then
   echo "NOTE: ssh failed (exit 255): the launch may or may not have happened. Before any retry: ssh $HOST \"cat '$RDIR/.rs/attempts/$NONCE/result'\" (verdict=…; no such file = not started or still starting). Retrying with --rs-attempt $NONCE can never launch twice (exit 75 = that attempt already ran)." >&2

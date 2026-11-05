@@ -154,6 +154,13 @@ class Basics(ScratchHome):
             self.led.claim_plan(pid, nonce="n2")
         self.assertEqual(cm.exception.code, CONFLICT)
         self.assertEqual(self.led.plan_claim(pid)["nonce"], "n1")
+        self.assertTrue(self.led.release_plan(pid, why="verdict refused, no receipt"))   # D10: proof of not-submitted
+        self.assertIsNone(self.led.plan_claim(pid))
+        self.assertFalse(self.led.release_plan(pid))
+        self.assertEqual(len(list((self.led.dir / "plans").glob(f"{pid}.used.released-*"))), 1)   # kept, aside
+        self.led.claim_plan(pid, nonce="n3")                                    # the same plan may go out again
+        self.assertEqual(self.led.plan_claim(pid)["nonce"], "n3")
+        self.assertIn("plan_released", [a["event"] for a in self.led.read_audit()[0]])
         (self.led.dir / "plans" / "p-bad.json").write_text("{")
         self.assertEqual(self.led.read_plan("p-bad").source, "corrupt")
         self.assertEqual(self.led.read_plan("../x").source, "missing")
