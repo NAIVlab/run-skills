@@ -12,7 +12,8 @@
 # GPU flags (R5-2: a counted WARNING), or GPUs by its config (R6-3: accelerate's gpu_ids, deepspeed's /job/hostfile) or a
 # container runtime (R6-2: docker --gpus …, apptainer --cleanenv …; APPTAINERENV_NAME= refused), a tool that starts the
 # command without this launch's environment or elsewhere (R7-3: docker exec, tmux new, sudo without -E, ssh …: a counted WARNING),
-# accelerate's config unknown (R7-4: ENV_HOOK, a conf or RUN naming HF_HOME / ACCELERATE_…; R8-4: ENV_KIND=conda), the configs /
+# accelerate's config unknown (R7-4: ENV_HOOK, a conf or RUN naming HF_HOME / ACCELERATE_…; R8-4: ENV_KIND=conda; NF7: a
+# .wandb_env assigning them, or unreadable), those WARNINGs counted apart as warnings_gpu (NF8: never grant-covered), the configs /
 # hostfile read bound as launch_cfg (R7-5: an edit after the card is exit 6; R8-5: deepspeed -H / --hostfile FILE too), tmux
 # commands by any prefix tmux takes (R8-6: split, spl, run-, i …), info_prior (R5-4).
 # Run by selftest.sh with RS_HOME set:  bash tests/61-launch-remote.sh
@@ -385,7 +386,7 @@ nolog() { ! ls "$N"/logs/"$1"-*.log >/dev/null 2>&1; }
 rm -f "$T/apps" "$T/apps.fail"
 O=$(L n --rs-attempt pl1 --rs-mode plan -N pl1 -n 2 -x 1 --nice 3 -- "touch $T/plan-ran"); RC=$?; A=$N/.rs/attempts/pl1; B=$(blk "$O")
 [ "$RC" = 0 ] && ok "plan mode exits 0" || { bad "plan mode exits 0 (rc=$RC)"; printf '%s\n' "$O" | head -8 | sed 's/^/    | /'; }
-[ "$(printf '%s\n' "$B" | sed 's/=.*//' | tr '\n' ' ')" = "@@plan v1 api kind target name gpus_req exclude nice launch_cfg busy_ok payload env_kind env_hook venv_dir uv_sync_args env_name info_gpus info_uuids info_busy info_run_gpu info_prior info_launchers warnings warnings_avail warnings_id bound_hash @@end " ] \
+[ "$(printf '%s\n' "$B" | sed 's/=.*//' | tr '\n' ' ')" = "@@plan v1 api kind target name gpus_req exclude nice launch_cfg busy_ok payload env_kind env_hook venv_dir uv_sync_args env_name info_gpus info_uuids info_busy info_run_gpu info_prior info_launchers warnings warnings_avail warnings_gpu warnings_id bound_hash @@end " ] \
   && ok "ONE block, exactly these keys in this order" || { bad "plan block keys"; printf '%s\n' "$B" | sed 's/^/    | /'; }
 [ "$(printf '%s\n' "$O" | grep -c '^@@plan v1$')" = 1 ] && ok "...printed once" || bad "...printed once"
 has "$B" "^api=$(sed -n 's/^api=//p' "$N/.ws/API")\$" "api= is the deployed .ws/API's"; has "$B" '^kind=nohup$' "kind=nohup"; has "$B" '^target=ws-box$' "target="
@@ -396,7 +397,7 @@ has "$B" '^info_gpus=2,0$' "info_gpus = the pick (envelope)"; has "$B" '^info_uu
 has "$B" '^info_busy=$' "info_busy= (none busy)"; has "$B" '^info_run_gpu=checked$' "info_run_gpu=checked (R4-5: this launch.sh refuses a RUN that sets a GPU variable)"; has "$B" '^warnings=0$' "warnings=0"
 has "$B" '^info_prior=0$' "info_prior=0 (R5-4: no receipt of the run pl1 in this project's journal)"
 has "$B" '^info_launchers=checked$' "info_launchers=checked (round 6: launcher configs, containers, env -i anywhere — rsk needs it: an older launch.sh's card lacks those WARNINGs)"
-has "$B" '^warnings_avail=0$' "warnings_avail=0 (no availability -y gate on a box)"; has "$B" "^warnings_id=$(printf '' | sha256sum | cut -d' ' -f1)\$" "warnings_id = the digest of nothing"
+has "$B" '^warnings_avail=0$' "warnings_avail=0 (no availability -y gate on a box)"; has "$B" '^warnings_gpu=0$' "warnings_gpu=0 (NF8: no launcher / container WARNING)"; has "$B" "^warnings_id=$(printf '' | sha256sum | cut -d' ' -f1)\$" "warnings_id = the digest of nothing"
 [ "$(grep -cx '# rs-api=3' "$N/.ws/launch.sh")" = 1 ] && ok "C: the deployed launch.sh carries the '# rs-api=3' line" || bad "launch.sh: the '# rs-api=3' line"
 H1=$(bh "$O"); [ "$(bnd "$O" | sha256sum | cut -d' ' -f1)" = "$H1" ] && ok "bound_hash = sha256 of the lines kind= … env_name= (each + newline)" || bad "bound_hash = sha256 of the bound lines"
 has "$(cat "$A/result")" '^stage=plan rc=0 verdict=planned ' "journal: stage=plan rc=0 verdict=planned"
@@ -509,7 +510,8 @@ chmod +x "$T/bin/deepspeed"; printf 'GPU-aaaa0000-0001, 1\n' > "$T/apps"
 O=$(L lr --rs-attempt dp1 --rs-mode plan -N dp -n 1 -- 'deepspeed --num_gpus 2 train.py'); RC=$?; HD=$(bh "$O"); WD=$(printf '%s\n' "$O" | sed -n 's/^warnings_id=//p')
 [ "$RC" = 0 ] && ok "R5-2: plan of 'deepspeed --num_gpus 2 train.py': goes on (a warning, never a refusal)" || { bad "R5-2: plan (rc=$RC)"; printf '%s\n' "$O" | head -5 | sed 's/^/    | /'; }
 has "$O" "^WARNING: RUN runs deepspeed with --num_gpus — such a launcher may ignore CUDA_VISIBLE_DEVICES and pick GPUs itself (any on the box, another user's too), not only this launch's GPU(s) \[2\]: drop those flags" "...names the launcher, the flag and the landing"
-has "$(blk "$O")" '^warnings=1$' "...counted (warnings=1: no grant covers it unless its kind is any)"; has "$(blk "$O")" '^warnings_avail=0$' "...not an availability warning"
+has "$(blk "$O")" '^warnings=1$' "...counted (warnings=1)"; has "$(blk "$O")" '^warnings_avail=0$' "...not an availability warning"
+has "$(blk "$O")" '^warnings_gpu=1$' "NF8: ...and counted apart as warnings_gpu=1 (no standing grant covers it, whatever its kind)"
 [ -n "$WD" ] && [ "$WD" != "$(printf '' | sha256sum | cut -d' ' -f1)" ] && ok "...in warnings_id" || bad "...in warnings_id"
 O=$(L lr --rs-attempt dp2 --rs-expect "$HD" -N dp -n 1 -- 'deepspeed --num_gpus 2 train.py'); RC=$?
 [ "$RC" = 6 ] && has "$O" '^changed: warnings$' "...an approved launch without the card's warnings_id: exit 6, changed: warnings" || bad "R5-2: --rs-expect without --rs-warnings (rc=$RC)"
@@ -526,10 +528,11 @@ for r in 'accelerate launch --gpu_ids 0,1 train.py' 'accelerate launch --num-pro
          'ds --num_accelerators 2 t.py' 'OMP_NUM_THREADS=4 env A=1 deepspeed "--num_gpus" 2 t.py' 'bash -c "deepspeed --num_gpus 2 t.py"'; do
   i=$((i + 1)); O=$(L lr --rs-mode plan -N lw$i -n 1 -- "$r"); RC=$?
   [ "$RC" = 0 ] && has "$O" "^WARNING: RUN runs .* with .* — such a launcher may ignore CUDA_VISIBLE_DEVICES" "R5-2: $r -> WARNING" || bad "R5-2: $r (rc=$RC)"
-  has "$(blk "$O")" '^warnings=1$' "...counted"
+  has "$(blk "$O")" '^warnings=1$' "...counted"; has "$(blk "$O")" '^warnings_gpu=1$' "...as warnings_gpu=1 (NF8)"
 done
 O=$(L lr --rs-mode plan -N lw0 -n 1 -- 'deepspeed --num_gpus 2 a.py; accelerate launch --gpu_ids 0 b.py')
 [ "$(printf '%s\n' "$O" | grep -c '^WARNING: RUN runs ')" = 2 ] && has "$(blk "$O")" '^warnings=2$' "R5-2: two launchers, two warnings" || bad "R5-2: two launchers"
+has "$(blk "$O")" '^warnings_gpu=2$' "...warnings_gpu=2 (NF8)"
 for r in 'deepspeed train.py --deepspeed_config ds.json' 'accelerate launch train.py' 'python train.py --num_gpus 2' \
          'torchrun --nproc_per_node 2 t.py' 'deepspeed --master_port 29501 t.py' 'deepspeed --num_train_epochs 3 t.py'; do
   O=$(L lr --rs-mode plan -N ln -n 1 -- "$r"); hasnt "$O" '^WARNING:' "R5-2: no warning for $r (the landing is used; no config, no hostfile here)"; done
@@ -547,7 +550,7 @@ printf 'compute_environment: LOCAL_MACHINE\ngpu_ids: 0,1\nnum_processes: 2\n' > 
 O=$(L lr --rs-mode plan -N ac -n 1 -- 'accelerate launch train.py'); RC=$?
 [ "$RC" = 0 ] && has "$O" "^WARNING: RUN runs accelerate launch with gpu_ids: 0,1 in \.cache/huggingface/accelerate/default_config\.yaml — such a launcher may ignore CUDA_VISIBLE_DEVICES and pick GPUs itself (any on the box, another user's too), not only this launch's GPU(s) \[[0-9]\]: drop those flags and settings" \
   "R6-3: accelerate launch, no --gpu_ids, the project's default config says gpu_ids: 0,1 -> a WARNING naming the value and the file" || { bad "R6-3: default config (rc=$RC)"; printf '%s\n' "$O" | head -4 | sed 's/^/    | /'; }
-has "$(blk "$O")" '^warnings=1$' "...counted (warnings=1: no grant covers it unless its kind is any)"
+has "$(blk "$O")" '^warnings=1$' "...counted (warnings=1)"; has "$(blk "$O")" '^warnings_gpu=1$' "...as warnings_gpu=1 (NF8: no grant covers it, whatever its kind)"
 printf 'gpu_ids: all  # every GPU it is shown\n' > "$AC/default_config.yaml"
 O=$(L lr --rs-mode plan -N ac -n 1 -- 'accelerate launch train.py'); HA=$(bh "$O")
 [ "$(wd "$O")" = "$NOW" ] && hasnt "$O" '^WARNING:' "R6-3: gpu_ids: all (a comment after it): no warning — it uses the landing" || bad "R6-3: gpu_ids all"
@@ -611,7 +614,7 @@ for r in 'docker run --rm --gpus all -v $PWD:/w myimg python /w/train.py' 'docke
   O=$(L lr --rs-mode plan -N ct -n 1 -- "$r"); RC=$?
   [ "$RC" = 0 ] && has "$O" "^WARNING: RUN runs [a-z/-]* with .* — a container started so does not get this launch's CUDA_VISIBLE_DEVICES and may see GPUs its runtime picks (any on the box, another user's too), not only this launch's GPU(s) \[[0-9]\]: name the GPUs it will use to the user\$" \
     "R6-2: $r -> WARNING" || { bad "R6-2: $r (rc=$RC)"; printf '%s\n' "$O" | grep WARNING | head -2 | sed 's/^/    | /'; }
-  has "$(blk "$O")" '^warnings=1$' "...counted"
+  has "$(blk "$O")" '^warnings=1$' "...counted"; has "$(blk "$O")" '^warnings_gpu=1$' "...as warnings_gpu=1 (NF8)"
 done
 for r in 'apptainer exec --nv --cleanenv img p' 'singularity exec -e --nv img p' 'apptainer exec -C --nv img p' 'apptainer run --containall img' 'apptainer exec -ce --nv img p' '/opt/bin/singularity run --cleanenv=true img'; do
   O=$(L lr --rs-mode plan -N ct -n 1 -- "$r"); RC=$?
@@ -634,7 +637,7 @@ r7() {   # r7 RUN TOOL: a plan of RUN -> exit 0, ONE counted R7-3 WARNING naming
   O=$(L lr --rs-mode plan -N r7 -n 1 -- "$1"); RC=$?
   [ "$RC" = 0 ] && [ "$(wn "$O")" = 1 ] && has "$O" "^WARNING: RUN starts its command through $2 — .* — so it may use GPUs other than this launch's GPU(s) \[[0-9]\] (any on the box, another user's too): run the command directly (launch.sh detaches it), or name the GPUs it will use to the user\$" \
     "R7-3: $1 -> a WARNING naming '$2' and the landing" || { bad "R7-3: $1 -> one WARNING naming '$2' (rc=$RC)"; printf '%s\n' "$O" | grep '^WARNING' | head -3 | sed 's/^/    | /'; }
-  has "$(blk "$O")" '^warnings=1$' "...counted (warnings=1: no grant covers it unless its kind is any)"; }
+  has "$(blk "$O")" '^warnings=1$' "...counted (warnings=1)"; has "$(blk "$O")" '^warnings_gpu=1$' "...as warnings_gpu=1 (NF8: no grant covers it, whatever its kind)"; }
 r7 'docker exec dev python train.py' 'docker exec'; r7 'podman exec -it dev p' 'podman exec'; r7 'nerdctl exec dev p' 'nerdctl exec'
 r7 'docker container exec dev p' 'docker exec'; r7 'docker start -a trainer' 'docker start'; r7 '/usr/bin/docker exec dev p' '/usr/bin/docker exec'
 r7 'docker compose run --rm trainer python train.py' 'docker compose run'; r7 'docker compose up' 'docker compose up'; r7 'podman compose exec t p' 'podman compose exec'
@@ -669,6 +672,7 @@ for r in 'sudo -E p' 'sudo -nE p' 'sudo -E -u root p' 'sudo -u root -E p' 'sudo 
   O=$(L lr --rs-mode plan -N r7 -n 1 -- "$r"); [ "$?" = 0 ] && hasnt "$O" '^WARNING:' "R7-3: no warning for $r (the landing reaches it)" || bad "R7-3: $r (plan not exit 0)"; done
 O=$(L lr --rs-mode plan -N r7 -n 1 -- 'sudo docker run --gpus all img'); RC=$?
 [ "$RC" = 0 ] && [ "$(wn "$O")" = 2 ] && has "$(blk "$O")" '^warnings=2$' "R7-3: sudo (no -E) + docker --gpus: two warnings, both counted" || bad "R7-3: sudo + docker (rc=$RC)"
+has "$(blk "$O")" '^warnings_gpu=2$' "...both as warnings_gpu (NF8)"
 O=$(L lr --rs-mode plan -N r7 -n 1 -- 'nerdctl run --rm --gpus all img python train.py'); [ "$(wn "$O")" = 1 ] \
   && has "$O" "^WARNING: RUN runs nerdctl with --gpus — a container started so does not get this launch's CUDA_VISIBLE_DEVICES" "R6-2 for nerdctl: run --gpus is a container WARNING" || bad "nerdctl run --gpus"
 O=$(L lr --rs-mode plan -N r7 -n 1 -- 'python -m accelerate.commands.accelerate_cli launch --gpu_ids 0,1 train.py'); [ "$(wn "$O")" = 1 ] \
@@ -733,7 +737,7 @@ ENV_NAME=train'); mkdir -p "$H/miniconda3/envs/train"; printf '%s\n' "$SH" > "$H
 O=$(L ce --rs-attempt ce1 --rs-mode plan -N ce -n 1 -- 'accelerate launch train.py'); RC=$?; H8=$(bh "$O"); W8=$(wd "$O")
 [ "$RC" = 0 ] && [ "$(wn "$O")" = 1 ] && has "$O" "^WARNING: RUN runs accelerate launch with no --config_file: the config accelerate reads is unknown (ENV_KIND=conda: conda activate 'train' applies the env's own variables (HF_HOME / ACCELERATE_… among them), which may move it) — such a launcher may ignore CUDA_VISIBLE_DEVICES and pick GPUs itself (any on the box, another user's too), not only this launch's GPU(s) \[2\]: give it --config_file FILE (read here, bound in the plan)" \
   "R8-4: ENV_KIND=conda, accelerate launch without --config_file: a WARNING (conda activate may move HF_HOME)" || { bad "R8-4: conda (rc=$RC)"; printf '%s\n' "$O" | grep -v '^[a-z_]*=' | head -4 | sed 's/^/    | /'; }
-has "$(blk "$O")" '^warnings=1$' "...counted (no grant covers it unless its kind is any)"; has "$(blk "$O")" '^env_kind=conda$' "...env_kind=conda"
+has "$(blk "$O")" '^warnings=1$' "...counted"; has "$(blk "$O")" '^warnings_gpu=1$' "...as warnings_gpu=1 (NF8: no grant covers it)"; has "$(blk "$O")" '^env_kind=conda$' "...env_kind=conda"
 O=$(L ce --rs-attempt ce2 --rs-expect "$H8" --rs-warnings "$W8" -N ce -n 1 -- 'accelerate launch train.py'); RC=$?
 LK=$CE/$(kv log "$CE/.rs/attempts/ce2/receipt"); waitfor "$LK.rc"
 [ "$RC" = 0 ] && has "$(cat "$LK")" "^accelerate-stub: config=$SH/accelerate/default_config.yaml worker sees CUDA_VISIBLE_DEVICES=0,1\$" \
@@ -741,6 +745,34 @@ LK=$CE/$(kv log "$CE/.rs/attempts/ce2/receipt"); waitfor "$LK.rc"
 for r in 'accelerate launch --config_file c.yaml t.py' 'accelerate launch --gpu_ids 2 t.py' 'python t.py'; do
   printf 'gpu_ids: all\n' > "$CE/c.yaml"; O=$(L ce --rs-mode plan -N cep -n 1 -- "$r")
   [ "$?" = 0 ] && hasnt "$O" 'the config accelerate reads is unknown' "R8-4: conda, not for $r (the config is named, the ids are flags, or no accelerate)" || bad "R8-4: conda, $r (plan not exit 0)"; done
+# NF7 (R7-4's reasons, the .wandb_env part): env.sh sources $PROJ/.wandb_env (the user's wandb key) after it exports HF_HOME
+# (remote/env.sh step 8), so a .wandb_env assigning HF_HOME or ACCELERATE_… moves the config accelerate reads as a conf does:
+# read here read-only (never printed: it holds the key — the reason names only which kind of name), unreadable = unknown
+WE=$(mkp we 'WS_REMOTE_DIR=projects/we
+ENV_KIND=none'); printf 'WANDB_API_KEY=wandbSECRETkey0\nexport HF_HOME=%s\n' "$SH" > "$WE/.wandb_env"; chmod 600 "$WE/.wandb_env"
+O=$(L we --rs-attempt we1 --rs-mode plan -N we -n 1 -- 'accelerate launch train.py'); RC=$?; H9=$(bh "$O"); W9=$(wd "$O")
+[ "$RC" = 0 ] && [ "$(wn "$O")" = 1 ] && has "$O" "^WARNING: RUN runs accelerate launch with no --config_file: the config accelerate reads is unknown (\.wandb_env names HF_HOME, which may move it) — such a launcher may ignore CUDA_VISIBLE_DEVICES" \
+  "NF7: a .wandb_env assigning HF_HOME, accelerate launch without --config_file: a WARNING (env.sh sources it after HF_HOME)" || { bad "NF7: .wandb_env HF_HOME (rc=$RC)"; printf '%s\n' "$O" | grep -v '^[a-z_]*=' | head -4 | sed 's/^/    | /'; }
+has "$(blk "$O")" '^warnings_gpu=1$' "...counted as warnings_gpu=1 (no grant covers it)"; hasnt "$O" 'SECRET' "...nothing of the .wandb_env is printed (its key)"
+O=$(L we --rs-attempt we2 --rs-expect "$H9" --rs-warnings "$W9" -N we -n 1 -- 'accelerate launch train.py'); RC=$?
+LK=$WE/$(kv log "$WE/.rs/attempts/we2/receipt"); waitfor "$LK.rc"
+[ "$RC" = 0 ] && has "$(cat "$LK")" "^accelerate-stub: config=$SH/accelerate/default_config.yaml worker sees CUDA_VISIBLE_DEVICES=0,1\$" \
+  "...why: approved, env.sh sourced the .wandb_env's HF_HOME, the (stub) accelerate reads that config and lands on 0,1 (GPU 1 is another user's; the landing was 2)" || bad "NF7: the .wandb_env's config (rc=$RC)"
+hasnt "$(cat "$WE/.rs/attempts/we2/out" "$WE/.rs/attempts/we2/err" 2>/dev/null)" 'SECRET' "...nor in the attempt's journal"
+printf 'WANDB_API_KEY=wandbSECRETkey0\nACCELERATE_CONFIG_DIR=/data/acc\n' > "$WE/.wandb_env"
+O=$(L we --rs-mode plan -N wep -n 1 -- 'accelerate launch t.py'); has "$O" "unknown (\.wandb_env names an ACCELERATE_… variable, which may move it)" "NF7: a .wandb_env naming ACCELERATE_…: a WARNING (the name itself not echoed)"
+printf 'WANDB_API_KEY=wandbSECRETkey0\n  # HF_HOME and ACCELERATE_X are env.sh'"'"'s business\nWANDB_DIR=$HF_HOME/w\n' > "$WE/.wandb_env"
+O=$(L we --rs-mode plan -N wep -n 1 -- 'accelerate launch t.py'); [ "$?" = 0 ] && hasnt "$O" '^WARNING:' "NF7: a .wandb_env naming them only in a comment line or as an expansion (\$HF_HOME): no warning" || bad "NF7: comment-line .wandb_env (plan not exit 0)"
+printf 'WANDB_API_KEY=wandbSECRETkey0\nexport HF_HOME=/data/hf\n' > "$WE/.wandb_env"
+for r in 'accelerate launch --config_file c.yaml t.py' 'accelerate launch --gpu_ids 2 t.py' 'python t.py'; do
+  printf 'gpu_ids: all\n' > "$WE/c.yaml"; O=$(L we --rs-mode plan -N wep -n 1 -- "$r")
+  [ "$?" = 0 ] && hasnt "$O" 'the config accelerate reads is unknown' "NF7: .wandb_env HF_HOME, not for $r (the config is named, the ids are flags, or no accelerate)" || bad "NF7: $r (plan not exit 0)"; done
+chmod 000 "$WE/.wandb_env"
+if [ -r "$WE/.wandb_env" ]; then echo "  SKIP: NF7 unreadable .wandb_env (this user reads a mode-000 file: root?)"
+else O=$(L we --rs-mode plan -N wep -n 1 -- 'accelerate launch t.py'); RC=$?
+  [ "$RC" = 0 ] && has "$O" "unknown (\.wandb_env could not be read here)" "NF7: an unreadable .wandb_env: the config is unknown — a WARNING (fail closed)" || bad "NF7: unreadable .wandb_env (rc=$RC)"; fi
+chmod 600 "$WE/.wandb_env"; rm -f "$WE/.wandb_env"
+O=$(L we --rs-mode plan -N wep -n 1 -- 'accelerate launch t.py'); [ "$?" = 0 ] && hasnt "$O" '^WARNING:' "NF7: no .wandb_env (and nothing else moving it): no warning" || bad "NF7: no .wandb_env (plan not exit 0)"
 printf 'WS_REMOTE_DIR=projects/hk\nENV_KIND=none\n( sleep 6 ) >/dev/null 2>&1 &\n' > "$HK/.ws.conf"   # a conf that leaves a process behind
 SECONDS=0; O=$(L hk --rs-mode plan -N hkp -n 1 -- 'python t.py'); RC=$?
 [ "$RC" = 0 ] && [ "$SECONDS" -lt 4 ] && ok "the conf is read without the caller's channel (fds 3/4) or the launch lock (9): a process it leaves behind never holds the plan's reply (${SECONDS}s)" \
@@ -878,6 +910,7 @@ O=$(L n -N b5 -n 3 --gpu-busy-ok -- c); RC=$?
 has "$O" '^WARNING: the pick includes GPU(s) 1 ' "...saying which"
 O=$(L n --rs-mode plan -N b6 -d 1 --gpu-busy-ok -- c); B=$(blk "$O")
 has "$B" "^info_busy=1:$U:$$,2:?:$DP\$" "plan: info_busy=id:user:pid,…"; has "$B" '^warnings=1$' "plan: the busy WARNING is counted"
+has "$B" '^warnings_gpu=0$' "...not as warnings_gpu (NF8: a busy landing is rsk's own never-a-grant check)"
 printf 'No running processes found\n' > "$T/apps"; O=$(L n -N b7 -d 1 -- c); [ "$?" = 0 ] && ok "'No running processes found' = none busy" || bad "'No running processes found'"
 printf 'GPU-ffff0000-0009, 12\n' > "$T/apps"; O=$(L n -N b8 -d 0 -- c); RC=$?
 [ "$RC" = 1 ] && has "$O" 'cannot tell which GPUs are busy' "a process on a GPU id the box does not list = unknown -> exit 1" || bad "unmapped uuid (rc=$RC)"

@@ -48,6 +48,7 @@ def block(kind="slurm", target="fx", name="exp--train--a--scratch--s0--a01", war
     lines = [f"{k}={v}" for k, v in bound]
     h = hashlib.sha256(("\n".join(lines) + "\n").encode()).hexdigest()
     env = [(k, v) for k, v in (("warnings_avail", kw.get("warnings_avail", warnings)),
+                               *((("warnings_gpu", kw.get("warnings_gpu", "0")),) if kind == "nohup" else ()),
                                ("warnings_id", kw.get("warnings_id", WID[int(warnings) > 0])))
            if k not in kw.get("drop", ())]
     return "\n".join(["@@plan v1", "api=3", *lines, *(f"{k}={v}" for k, v in info), *(f"{k}={v}" for k, v in env),
@@ -159,8 +160,25 @@ class Pure(unittest.TestCase):
         card = X.render_card(rec)
         for want in ("plan p-1 — launch on fx (slurm)", "  payload    python t.py --x 1", "  account    -",
                      "  segments   2", "    WARNING: only 0 free", "  reference  /x/reference.md",
-                     "DIFFERENT code than this checkout's HEAD", f"  bound_hash {b['bound_hash']}"):
+                     f"  bound_hash {b['bound_hash']}"):
             self.assertIn(want, card)
+
+    def test_nf8_the_cards_source_line_says_unknown_without_two_commits(self):
+        """NF8-card-source-unknown: a project that is not a git checkout (run-sync stamps commit=none; local_source()
+        says none) or a deploy without a stamp (submit.sh prints none) has nothing to compare: `unknown`, never
+        `DIFFERENT code` (which sent agents re-syncing). Two real commits still compare."""
+        def card(deployed: str, local: str) -> str:
+            b = G.parse_plan(block().replace("info_source_commit=none", f"info_source_commit={deployed}"))
+            return X.render_card({"id": "p-1", "created_at": L.now(), "target": "fx", "kind": "slurm",
+                                  "action": "launch", "run": "r", "block": b, "bound_hash": b["bound_hash"],
+                                  "warnings": 0, "lines": [], "local": {"commit": local, "dirty": "-"}})
+        a, c = "a" * 40, "c" * 40
+        for d, lc in (("none", "none"), ("none", a), (a, "none"), ("''", a)):
+            line = [ln for ln in card(d, lc).splitlines() if ln.startswith("  source ")][0]
+            self.assertIn("— unknown (not a git checkout, no commit yet, or no sync stamp) — cannot compare", line, line)
+            self.assertNotIn("DIFFERENT", line)
+        self.assertIn(f"deployed {a[:12]} dirty=none · local HEAD {a[:12]} dirty=- — same commit", card(a, a))
+        self.assertIn("— DIFFERENT code than this checkout's HEAD", card(a, c))
 
 
 class Fixture(ScratchHome):
@@ -1083,7 +1101,8 @@ class Round7(Fixture):
         cfg = f"ddp.yaml:{self.H1}"
         started = lambda nonce, words: X.Reply(0, "[ws] started PID 4242 on GPU(s) 1 ; log /h/projects/proj/logs/"   # noqa: E731
                                                   "ad-20261104-120000.log ; pid file /h/x.pid\n", "")
-        self.answers = [self.plan_reply(kind="nohup", target="ws", name="ad", launch_cfg=cfg, warnings=1), started]
+        # (its config says gpu_ids: all — read and bound, no WARNING: a launcher warning is never a grant's call, NF8)
+        self.answers = [self.plan_reply(kind="nohup", target="ws", name="ad", launch_cfg=cfg), started]
         rc, text = self.cli("launch", "-T", "ws", "-N", "ad", "--", "accelerate", "launch", "--config_file",
                             "ddp.yaml", "t.py")
         self.assertEqual(rc, OK, text)
@@ -1091,13 +1110,12 @@ class Round7(Fixture):
         self.assertEqual(a01["request"]["bound"].get("launch_cfg"), cfg)
         self.led.observe("ad", "a01", "logs/ad-20261104-120000.log", "REBOOT", "boot_id",
                          end={"state": "REBOOT", "rc": "", "evidence": "boot_id"})
-        self.answers = [self.plan_reply(kind="nohup", target="ws", name="ad--a02", launch_cfg=f"ddp.yaml:{self.H2}",
-                                        warnings=1)]
+        self.answers = [self.plan_reply(kind="nohup", target="ws", name="ad--a02", launch_cfg=f"ddp.yaml:{self.H2}")]
         rc, text = self.cli("launch", "--relaunch", "ad")
         self.assertEqual(rc, NEEDS_USER, text)                     # the config changed since a01: the user decides
         self.assertIn("not the configuration of a01", text)
         self.assertIn("launch_cfg", text)
-        self.answers = [self.plan_reply(kind="nohup", target="ws", name="ad--a02", launch_cfg=cfg, warnings=1), started]
+        self.answers = [self.plan_reply(kind="nohup", target="ws", name="ad--a02", launch_cfg=cfg), started]
         rc, text = self.cli("launch", "--relaunch", "ad")
         self.assertEqual(rc, OK, text)                             # the same config: covered as the grant says
         self.assertNotIn("not the configuration", text)
@@ -1121,6 +1139,37 @@ class Nohup(Fixture):
         self.assertIn("--gpu-busy-ok", self.calls[-1])
         sub = self.led.read_run("r").data["attempts"]["a01"]["submissions"][0]
         self.assertEqual((sub["proc"]["pid"], sub["proc"]["log"]), ("4242", "logs/r-20261104-120000.log"))
+
+    def test_nf8_a_launcher_warning_is_never_a_grants_call_only_the_cards_approval(self):
+        """NF8-any-grant-box-launchers: a '<= 1 GPU' ws grant with --allow-warnings any launched `deepspeed --num_gpus 4`
+        (and `docker run --gpus all`, `ssh otherbox …`) without the user. launch.sh now counts those WARNINGs apart
+        (warnings_gpu=N): the card says NO GRANT, the plan needs the user (exit 4); their approval of the card launches
+        it. A block without warnings_gpu (an older launch.sh) is unknown: uncovered too, and the card says why."""
+        G.add(self.led, G.new_grant("run the sweep, any warnings ok", {"targets": ["ws"], "max_gpus": 1,
+                                                                       "allow_warnings": "any"}, ["launch"],
+                                    max_live=4, max_launches=8, expires="2099-12-31"))
+        self.answers = [self.plan_reply(kind="nohup", target="ws", name="d3", warnings=1, warnings_avail=0,
+                                        warnings_gpu="1", warnings_id=WID[1])]
+        rc, text = self.cli("launch", "-T", "ws", "-g", "1", "-N", "d3", "--", "deepspeed", "--num_gpus", "4", "t.py")
+        self.assertEqual(rc, NEEDS_USER, text)
+        self.assertEqual(len(self.calls), 1)                          # the plan only: nothing launched
+        self.assertIn("  warnings   1  (0 of them the availability gate's; 1 a launcher / container one's)", text)
+        self.assertIn("  NO GRANT   1 launcher / container / env-dropping warning(s) — such a run may use GPUs beyond "
+                      "its landing, another user's too: only the user's approval of this card", text)
+        self.assertIn("no standing grant covers that, whatever its --allow-warnings", text)
+        self.answers = [self.started()]
+        rc, text = self.cli("launch", "--plan", self.plan_id(text), "--approve", "yes, deepspeed on 4 GPUs is fine")
+        self.assertEqual(rc, OK, text)
+        self.assertEqual(self.led.read_run("d3").data["attempts"]["a01"]["request"]["grant"][:3], "ap-")
+        self.answers = [self.plan_reply(kind="nohup", target="ws", name="old", drop=("warnings_gpu",))]
+        rc, text = self.cli("launch", "-T", "ws", "-N", "old", "--", "python", "t.py")
+        self.assertEqual(rc, NEEDS_USER, text)                        # an older launch.sh: not counted = unknown
+        self.assertIn("  NO GRANT   launcher / container warnings not counted (no warnings_gpu=: an older launch.sh — "
+                      "rsk sync)", text)
+        self.answers = [self.plan_reply(kind="nohup", target="ws", name="plain"), self.started("4243")]
+        rc, text = self.cli("launch", "-T", "ws", "-N", "plain", "--", "python", "t.py")
+        self.assertEqual(rc, OK, text)                                # warnings_gpu=0: the grant's call, as before
+        self.assertNotIn("NO GRANT", text)
 
     def test_refusals_on_the_box_are_not_submitted(self):
         self.answers = [self.plan_reply(kind="nohup", target="ws", name="r")]

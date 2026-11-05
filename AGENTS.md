@@ -154,7 +154,7 @@ would cover it), which rsk requires — a block without either, or `launch_cfg=`
 = journal receipts named the run id or `<run id>--aNN`, slurm + this WorkDir's squeue rows no receipt names, `unknown` when
 squeue failed or a receipt is unreadable — rsk derives `relaunch` from n > 0 or no number, never `needs: sync`),
 `warnings=` (the distinct `WARNING:` lines in out+err, not `WARNING (lint)`), `warnings_avail=` (the availability gate's
-share), `warnings_id=` (sha256 of those lines, sorted, digit runs → `#`, + a silent policy gate's probe output, below),
+share), nohup `warnings_gpu=` (`rs_launchers`' share, `LAUNCH_WARN`; NF8), `warnings_id=` (sha256 of those lines, sorted, digit runs → `#`, + a silent policy gate's probe output, below),
 `bound_hash=` (sha256 of the lines `kind=` … the last bound field, each + newline); it stops before the snapshots / the
 wrapper (`stage=plan rc=0 verdict=planned`). `--rs-expect H` recomputes that hash and the
 warnings_id right before the snapshots and sbatch (nohup: before the env gate's subshell): another hash, or a warnings_id
@@ -182,13 +182,15 @@ that does not source, exit 2). `rs_launchers`: deepspeed / accelerate launch (an
 flags; accelerate's config `gpu_ids` (read-only: `--config_file`, else the default config under
 `$PROJ/.cache/huggingface`; unreadable, > 64 KiB, relative after a `cd`, or a RUN naming `HF_HOME` warns too; no
 `--config_file` beside an `ENV_HOOK`, `ENV_KIND=conda` (R8-4: `conda activate` applies the env's own variables) or a
-conf / RUN naming `HF_HOME` / `ACCELERATE_…`: `the config accelerate reads is unknown`); deepspeed with `/job/hostfile`
+conf / RUN / `.wandb_env` (NF7; read-only, never printed) naming `HF_HOME` / `ACCELERATE_…`: `the config accelerate
+reads is unknown`); deepspeed with `/job/hostfile`
 and no `--hostfile`; container runtimes (docker / podman / nerdctl `--gpus --runtime --device nvidia… --privileged`, a
 bare `-e NVIDIA_VISIBLE_DEVICES`, `nvidia-docker run`; apptainer / singularity `--cleanenv --containall`); a tool that
 starts the command without this launch's environment or elsewhere (container `exec`, compose, `kubectl exec`, tmux — any
 alias or unique prefix tmux runs as a warned command (R8-6: a threshold table that `tests/88` checks against this
 machine's tmux) —, `screen -dm`, `setpriv --reset-env`, `sudo` without `-E`, `doas`, `systemd-run`, `ssh`, `srun`) → a
-counted `WARNING:` naming it, what and landing (grant kind `any` only; spellings: `tests/61` 'R5-2' / 'R7-3'; facts:
+counted `WARNING:` naming it, what and landing, also counted as `warnings_gpu=` (NF8: no grant covers one, whatever its
+kind; a block without it: unknown, uncovered — `grants.gpu_warn_miss`; spellings: `tests/61` 'R5-2' / 'R7-3'; facts:
 `tests/vgate/launchers.sh` + `containers.sh` + `envdrop.sh`, plumbing `tests/88`); the configs / hostfiles it read are
 bound (`launch_cfg`; R8-5: each file deepspeed's `-H` / `--hostfile` names too, resolved as `--config_file`). What the
 payload's own code does is beyond any check. P7: run-launch without `RS_VIA_RSK` while rsk is installed (on PATH or
@@ -204,8 +206,9 @@ writes with `.prev`, single-use `plans/`, append-only `audit.jsonl`): `approval`
 the user approved, claimed and recorded in one lock hold, expiring with the plans (24 h) — a sweep is one record — or named
 jobs to cancel, each bound to its identity in `scope.idents` (Slurm target, job id, run name, WorkDir; nohup target, pid,
 start, boot_id), for 1 h, used up by its first cancel that passed authorisation, never refunded; one without `idents`
-covers nothing; the `--approve` words must name each job — its id / pid, its run's id or name — as a whole token, else
-exit 4, nothing recorded: `cancel.named` / `cancel.unnamed`, R8-2), `grant` (a standing predicate: scope + actions +
+covers nothing; the `--approve` words — or the agent's question they answer, `--asked` (its `source`, NF8) — must name
+each job — its id / pid or a range holding it, its run's id or name — as a whole token, else exit 4, nothing recorded:
+`cancel.named` / `cancel.unnamed`, R8-2; `cancel.ranges`), `grant` (a standing predicate: scope + actions +
 `max_live` / `max_launches` / `expires`, all three stated, `none` = the user set none; `resubmit` is refused in a new
 one; `allow_warnings` = `availability` (warnings == warnings_avail) | `any`, a stored `true` = `any`; `cancel_own`
 cancels count against `max_launches`, refunded only when the answer proves nothing was signalled), `deny` (always wins;

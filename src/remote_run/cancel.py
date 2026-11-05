@@ -1,13 +1,19 @@
 """`rsk cancel`: stop a run of this project — only after grants.check() and an identity check on the target.
 
-    rsk cancel RUN [--job J] [-T T] [--approve "the user's words"] [-C DIR] [--grace S] [--deadline S]
-    rsk cancel --job J -T T [--approve "the user's words"] [-C DIR] [--grace S] [--deadline S]
+    rsk cancel RUN [--job J] [-T T] [--approve "the user's words" [--asked "your question"]] [-C DIR] [--grace S]
+               [--deadline S]
+    rsk cancel --job J -T T [--approve "the user's words" [--asked "your question"]] [-C DIR] [--grace S] [--deadline S]
 
 What may be stopped (the user's policy, §U of the P3 contract):
   - the user said it ("cancel job 123"): the words must name what is cancelled as a whole word — for --job J the job
-    id J (Slurm) / the pid (nohup), or the run's id or job name; for RUN the run id or name, or every job id cancelled
-    — else exit 4 `needs user: the words do not name <J|RUN>`, nothing recorded or cancelled (R8-2: "cancel job 101"
-    never approves 102). Then --approve "their words" records a cancel approval naming exactly those job(s),
+    id J (Slurm) / the pid (nohup), or the run's id or job name; for RUN the run id or name, or every job id cancelled;
+    a numeric range names every id in it ("cancel jobs 102-104", "102 to 104", "102…104") — or, when the words answer
+    a question of the agent's ("sw1 (job 101) diverged — cancel it?" → "yes"), that question, given verbatim with
+    --asked, may name it instead (the user is never asked twice; the question is the agent's own text: bookkeeping,
+    not proof — rsk does not read whether the answer was a yes) — else exit 4 `needs user: the words do not name
+    <J|RUN>`, nothing recorded or cancelled (R8-2: "cancel job 101" never approves 102; a yes to "cancel sw1?" never
+    approves sw2). Then --approve "their words" records a cancel approval naming exactly those job(s) (its quote the
+    words, its source the asked question; the audit lines carry it too),
     each bound to the identity it was asked for (Slurm: target, job id, run name, WorkDir; nohup: target, pid, start,
     boot_id), for 1 h — acted on once the identity check passes, and used up by that first cancel whatever its
     outcome (never given back: a later cancel of the same id needs the user's words again);
@@ -272,20 +278,48 @@ def named(words: str, tok: str) -> bool:
     return False
 
 
-def unnamed(items: list[Item], words: str) -> list[Item]:
-    """R8-2: the items the user's WORDS do not name — an item is named by its job id (Slurm) / pid (nohup), its run id
-    or its attempt's name (the job name) as a whole token (named()). `rsk cancel RUN`: the run id names every item of
-    it; else each job id. A good-faith slip ("cancel job 101" approving 102, "cancel sw1" approving sw2) is caught
-    here; words naming nothing at all ("cancel it") name nothing either."""
-    return [i for i in items if not (named(words, i.job) or (i.run and named(words, i.run))
-                                     or (i.name and named(words, i.name)))]
+# NF8: a numeric range names every id in it — "102-104", "102 – 104", "102 to 104", "102..104", "102…104", "102~104",
+# "102到104" / "102至104" — read as whole tokens (named()'s rule at both ends: "1102-104", "102-104_2" name nothing), low
+# end first (a high-to-low pair is no range)
+_RANGE = re.compile(r"([0-9]+)(?:[ \t]*(?:-|–|~|\.\.\.?|…|到|至)[ \t]*|[ \t]+(?:to|through|thru)[ \t]+)([0-9]+)", re.I)
+
+
+def ranges(words: str) -> list[tuple[int, int]]:
+    """The numeric ranges WORDS name, as (low, high), each end a whole token."""
+    out = []
+    for m in _RANGE.finditer(words or ""):
+        a, b = m.start(1), m.end(2)
+        lo, hi = int(m.group(1)), int(m.group(2))
+        if lo <= hi and not _goes_on(words[a - 1:a], words[a - 2:a - 1] if a >= 2 else "") \
+                and not _goes_on(words[b:b + 1], words[b + 1:b + 2]):
+            out.append((lo, hi))
+    return out
+
+
+def names(text: str, i: Item) -> bool:
+    """TEXT names the item: its job id / pid (whole, or inside a numeric range of TEXT), its run id or its job name."""
+    return bool(text) and (named(text, i.job) or (i.job.isdigit() and any(lo <= int(i.job) <= hi
+                                                                          for lo, hi in ranges(text)))
+                           or bool(i.run and named(text, i.run)) or bool(i.name and named(text, i.name)))
+
+
+def unnamed(items: list[Item], words: str, asked: str = "") -> list[Item]:
+    """R8-2: the items neither the user's WORDS nor ASKED — the agent's own question those words answer (`--asked`,
+    NF8) — name: an item is named by its job id (Slurm) / pid (nohup), a numeric range holding it, its run id or its
+    attempt's name (the job name), as a whole token (names()). `rsk cancel RUN`: the run id names every item of it;
+    else each job id. A good-faith slip ("cancel job 101" approving 102, "cancel sw1" approving sw2, a yes to "cancel
+    sw1?" passed for sw2) is caught here; words naming nothing at all ("cancel it") with no question name nothing.
+    ASKED is the agent's text: bookkeeping that keeps the user from being asked twice, never proof of what they meant."""
+    return [i for i in items if not (names(words, i) or names(asked, i))]
 
 
 def authorize(led: L.Ledger, place: harness.Place, items: list[Item], words: str | None,
-              asked: str = "") -> dict[str, dict]:
+              what: str = "", asked: str = "") -> dict[str, dict]:
     """{job: the record that covers its cancel}; a deny → exit 3; with WORDS the user's request is recorded first,
-    bound to each item's identity — only when the words name what is cancelled (R8-2: unnamed(); else exit 4 `needs
-    user: the words do not name ASKED`, nothing recorded or cancelled). Every use is counted here, before the ssh."""
+    bound to each item's identity — only when the words, or ASKED (the agent's question they answer, `--asked`), name
+    what is cancelled (R8-2 / NF8: unnamed(); else exit 4 `needs user: the words do not name WHAT`, nothing recorded or
+    cancelled); the approval keeps both (its quote = WORDS, its source = ASKED). Every use is counted here, before the
+    ssh."""
     target, kind = place.target, place.kind
 
     def ask(i: Item, st: L.Ledger | L.LedgerState) -> grants.Decision:
@@ -297,18 +331,25 @@ def authorize(led: L.Ledger, place: harness.Place, items: list[Item], words: str
             if d.denied:
                 raise RskError(f"cancel of {i.job} is denied by {d.record['id']}: \"{d.record['quote']}\" — nothing "
                                "cancelled", REFUSED)
-        miss = unnamed(items, words) if words is not None else []
+        miss = unnamed(items, words, asked) if words is not None else []
         if miss:
             unit = "job" if kind == "slurm" else "pid"
-            what = "; ".join(f"{unit} {i.job}" + (f" = run {i.run} ({i.name})" if i.run else "") for i in miss)
-            out(f"needs user: the words do not name {asked or ', '.join(i.job for i in miss)} — \"{words}\" names "
-                f"none of: {what} on {target}; nothing recorded or cancelled")
-            raise RskError(f"the user's words must name what is cancelled — the {unit} id, the run id or its name "
-                           f"(a whole word): ask the user which one they mean, then --approve their words", NEEDS_USER)
+            them = "; ".join(f"{unit} {i.job}" + (f" = run {i.run} ({i.name})" if i.run else "") for i in miss)
+            out(f"needs user: the words do not name {what or ', '.join(i.job for i in miss)} — \"{words}\""
+                + (f" (answering \"{asked}\")" if asked else "")
+                + f" names none of: {them} on {target}; nothing recorded or cancelled")
+            raise RskError(f"the user's words — or your question they answered, given with --asked — must name what "
+                           f"is cancelled: the {unit} id (or a range holding it), the run id or its name, a whole word"
+                           + (": your question does not name it either — ask the user which one they mean"
+                              if asked else
+                              ": if they answered a question of yours naming it, pass that question with --asked "
+                              "\"<your question>\" (never ask again); else ask the user which one they mean"),
+                           NEEDS_USER)
         if words is not None:
             ap = grants.add(led, grants.new_cancel_approval(words, target, [i.job for i in items],
-                                                            idents=[ident(place, i) for i in items]))
-            out(f"approval {ap['id']}: {grants.describe(ap)} — \"{words}\"")
+                                                            idents=[ident(place, i) for i in items], asked=asked))
+            out(f"approval {ap['id']}: {grants.describe(ap)} — \"{words}\""
+                + (f" (answering \"{asked}\")" if asked else ""))
         cover: dict[str, dict] = {}
         for i in items:
             d = ask(i, led)
@@ -373,9 +414,13 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     from remote_run.status import project_dir, select
     proj = project_dir(args.dir)
     led, src = L.Ledger(proj), paths.harness_src()
-    words = args.approve
+    words, asked = args.approve, args.asked
     if words is not None and not words.strip():
         raise RskError("--approve takes the user's words, verbatim (non-empty)", USAGE)
+    if asked is not None and (words is None or not asked.strip()):
+        raise RskError("--asked takes your question the user answered, verbatim (non-empty), and goes with --approve "
+                       "\"<their answer>\"", USAGE)
+    asked = asked or ""
     if not args.run and not args.job:
         raise RskError("rsk cancel RUN | --job J -T T", USAGE)
     all_places = harness.places(src, proj)
@@ -398,7 +443,8 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     if bad:
         raise RskError(f"{', '.join(bad)}: {'a Slurm job id' if place.kind == 'slurm' else 'a pid (the run wrapper)'}",
                        USAGE)
-    cover = authorize(led, place, items, words, args.run or args.job)
+    cover = authorize(led, place, items, words, args.run or args.job, asked)
+    q_kw = {"asked": asked} if asked else {}         # NF8: the question the words answer, in every audit line
     deadline = args.deadline + (args.grace + 5 if place.kind == "nohup" else 0)
     timed_out = False
     try:
@@ -421,7 +467,7 @@ def cmd_cancel(args: argparse.Namespace) -> int:
         else:
             sent = True
         led.audit("cancel", target=place.target, jobs=[i.job for i in items], outcome="unobservable", why=why[:200],
-                  sent="maybe" if sent else "no")
+                  sent="maybe" if sent else "no", **q_kw)
         silent = sent and "start" not in facts       # no answer at all (timeout, 255, signal): the body may have run
         raise RskError(f"[{place.target}] {why} — "
                        + ("the cancel may have been sent: rsk status (no answer at all: the job may have been cancelled "
@@ -446,7 +492,7 @@ def cmd_cancel(args: argparse.Namespace) -> int:
                         out(f"nothing to cancel: {what} — scancel exit {src}: {moot[:200]} (it was ending or gone "
                             "already)" + (f"; ledger: {i.run} {i.attempt} ending (rsk status shows how)" if i.run else ""))
                         led.audit("cancel", run=i.run, attempt=i.attempt, target=place.target, job=i.job, record=rid,
-                                  outcome=f"nothing to cancel: {moot}"[:200])
+                                  outcome=f"nothing to cancel: {moot}"[:200], **q_kw)
                         continue
                     said = scancel_line(facts.get("scerr") or "", i.job)    # R6-8: its own line, never another id's
                     if i.run:
@@ -456,7 +502,7 @@ def cmd_cancel(args: argparse.Namespace) -> int:
                         + " — it may have been applied (a timed-out request can be): rsk status shows whether it ends; "
                         "the use is kept")
                     led.audit("cancel", run=i.run, attempt=i.attempt, target=place.target, job=i.job, record=rid,
-                              outcome=f"unknown: scancel exit {src}"[:200])
+                              outcome=f"unknown: scancel exit {src}"[:200], **q_kw)
                     worst = worst or UNKNOWN
                     continue
                 if i.run:
@@ -479,7 +525,7 @@ def cmd_cancel(args: argparse.Namespace) -> int:
                 out(f"cancelled: {what} on {place.target} — TERM{' then KILL after the grace' if killed else ''}, its "
                     f"group is gone{', rc ' + rcd['rc'] if rcd.get('rc') else ''} (under {rid})")
             led.audit("cancel", run=i.run, attempt=i.attempt, target=place.target, job=i.job, record=rid,
-                      outcome="cancelled")
+                      outcome="cancelled", **q_kw)
             continue
         refund(led, cover[i.job], i.job, f"not cancelled: {v}")
         if v.startswith("user="):
@@ -498,7 +544,7 @@ def cmd_cancel(args: argparse.Namespace) -> int:
                 + ("its name/WorkDir are not this run's" if place.kind == "slurm" else "the receipt does not prove it"))
             code = CONFLICT
         led.audit("cancel", run=i.run, attempt=i.attempt, target=place.target, job=i.job, record=rid,
-                  outcome=f"not cancelled: {v}"[:200])
+                  outcome=f"not cancelled: {v}"[:200], **q_kw)
         worst = worst or code
     return worst
 
@@ -566,7 +612,12 @@ def add_parser(sub) -> None:
     p.add_argument("-T", "--target", default="")
     p.add_argument("-C", dest="dir", default=None, help="project root (default: the current directory)")
     p.add_argument("--approve", default=None, metavar="WORDS",
-                   help="the user's words asking for this cancel — naming it: the job id / pid, the run id or name")
+                   help="the user's words asking for this cancel — naming it: the job id / pid (or a range holding "
+                   "it: 102-104), the run id or name — or their answer to your question naming it (--asked)")
+    p.add_argument("--asked", default=None, metavar="QUESTION",
+                   help="with --approve: your own question the user's words answer, verbatim (\"sw1 (job 101) "
+                   "diverged — cancel it?\" answered \"yes\"); it may name what is cancelled for them — recorded "
+                   "with the approval and in the audit; bookkeeping, not proof")
     p.add_argument("--grace", type=int, default=30, help="nohup: seconds between TERM and KILL (default 30)")
     p.add_argument("--deadline", type=float, default=60.0)
     p.set_defaults(func=cmd_cancel)

@@ -110,8 +110,11 @@ card's header says which (`plan <id> — relaunch on <t> …`). Its
 (`conf-keys.md`, `SBATCH_EXTRA`): such a card is the user's call. Its `TIME` line shows an `SBATCH_EXTRA` / policy
 `--time` (sbatch takes the last one) — for information: a grant's `max_time` holds for every time limit sbatch could
 read, the policy's included, and a limit of 0 / UNLIMITED never fits it. Its `warnings` row reads `N (M of them the
-availability gate's)`. Before any ssh it refuses (exit 6) a second live ledger run of the same name (`--same-name-ok`
-only when the user wants both; no grant covers it) — and a SUBMIT_UNKNOWN attempt of the run even with it. Exit: 0
+availability gate's)`. Its `source` row compares the deployed `.run-source` commit with this checkout's HEAD: `same
+commit` or `DIFFERENT code than this checkout's HEAD` for two real commits, `unknown (not a git checkout, no commit yet,
+or no sync stamp) — cannot compare` when either is `none` (a re-sync from the same place does not change that). Before
+any ssh it refuses (exit 6) a second live ledger run of the same name (`--same-name-ok` only when the user wants both;
+no grant covers it) — and a SUBMIT_UNKNOWN attempt of the run even with it. Exit: 0
 submitted (job id, log), 1 failed, 2 usage, 3 refused (policy or a deny: final, with its quote), 4 needs the user
 (`needs user: approval — plan <id>`), 5 reply lost (SUBMIT_UNKNOWN: never resubmit; `rsk status` settles it from the
 journal below — whatever ssh's own words were, below), 6 a used / superseded / expired plan, drift (`differs from the approved plan`, and what changed:
@@ -275,18 +278,26 @@ resubmit, resumes it); `OUT_OF_MEMORY` — smaller batch or larger `-m`; `PREEMP
 requeued (`--no-requeue`, or a partition that preempts by cancel): resubmit and resume; `CANCELLED`. A requeued job
 instead goes back to `PENDING` and later runs again into the same log with a new `restart=N` header (`sacct -D` lists
 the earlier attempts) — confirm the trainer's own resume line after every restart.
-**Cancel** through `rsk cancel <run> [--job <jobid>] [--approve "<the user's words>"]` (`rsk cancel --job <jobid> -T <t>
-…` for a job not in the ledger): the same ssh that runs `scancel` first checks the job's name, user and WorkDir (exit 6 =
-mismatch, nothing cancelled; exit 3 = someone else's job: never). It acts on the user's words naming that job, or —
-for your own judgment that a run should stop — on a `cancel_own` grant (runs rsk launched only); else exit 4: ask.
+**Cancel** through `rsk cancel <run> [--job <jobid>] [--approve "<the user's words>" [--asked "<your question>"]]` (`rsk
+cancel --job <jobid> -T <t> …` for a job not in the ledger): the same ssh that runs `scancel` first checks the job's
+name, user and WorkDir (exit 6 = mismatch, nothing cancelled; exit 3 = someone else's job: never). It acts on the user's
+words naming that job, or — for your own judgment that a run should stop — on a `cancel_own` grant (runs rsk launched
+only); else exit 4: ask.
 `cancel_own` covers only an attempt the ledger shows live: a job of a run the ledger shows ended needs the user's words.
 The words given to `--approve` must name what is cancelled, as a whole word: for `--job J` the job id J or the run's id
-or job name; for `rsk cancel <run>` the run id or name, or every job id it cancels (a chain: the run, or all its jobs).
+or job name; for `rsk cancel <run>` the run id or name, or every job id it cancels (a chain: the run, or all its jobs);
+a numeric range names every id in it (`cancel jobs 102-104`, `102 to 104`, `102…104`: 102, 103 and 104).
 A token inside a longer one does not count (`101` is not named by `1101` or `101_2`, `sw1` not by `sw10`, `exp--sw1` or
-`sw1-b`; trailing punctuation is fine: `cancel job 101.`), and "cancel it" names nothing: exit 4 `needs user: the words
-do not name <J|run> — "<words>" names none of: job J = run <run> (<name>) on <t>; nothing recorded or cancelled`, no
-approval and no ssh — ask the user which one they mean. This is a check against a slip ("cancel job 101" approving 102),
-not proof of consent. A `cancel_own` grant (no `--approve`) is unchanged.
+`sw1-b`; trailing punctuation is fine: `cancel job 101.`). When the words answer a question you asked ("sw1 (job 101)
+diverged — cancel it?" → "yes"), pass that question verbatim with `--asked "<your question>"`: it may name the job
+instead, and is recorded beside the words (the approval's `source`, `asked: "…"`, and the audit's cancel lines) —
+never ask the user a second time. "cancel it" with no question naming the job names nothing: exit 4 `needs user: the
+words do not name <J|run> — "<words>" names none of: job J = run <run> (<name>) on <t>; nothing recorded or cancelled`
+(with `--asked`: `"<words>" (answering "<question>") names none of: …`), no approval and no ssh — ask the user which one
+they mean ("the whole sweep" names no run: say which runs that is; the question you ask then is the `--asked`). This is a
+check against a slip ("cancel job 101" approving 102, a yes to "cancel sw1?" passed for sw2), not proof of consent: the
+asked text is your own bookkeeping, rsk does not read whether the answer was a yes — pass it only when the user agreed.
+A `cancel_own` grant (no `--approve`) is unchanged.
 A deny of the user's matches a cancel whatever it cannot rule out: a deny of plans (`rsk grant deny --run <hash>`, one
 that covers cancels) matches every cancel of a job the ledger has no plan for.
 An approval (`--approve`) is bound to the identity it was given for (target, job id, run name, WorkDir), expires after

@@ -484,6 +484,55 @@ class Slurm(Base):
         self.queue(f"105|own--a01|{ME}|{self.remote}|RUNNING|")
         self.assertEqual(self.cancel("own")[0], OK)              # no words: the cancel_own path as before
 
+    def test_nf8_a_yes_to_the_agents_question_names_what_the_question_names(self):
+        """NF8-cancel-words-yes: the agent asked "sw1 (job 101) diverged — cancel it?", the user said "yes": exit 4
+        `the words do not name sw1`, and SKILL §3 then had the agent ask again — a second confirmation §U rules out.
+        `--asked "<the question>"` lets the question name it (recorded with the approval and in the audit); a yes to a
+        question about sw1 still never approves sw2 (the slip R8-2 guards against)."""
+        self.launched("sw1--a01", "101")
+        self.launched("sw2--a01", "102", nonce="n2")
+        self.queue(f"101|sw1--a01|{ME}|{self.remote}|RUNNING|", f"102|sw2--a01|{ME}|{self.remote}|RUNNING|")
+        q = "sw1 (job 101) diverged — cancel it?"
+        rc, text = self.cancel("sw1", "--approve", "yes")                  # no question: the words name nothing
+        self.assertEqual(rc, NEEDS_USER, text)
+        self.assertIn("pass that question with --asked", text)
+        rc, text = self.cancel("sw2", "--asked", q, "--approve", "yes")   # the question is about sw1, not sw2
+        self.assertEqual(rc, NEEDS_USER, text)
+        self.assertIn(f'needs user: the words do not name sw2 — "yes" (answering "{q}") names none of: job 102', text)
+        self.assertIn("your question does not name it either", text)
+        self.assertEqual((self.approvals(), self.scancelled()), ([], ""))
+        rc, text = self.cancel("sw1", "--asked", q, "--approve", "yes")
+        self.assertEqual(rc, OK, text)
+        self.assertIn(f'(answering "{q}")', text)
+        self.assertEqual(self.scancelled(), "101\n")
+        ap = self.approvals()[0]
+        self.assertEqual((ap["quote"], ap["source"], ap["scope"]["jobs"]), ("yes", f'asked: "{q}"', ["101"]))
+        audit = self.led.read_audit()[0]
+        self.assertTrue(any(a.get("event") == "grant_approval" and a.get("quote") == "yes"
+                            and a.get("source") == f'asked: "{q}"' for a in audit))
+        self.assertTrue(any(a.get("event") == "cancel" and a.get("outcome") == "cancelled" and a.get("asked") == q
+                            for a in audit))
+        rc, text = self.cancel("--job", "102", "-T", "fx", "--asked", "stop job 102 too?", "--approve", "ok")
+        self.assertEqual(rc, OK, text)                                     # --job J: the question names J
+        for argv in (("sw2", "--asked", q), ("sw2", "--asked", " ", "--approve", "yes")):
+            rc, text = self.cancel(*argv)
+            self.assertEqual(rc, USAGE, (argv, text))
+
+    def test_nf8_a_numeric_range_names_every_job_id_in_it(self):
+        """NF8-cancel-words-yes (2): "cancel jobs 102-104" refused 102 and 104 too ('-' then a digit continued the
+        token). A range — 102-104, 102 to 104, 102…104 — names every id in it, and nothing outside it."""
+        for j in ("102", "103", "104", "105"):
+            self.launched(f"sw{j[-1]}--a01", j, nonce=f"n{j}")
+        self.queue(*(f"{j}|sw{j[-1]}--a01|{ME}|{self.remote}|RUNNING|" for j in ("102", "103", "104", "105")))
+        rc, text = self.cancel("sw5", "--approve", "cancel jobs 102-104")
+        self.assertEqual(rc, NEEDS_USER, text)
+        self.assertIn("needs user: the words do not name sw5", text)
+        for run, words in (("sw2", "cancel jobs 102-104"), ("sw3", "cancel jobs 102 to 104"),
+                           ("sw4", "cancel jobs 102…104")):
+            rc, text = self.cancel(run, "--approve", words)
+            self.assertEqual(rc, OK, (run, words, text))
+        self.assertEqual(self.scancelled(), "102\n103\n104\n")
+
     def test_usage(self):
         self.launched("exp--a01", "", submit="unknown")
         for argv, code in ((("--approve", "x"), USAGE), (("--job", "101"), USAGE), (("nope",), USAGE),
@@ -504,6 +553,24 @@ class Named(unittest.TestCase):
         for words, tok in (("cancel job 101.", "101"), ("please kill (sw1)", "sw1"), ("101", "101"),
                            ("stop sw1, it diverged", "sw1"), ("cancel job 101 and 102", "102"), ("sw1-", "sw1")):
             self.assertTrue(C.named(words, tok), (words, tok))
+
+    def test_nf8_ranges_the_docs_examples(self):
+        """A numeric range names every id in it (SKILL.md §3, procedure-slurm / -nohup, DESIGN): its ends are whole
+        tokens, low end first."""
+        for words in ("cancel jobs 102-104", "cancel 102 to 104", "cancel 102…104", "102..104", "102 – 104",
+                      "kill 102~104.", "取消102到104", "(102-104)"):
+            self.assertEqual(C.ranges(words), [(102, 104)], words)
+        for words in ("cancel 1102-104", "102-104_2", "x-102-104", "cancel 104-102", "102-4", "sw102-104b",
+                      "cancel 102 - - 104", "2026-11-05"):
+            self.assertEqual([r for r in C.ranges(words) if r[0] <= 103 <= r[1]], [], words)
+        it = C.Item("103", "sw3", "a01", name="sw3--a01")
+        self.assertTrue(C.names("cancel jobs 102-104", it))
+        self.assertFalse(C.names("cancel jobs 104-106", it))
+        self.assertFalse(C.names("cancel job 1103", it))
+        self.assertTrue(C.names("cancel sw3", it))
+        self.assertEqual(C.unnamed([it], "yes", "sw3 (job 103) diverged — cancel it?"), [])
+        self.assertEqual(C.unnamed([it], "yes", "sw1 diverged — cancel it?"), [it])
+        self.assertEqual(C.unnamed([C.Item("101_2")], "cancel 100-102"), [C.Item("101_2")])   # an array id: by name
 
 
 def pstart(pid: int) -> str:

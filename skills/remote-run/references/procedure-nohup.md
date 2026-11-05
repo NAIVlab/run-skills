@@ -159,11 +159,15 @@ wherever RUN goes). Without `--config_file` (and `--gpu_ids`) the config acceler
 `ENV_HOOK` (env.sh sources it after setting `HF_HOME`, and it may set anything), when `ENV_KIND=conda` (env.sh runs
 `conda activate` after setting `HF_HOME`, and it applies the env's own variables — `conda env config vars`, its
 `activate.d` scripts —, which may set `HF_HOME` / `ACCELERATE_…`: `tests/61` 'R8-4'), when the conf names `HF_HOME` or
-`ACCELERATE_…` outside a comment line and not as an expansion (`$HF_HOME` is a read), when RUN names `ACCELERATE_…`, or
-when `.ws.conf` does not source or cannot be read here: `with no --config_file: the config accelerate reads is unknown
-(ENV_HOOK '<hook>' may move it | ENV_KIND=conda: conda activate '<env>' applies the env's own variables (HF_HOME /
-ACCELERATE_… among them), which may move it | .ws.conf names <NAME>, which may move it | RUN names <NAME>, which may
-move it | .ws.conf did not source here | .ws.conf could not be read here) — … : give it --config_file FILE (read here,
+`ACCELERATE_…` outside a comment line and not as an expansion (`$HF_HOME` is a read), when RUN names `ACCELERATE_…`,
+when `.ws.conf` does not source or cannot be read here, or when the project's `.wandb_env` (your wandb key file, which
+env.sh sources after setting `HF_HOME`) names `HF_HOME` or `ACCELERATE_…` the same way or cannot be read here — read-only
+and never printed: the reason names only `HF_HOME` or `an ACCELERATE_… variable` (`tests/61` 'NF7'): `with no
+--config_file: the config accelerate reads is unknown (ENV_HOOK '<hook>' may move it | ENV_KIND=conda: conda activate
+'<env>' applies the env's own variables (HF_HOME / ACCELERATE_… among them), which may move it | .ws.conf names <NAME>,
+which may move it | RUN names <NAME>, which may move it | .ws.conf did not source here | .ws.conf could not be read here
+| .wandb_env names HF_HOME, which may move it | .wandb_env names an ACCELERATE_… variable, which may move it |
+.wandb_env could not be read here) — … : give it --config_file FILE (read here,
 bound in the plan) and drop any GPU flags and settings, or name the GPUs it will use to the user` (the project's own
 default config is still read, and bound, beside it). `deepspeed` without `--hostfile`/`-H` warns when `/job/hostfile`
 exists (its runner's default hostfile: read without the flag, it ignores `CUDA_VISIBLE_DEVICES`). A hostfile named by
@@ -184,8 +188,11 @@ the user`; for a config, `with gpu_ids: … in <file>`, `with a config it cannot
 the GPUs it will use to the user`; for a container, `WARNING: RUN runs <rt> with … — a container started so does not get
 this launch's CUDA_VISIBLE_DEVICES and may see GPUs its runtime picks (any on the box, another user's too), not only this
 launch's GPU(s) [<ids>]: name the GPUs it will use to the user` (apptainer / singularity: `drop those flags (it then
-keeps these), or …`). Only the user's approval of that card, or a grant whose `--allow-warnings` is `any`, covers it —
-no other grant covers a GPU container run (`docker run --gpus …`). Let the launcher use the landing (no GPU flags or
+keeps these), or …`). Only the user's approval of that card covers it — never a standing grant, whatever its
+`--allow-warnings` (`any` too: such a run may use more GPUs than its `--max-gpus`, another user's too): the plan block
+counts these WARNINGs apart as `warnings_gpu=N`, the card says `NO GRANT   N launcher / container / env-dropping
+warning(s)`, and a block without `warnings_gpu` (an older `launch.sh`: `rsk sync`) counts as unknown — so no grant
+covers a GPU container run (`docker run --gpus …`) either. Let the launcher use the landing (no GPU flags or
 settings: it then uses the ids launch.sh picked), or name the GPUs it will use to the user. The spellings rest on
 argparse (`tests/61` 'R5-2': unique prefixes and attached short values for deepspeed's runner, no abbreviations for
 accelerate's); what the launchers do with the variable and where accelerate finds its config is their source, read back
@@ -208,10 +215,10 @@ the harness's ids are `PCI_BUS_ID`-ordered, so both; `-i` / `--login` always war
 `--preserve-e` is not read); `doas`, `systemd-run`, `ssh` and `srun` / `salloc` / `sbatch` always. A tmux or screen
 session also runs outside this run, which ends at once (`rsk cancel` cannot stop the session). Each is a counted
 `WARNING: RUN starts its command through <tool …> — <reason> — so it may use GPUs other than this launch's GPU(s)
-[<ids>] (any on the box, another user's too): run the command directly (launch.sh detaches it), or name the GPUs it
-will use to the user`, covered, like the ones above, only by the user's approval of the card or an `any` grant. It reads
-RUN's text, so it can fire on a word that is only an argument (`rsync -e ssh`, an `exec` inside `docker run … sh -c`):
-fail closed, the card shows why. The spellings are `tests/61` 'R7-3'; the facts are read on a box by
+[<ids>] (any on the box, another user's too): run the command directly (launch.sh detaches it), or name the GPUs it will
+use to the user`, counted in `warnings_gpu` like the ones above: only the user's approval of the card covers it. It
+reads RUN's text, so it can fire on a word that is only an argument (`rsync -e ssh`, an `exec` inside `docker run … sh
+-c`): fail closed, the card shows why. The spellings are `tests/61` 'R7-3'; the facts are read on a box by
 `tests/vgate/envdrop.sh` (`ssh <alias> 'bash -s' < tests/vgate/envdrop.sh`, with `systemd-run` only when named: `'bash
 -s tmux screen setpriv systemd-run'` starts one transient `--user` unit; it prints `tmux_server_env=`,
 `tmux_first_env=`, `tmux_session=`, a second tmux line `tmux_split_prefix_env=` `tmux_prefix=` `tmux_alias=` (each word
@@ -225,7 +232,7 @@ flag at all: `containers.sh` prints `docker_default_runtime=`); tools that repla
 (`su -`, `runuser -l`, `pkexec`, at / cron, a script that itself calls tmux) and a sudoers `env_delete` (not read);
 tools not on the list at all (`byobu`, `lxc` / `incus exec`, `ray job submit`, `mpirun` / `mpiexec` `--host`, `su -l`,
 `pixi run --clean-env`, `run0`); tmux commands it runs from a user `command-alias`, a `-f` config, `source-file` or
-`set-hook`; and a `.wandb_env` that sets `HF_HOME` (env.sh sources it after `HF_HOME`; launch.sh does not read it).
+`set-hook`.
 rsk's protocol (api=3: the line `# rs-api=3` inside the deployed `.ws/launch.sh`; with any `--rs-` word, run-launch's one
 ssh checks that line first and, on an older `launch.sh`, exits 2 `does not speak rs-api=3`, nothing run — rsk: `needs:
 sync`): every call, in every mode, reads the conf as env.sh resolves it (`profile.sh`, then `.ws.conf`, in a child
@@ -248,7 +255,9 @@ the box's journal: receipts named the run id — the name minus `--aNN` — or `
 read; envelope, not bound: rsk reads n > 0, or no number, as a relaunch) `info_launchers=checked` (above: this launch.sh
 warns on launcher configs and container runtimes and refuses `env -i` / `exec -c` / `APPTAINERENV_` — a block without
 it is exit 6 `needs: sync … lacks info_launchers`, a plan stored without it is refused at `--plan`: plan again); `warnings=N` (the distinct `WARNING:` lines) `warnings_avail=0` (a box has no
-availability `-y` gate: too few free GPUs is exit 1) `warnings_id=` (their sha256, digit runs masked) `bound_hash=`;
+availability `-y` gate: too few free GPUs is exit 1) `warnings_gpu=N` (how many of them are the launcher / container /
+env-dropping WARNINGs above: no standing grant covers a plan with one — only the user's approval of the card; rsk reads
+a block without it as unknown, never grant-covered) `warnings_id=` (their sha256, digit runs masked) `bound_hash=`;
 result `verdict=planned`). `--rs-expect <bound_hash> [--rs-warnings <warnings_id>]` launches only while the request
 still hashes the same and the call's `WARNING:` lines give the same `warnings_id` (none given = no warning at all) —
 else the current block, `changed: <keys>` (from the approved plan's own journal entry, when it is there) and `ERROR: the
@@ -298,7 +307,8 @@ AND the log not advancing across two checks — never one sample. A nohup'd run 
 relaunch with the next `a<attempt>` (`rsk launch --relaunch <run>`, conventions §3) and confirm it resumed. `rsk status`
 shows that end as `REBOOT` (pid gone, no `.rc`, the box's boot id is not the run's) — the one end a `relaunch` grant
 resumes after.
-**Stop a run only through `rsk cancel <run> [--job <pid>] [--approve "<the user's words>"]`**: the same ssh first checks
+**Stop a run only through `rsk cancel <run> [--job <pid>] [--approve "<the user's words>" [--asked "<your question>"]]`**:
+the same ssh first checks
 the pid against the run's receipt (pid, process start time, boot id, your user, the group leader); someone else's
 process: never (exit 3). A ledgered run whose pid is gone, reused by another process (its start time differs) or whose
 box rebooted (boot id differs) has ended: exit 0 `nothing to cancel … ended`, nothing signalled, its end recorded in the
@@ -310,11 +320,15 @@ checked against the one receipt whose start and boot id match that process now (
 `--grace` (30 s) and KILLs what is left; `<log>.rc` is read back. It acts on the user's words naming that run — an
 approval bound to its identity (target, pid, start, boot id), for 1 h, used up by its first cancel whatever came of it
 — or, for your own judgment that it should stop, on a `cancel_own` grant (runs rsk launched only); else exit 4: ask.
-The `--approve` words must name what is stopped, as a whole word: the pid (`--job <pid>`) or the run's id or name
-(`rsk cancel <run>`: the run, or its pid); a token inside a longer one does not count (`sw1` is not named by `sw10`),
-and "stop it" names nothing: exit 4 `needs user: the words do not name <pid|run> — "<words>" names none of: pid P = run
-<run> (<name>) on <t>; nothing recorded or cancelled`, no approval, no ssh — ask which run they mean (a check against a
-slip, not proof of consent; a `cancel_own` grant is unchanged).
+The `--approve` words must name what is stopped, as a whole word: the pid (`--job <pid>`; a numeric range holding it
+counts: `4101-4103`) or the run's id or name (`rsk cancel <run>`: the run, or its pid); a token inside a longer one does
+not count (`sw1` is not named by `sw10`). When the words answer a question you asked ("sw1 has diverged — stop it?" →
+"yes"), pass that question verbatim with `--asked`: it may name the run instead, and is recorded beside the words (the
+approval's `source`, the audit) — never ask the user again. "stop it" with no question naming the run names nothing:
+exit 4 `needs user: the words do not name <pid|run> — "<words>" names none of: pid P = run <run> (<name>) on <t>;
+nothing recorded or cancelled`, no approval, no ssh — ask which run they mean. A check against a slip (a yes to "stop
+sw1?" passed for sw2 is exit 4 too), not proof of consent: the question is your own text and rsk does not read whether
+the answer was a yes — pass it only for the user's agreement; a `cancel_own` grant is unchanged.
 A `cancel_own` grant's cancels count against its `max_launches`; a deny of plans (`rsk grant deny --run <hash>`, one that
 covers cancels) matches every cancel of a run the ledger has no plan for. An answer cut off after the cancel started, or none at all (a timeout,
 ssh's own 255, a signal), says `the cancel may have been sent: rsk status` (exit 5; a use is kept) — and so does ssh's

@@ -474,7 +474,8 @@ for r in 'p $CUDA_VISIBLE_DEVICES' 'printenv CUDA_VISIBLE_DEVICES' 'x | env $PRE
 # R5-2: launchers that pick GPUs from their own flags: a counted WARNING, never a refusal
 has "$PNOT" '\*\*Launchers that pick GPUs from their own flags\*\* MAY ignore `CUDA_VISIBLE_DEVICES`' "procedure-nohup: the launcher paragraph"
 has "$PNOT" 'such a launcher may ignore CUDA_VISIBLE_DEVICES and pick GPUs itself' "procedure-nohup: the WARNING's words"; has "$LSH" 'such a launcher may ignore CUDA_VISIBLE_DEVICES and pick GPUs itself' "...launch.sh's"
-has "$PNOT" 'Only the user.s approval of that card, or a grant whose `--allow-warnings` is `any`, covers it' "procedure-nohup: only the card or an any grant"
+has "$PNOT" 'Only the user.s approval of that card covers it — never a standing grant, whatever its `--allow-warnings` (`any` too' "procedure-nohup: only the card covers a launcher WARNING (NF8: not an any grant)"
+hasnt "$PNOT$DT$AT" 'or a grant whose `--allow-warnings` is `any`, covers it\|or a grant of kind `any`\|or an `any` grant\|grant kind `any` only' "NF8: no doc says an any grant covers a launcher / container WARNING"
 has "$PNOT" "\`tests/61\` 'R5-2'" "procedure-nohup cites tests/61 R5-2"; has "$(cat "$RS_HOME/tests/61-launch-remote.sh")" 'fact: argparse takes --num_g for --num_gpus' "...which reproduces the argparse facts"
 for f in "$PNOT" "$AT" "$DT"; do has "$f" 'tests/vgate/launchers.sh' "a doc cites tests/vgate/launchers.sh"; done
 [ -f "$RS_HOME/tests/vgate/launchers.sh" ] && ok "tests/vgate/launchers.sh exists" || bad "tests/vgate/launchers.sh exists"
@@ -552,7 +553,7 @@ for w in "a container started so does not get this launch's CUDA_VISIBLE_DEVICES
   has "$PNOT" "$w" "procedure-nohup: the WARNING's words: $w"; has "$LSH" "$w" "...launch.sh's: $w"; done
 has "$PNOT" '`with a config it cannot read here (…)`' "procedure-nohup: the unreadable-config form"; has "$LSH" 'a config it cannot read here (' "...launch.sh's"
 has "$PNOT" '`--config_file FILE` (relative to the project dir), else `$PROJ/.cache/huggingface/accelerate/default_config.yaml`' "procedure-nohup: which config is read"
-has "$PNOT" 'no other grant covers a GPU container run' "procedure-nohup: only the card or an any grant covers a container run"
+has "$PNOT" 'so no grant covers a GPU container run (`docker run --gpus …`) either' "procedure-nohup: no grant covers a container run (NF8)"
 has "$ST" 'a container runtime picking GPUs (`docker run --gpus`…, `apptainer --cleanenv`…)' "$F rail: containers"; has "$ST" '(accelerate.s `gpu_ids`, `/job/hostfile`; no `--config_file` while `ENV_HOOK`, `ENV_KIND=conda`, `HF_HOME` or `ACCELERATE_…` may move it)' "$F rail: launcher settings (R7-4: a config it cannot locate too; R8-4: conda)"
 has "$RT" 'a container started with GPUs of its own (`docker run --gpus`, `apptainer --cleanenv`)' "README: containers"
 has "$CKT" 'a container runtime that picks GPUs' "conf-keys RUN row: containers"; has "$PST" '`docker run --gpus` / `apptainer --cleanenv`' "project-setup: containers"
@@ -728,7 +729,7 @@ has "$(la6 'nerdctl run --gpus all img')" "^WARNING: RUN runs nerdctl with --gpu
 has "$(la6 'python -m accelerate.commands.accelerate_cli launch --gpu_ids 0 t.py')" '^WARNING: RUN runs .* with --gpu_ids — such a launcher' "rs_launchers: python -m accelerate.commands.accelerate_cli launch is accelerate"
 has "$PNOT" '`docker` / `podman` / `nerdctl` /' "procedure-nohup: nerdctl"; has "$PNOT" '`python -m accelerate.commands.accelerate_cli launch`' "procedure-nohup: accelerate_cli"
 # R7-4: accelerate launch with no --config_file when the config it reads is unknown (an ENV_HOOK, a conf or RUN naming HF_HOME / ACCELERATE_…)
-w='with no --config_file: the config accelerate reads is unknown (ENV_HOOK .<hook>. may move it | ENV_KIND=conda: conda activate .<env>. applies the env.s own variables (HF_HOME / ACCELERATE_… among them), which may move it | .ws.conf names <NAME>, which may move it | RUN names <NAME>, which may move it | .ws.conf did not source here | .ws.conf could not be read here)'
+w='with no --config_file: the config accelerate reads is unknown (ENV_HOOK .<hook>. may move it | ENV_KIND=conda: conda activate .<env>. applies the env.s own variables (HF_HOME / ACCELERATE_… among them), which may move it | .ws.conf names <NAME>, which may move it | RUN names <NAME>, which may move it | .ws.conf did not source here | .ws.conf could not be read here | .wandb_env names HF_HOME, which may move it | .wandb_env names an ACCELERATE_… variable, which may move it | .wandb_env could not be read here)'
 has "$PNOT" "$w" "procedure-nohup: the R7-4 WARNING"
 has "$PNOT" 'give it --config_file FILE (read here, bound in the plan) and drop any GPU flags and settings, or name the GPUs it will use to the user' "...its advice"
 has "$LSH" 'give it --config_file FILE (read here, bound in the plan) and drop any GPU flags and settings, or name the GPUs it will use to the user' "...launch.sh's"
@@ -736,7 +737,7 @@ for k in "ENV_HOOK '\${EH//" '.ws.conf names ${BASH_REMATCH\[2\]}, which may mov
   has "$LSH" "$k" "...launch.sh's reason: $k"; done
 has "$PNOT" 'when the conf sets `ENV_HOOK` (env.sh sources it after setting `HF_HOME`, and it may set anything)' "procedure-nohup: why a hook makes it unknown"
 has "$PNOT" 'the project.s own default config is still read, and bound, beside it' "procedure-nohup: the default config is still read"
-has "$DT" "\`tests/61\` 'R7-4'" "DESIGN cites tests/61 R7-4"; has "$T61" 'R7-4: ' "...tests/61 R7-4"; has "$CKT" 'this conf sets `ENV_HOOK` or `ENV_KIND=conda`, or it or RUN names `HF_HOME` / `ACCELERATE_…` other than as an expansion' "conf-keys RUN row: R7-4 (+ R8-4: conda)"
+has "$DT" "\`tests/61\` 'R7-4'" "DESIGN cites tests/61 R7-4"; has "$T61" 'R7-4: ' "...tests/61 R7-4"; has "$CKT" 'this conf sets `ENV_HOOK` or `ENV_KIND=conda`, or it, RUN or the project.s `.wandb_env` names `HF_HOME` / `ACCELERATE_…` other than as an expansion' "conf-keys RUN row: R7-4 (+ R8-4: conda; NF7: .wandb_env)"
 la7() { ( DEV=0; PROJ=$T/la6; RS_CFGWHY=$2; eval "$LA"; rs_launchers "$1" 2>&1 ); }
 has "$(la7 'accelerate launch t.py' "ENV_HOOK 'h.sh' may move it")" "^WARNING: RUN runs accelerate launch with no --config_file: the config accelerate reads is unknown (ENV_HOOK 'h.sh' may move it) — " "rs_launchers: the doc's hook case"
 has "$(la7 'ACCELERATE_USE_CPU=0 accelerate launch t.py' '')" "unknown (RUN names ACCELERATE_USE_CPU, which may move it)" "rs_launchers: the doc's RUN-names-ACCELERATE_ case"
@@ -806,17 +807,29 @@ for t in test_r8_1_split_strips_comma_items_and_refuses_empty_or_spaced_ones tes
          test_r8_1_rsk_grant_lists_split_on_commas_stripped_whitespace_inside_is_exit_2; do has "$TG" "def $t" "...test_grants.py: $t"; done
 has "$T62" 'round 8 R8-1' "...tests/62 end to end"
 # R8-2: rsk cancel --approve: the user's words must name what is cancelled, as a whole token, else exit 4 and nothing is recorded
-has "$ST" 'Their words must name what is cancelled, as a whole word — the job id / pid or the run.s id or name (`rsk cancel <run>`: the run, or every job id) — else exit 4 `needs user: the words do not name …`, nothing recorded: ask which one they mean ("cancel it" names nothing)' "$F §3: R8-2"
+has "$ST" 'Their words must name what is cancelled, as a whole word — the job id / pid (or a range holding it: `102-104`) or the run.s id or name (`rsk cancel <run>`: the run, or every job id) — or, when they answer your question ("sw1 diverged — cancel it?" → "yes"), `--asked "<that question>"` may name it (recorded with their words; never ask again) — else exit 4 `needs user: the words do not name …`, nothing recorded: ask which one they mean ("cancel it" names nothing)' "$F §3: R8-2 + NF8 (--asked, ranges)"
+has "$ST" 'rsk cancel <run> \[--job <id|pid>\] \[--approve "<their words>" \[--asked "<your question>"\]\]' "$F: the cancel line names --asked"
 has "$PSLT" 'The words given to `--approve` must name what is cancelled, as a whole word: for `--job J` the job id J or the run.s id or job name; for `rsk cancel <run>` the run id or name, or every job id it cancels (a chain: the run, or all its jobs)' "procedure-slurm: R8-2"
-has "$PSLT" '`needs user: the words do not name <J|run> — "<words>" names none of: job J = run <run> (<name>) on <t>; nothing recorded or cancelled`, no approval and no ssh' "procedure-slurm: R8-2, its words"
+has "$PSLT" '`needs user: the words do not name <J|run> — "<words>" names none of: job J = run <run> (<name>) on <t>; nothing recorded or cancelled` (with `--asked`: `"<words>" (answering "<question>") names none of: …`), no approval and no ssh' "procedure-slurm: R8-2, its words"
+has "$PSLT" 'a numeric range names every id in it (`cancel jobs 102-104`, `102 to 104`, `102…104`: 102, 103 and 104)' "procedure-slurm: NF8 ranges"
+has "$PSLT" 'pass that question verbatim with `--asked "<your question>"`: it may name the job instead, and is recorded beside the words (the approval.s `source`, `asked: "…"`, and the audit.s cancel lines) — never ask the user a second time' "procedure-slurm: NF8 --asked"
+has "$PSLT" 'the asked text is your own bookkeeping, rsk does not read whether the answer was a yes — pass it only when the user agreed' "procedure-slurm: NF8's honest limit"
 has "$PSLT" '(`101` is not named by `1101` or `101_2`, `sw1` not by `sw10`, `exp--sw1` or `sw1-b`; trailing punctuation is fine: `cancel job 101.`)' "procedure-slurm: whole tokens (test_cancel.Named pins these examples)"
-has "$PNOT" 'The `--approve` words must name what is stopped, as a whole word: the pid (`--job <pid>`) or the run.s id or name' "procedure-nohup: R8-2"
+has "$PNOT" 'The `--approve` words must name what is stopped, as a whole word: the pid (`--job <pid>`; a numeric range holding it counts: `4101-4103`) or the run.s id or name' "procedure-nohup: R8-2 (+ NF8 ranges)"
+has "$PNOT" 'pass that question verbatim with `--asked`: it may name the run instead, and is recorded beside the words (the approval.s `source`, the audit) — never ask the user again' "procedure-nohup: NF8 --asked"
+has "$PNOT" 'the question is your own text and rsk does not read whether the answer was a yes' "procedure-nohup: NF8's honest limit"
 has "$PNOT" '`needs user: the words do not name <pid|run> — "<words>" names none of: pid P = run <run> (<name>) on <t>; nothing recorded or cancelled`' "procedure-nohup: R8-2, its words"
-has "$CP" 'out(f"needs user: the words do not name {asked or ' "...cancel.authorize prints them"; has "$CP" 'f"none of: {what} on {target}; nothing recorded or cancelled")' "...the rest of them"
-has "$CP" 'what = "; ".join(f"{unit} {i.job}" + (f" = run {i.run} ({i.name})"' "...job J = run <run> (<name>)"; has "$CP" 'unit = "job" if kind == "slurm" else "pid"' "...job / pid"
-has "$CP" 'def named(' "...cancel.named"; has "$CP" 'def unnamed(' "...cancel.unnamed"; has "$CP" 'miss = unnamed(items, words) if words is not None else \[\]' "...checked before the approval is recorded"
+has "$CP" 'out(f"needs user: the words do not name {what or ' "...cancel.authorize prints them"; has "$CP" '+ f" names none of: {them} on {target}; nothing recorded or cancelled")' "...the rest of them"
+has "$CP" '+ (f" (answering \\"{asked}\\")" if asked else "")' "...with the question they answer (NF8)"
+has "$CP" 'them = "; ".join(f"{unit} {i.job}" + (f" = run {i.run} ({i.name})"' "...job J = run <run> (<name>)"; has "$CP" 'unit = "job" if kind == "slurm" else "pid"' "...job / pid"
+has "$CP" 'def named(' "...cancel.named"; has "$CP" 'def unnamed(' "...cancel.unnamed"; has "$CP" 'miss = unnamed(items, words, asked) if words is not None else \[\]' "...checked before the approval is recorded (the words or the asked question)"
+has "$CP" 'def ranges(' "...cancel.ranges (NF8)"; has "$CP" 'p.add_argument("--asked"' "...rsk cancel --asked (NF8)"; has "$GP" "return f'asked: \"{asked}\"'" "...grants.asked_source: the approval's source"
+has "$DT" 'Words that answer the agent.s own question name what the question names: `--asked "<the question, verbatim>"`' "DESIGN: NF8 --asked"
+has "$DT" 'the asked text is its own (it can write any question; rsk does not read whether the answer was a yes)' "DESIGN: NF8's honest limit"
+for t in test_nf8_a_yes_to_the_agents_question_names_what_the_question_names test_nf8_a_numeric_range_names_every_job_id_in_it test_nf8_ranges_the_docs_examples; do
+  has "$TC" "def $t" "...test_cancel.py: $t"; done; has "$T62" "NF8: a yes to the agent's own question (--asked)" "...tests/62 end to end"
 has "$DT" 'This is a token check against good-faith slips, not proof of consent' "DESIGN: R8-2's honest limit"; has "$DT" '(R8-2, `cancel.named` / `cancel.unnamed`)' "DESIGN: R8-2"
-has "$AT" '`cancel.named` / `cancel.unnamed`, R8-2' "AGENTS: R8-2"; has "$RT" '"cancel job 123" must name the job (its id, or the run.s name)' "README: R8-2"
+has "$AT" '`cancel.named` / `cancel.unnamed`, R8-2' "AGENTS: R8-2"; has "$RT" '"cancel job 123" must name the job (its id, or the run.s name; or answer the agent.s question naming it)' "README: R8-2 + NF8"
 for t in test_r8_2_the_users_words_must_name_what_is_cancelled test_r8_2_a_chain_needs_its_run_or_every_job_and_cancel_own_is_unchanged \
          test_r8_2_nohup_words_name_the_pid_or_the_run test_r8_2_named_takes_whole_tokens_only_the_docs_examples; do has "$TC" "def $t" "...test_cancel.py: $t"; done
 has "$T62" 'round 8 R8-2' "...tests/62 end to end"
@@ -873,13 +886,17 @@ has "$PSLT" 'in the `--json` of both `rsk grant list` and `rsk status`, as `{rec
 has "$STP" '{"record": g, "invalid": grants.valid(g), "fail_closed": grants.fail_closed(g)}' "...status.py's --json"; has "$GP" '{"record": r, "invalid": valid(r), "fail_closed": fail_closed(r)}' "...grant list --json"
 has "$DT" 'the `--json` of both as `{record, invalid, fail_closed}` (R8-7' "DESIGN: R8-7"; has "$AT" '`--json` `{record, invalid, fail_closed}`, never described (R8-7)' "AGENTS: R8-7"
 has "$TST" 'def test_r8_7_status_never_crashes_on_a_damaged_grants_record' "...test_status.py pins it"
-# round 8's honest limits (R7-8's list): tools left unwarned, tmux's own config, a .wandb_env setting HF_HOME
+# round 8's honest limits (R7-8's list): tools left unwarned, tmux's own config (a .wandb_env setting HF_HOME left the list: NF7 checks it)
 for w in '`byobu`, `lxc` / `incus exec`, `ray job submit`, `mpirun` / `mpiexec` `--host` / `--hostfile`, `su -l`, `pixi run --clean-env`, `run0`' \
-         'tmux commands run from a user `command-alias`, a `-f` config, `source-file` or `set-hook`' 'a `.wandb_env` that sets `HF_HOME` (env.sh sources it after exporting `HF_HOME`'; do
+         'tmux commands run from a user `command-alias`, a `-f` config, `source-file` or `set-hook`'; do
   has "$DT" "$w" "DESIGN honest limit: $w"; done
-has "$PNOT" 'tools not on the list at all (`byobu`, `lxc` / `incus exec`, `ray job submit`, `mpirun` / `mpiexec` `--host`, `su -l`, `pixi run --clean-env`, `run0`); tmux commands it runs from a user `command-alias`, a `-f` config, `source-file` or `set-hook`; and a `.wandb_env` that sets `HF_HOME`' "procedure-nohup: the same honest limits"
+has "$PNOT" 'tools not on the list at all (`byobu`, `lxc` / `incus exec`, `ray job submit`, `mpirun` / `mpiexec` `--host`, `su -l`, `pixi run --clean-env`, `run0`); tmux commands it runs from a user `command-alias`, a `-f` config, `source-file` or `set-hook`.' "procedure-nohup: the same honest limits"
+hasnt "$PNOT$DT" 'a `.wandb_env` that sets `HF_HOME` (env.sh sources it after\|launch.sh does not read it)' "NF7: a .wandb_env setting HF_HOME is no longer an honest limit (launch.sh reads it)"
 a=$(grep -n '\. "$PROJ/.wandb_env"' "$RS_HOME/remote/env.sh" | head -1 | cut -d: -f1); b=$(grep -n 'export HF_HOME=' "$RS_HOME/remote/env.sh" | head -1 | cut -d: -f1)
-[ -n "$a" ] && [ -n "$b" ] && [ "$b" -lt "$a" ] && ok "env.sh fact the .wandb_env limit rests on: it is sourced (line $a) after HF_HOME is exported (line $b)" || bad "env.sh: .wandb_env after HF_HOME ($a, $b)"
+[ -n "$a" ] && [ -n "$b" ] && [ "$b" -lt "$a" ] && ok "env.sh fact NF7's .wandb_env check rests on: it is sourced (line $a) after HF_HOME is exported (line $b)" || bad "env.sh: .wandb_env after HF_HOME ($a, $b)"
+for k in '.wandb_env names $l, which may move it' '.wandb_env could not be read here' 'l="an ACCELERATE_… variable"'; do has "$LSH" "$k" "...launch.sh's NF7 reason: $k"; done
+has "$PNOT" '.wandb_env names HF_HOME, which may move it' "procedure-nohup: NF7's reason"; has "$PNOT" "\`tests/61\` 'NF7'" "procedure-nohup cites tests/61 NF7"
+has "$DT" "\`tests/61\` 'NF7'" "DESIGN cites tests/61 NF7"; has "$T61" 'NF7: a .wandb_env assigning HF_HOME' "...tests/61 NF7"; has "$AT" '`.wandb_env` (NF7; read-only, never printed)' "AGENTS: NF7"
 CK=$(cat "$RS_HOME/$CKF" 2>/dev/null)
 has "$CK" 'T_XFER_HOST.*profile' "conf-keys: the transfer host is a profile fact"
 hasnt "$CK" '^| `XFER_HOST`' "conf-keys: no XFER_HOST conf key (one per conf would misroute other targets)"
@@ -958,7 +975,7 @@ budget lib/common.sh 141; budget remote/env.sh 170; budget remote/bootstrap.sh 1
 # counts journal receipts named the run id or <run id>--aNN plus this WorkDir's squeue rows no receipt names, says unknown when squeue failed or a
 # receipt is unreadable, and undoes a policy's set -f / failglob (+15); the block line (+1)
 budget remote/status.sh 175   # generous on purpose: every lookup has an explicit failure branch; compressing them hides bugs
-budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 263; budget AGENTS.md 348; budget INSTALL.md 238 # AGENTS +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
+budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 263; budget AGENTS.md 351; budget INSTALL.md 238 # AGENTS +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
 # P3-P7 docs: AGENTS +25 (the rsk modules, tests/62, the authorisation model, the P7 nudge, the new rails); README +10 (what is asked and
 # what is not, the honest limit, the rsk launch step, src/); INSTALL +5 (doctor --legacy-refs, earlier permissions, standing words)
 # P3 review: AGENTS +8 (--rs-warnings, the plan skips launch.sh's env gate, the new bound fields, plan-scoped approvals, the review's never-covered list)
@@ -986,7 +1003,9 @@ budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget RE
 # round 8: AGENTS +10 (rs_launchers: ENV_KIND=conda, tmux by any prefix with its tests/88 check, the -H / --hostfile file bound (+3);
 # grants: --unlisted-partition with unlisted_partitions / check_scope(unlisted_ok), list arguments split and checked (_split,
 # _spaced), status --json's INVALID records (+5); cancel words naming the job, cancel.named / unnamed (+2)); README +0
-budget skills/remote-run/SKILL.md 153; budget bin/run-watch 1102   # round 3: SKILL +11 (the -y rule with grant kinds, --allow-warnings availability|any,
+# NF8: AGENTS +3 (warnings_gpu in the block and never grant-covered, grants.gpu_warn_miss (+1); a .wandb_env naming HF_HOME /
+# ACCELERATE_ (NF7, +1); --asked and ranges in the cancel approval (+1)); README +0
+budget skills/remote-run/SKILL.md 156; budget bin/run-watch 1102   # round 3: SKILL +11 (the -y rule with grant kinds, --allow-warnings availability|any,
 # derived actions and the sticky class, relaunch only after an infrastructure end, cancel approvals bound / 1 h / used up, rsk watch --act vs
 # denies (also in §3), `plan <id> is free again`); run-watch +116 lines (881 → 997), D11 — target column and same-target inheritance, sticky unknowns from any state file
 # (foreign/settled/R_FU, the journal hands back the row's own status), fail-stop inherited with rows plus --release of a non-row trigger, pending
@@ -1004,6 +1023,8 @@ budget skills/remote-run/SKILL.md 153; budget bin/run-watch 1102   # round 3: SK
 # that starts the command elsewhere in the GPU rail (+2)).
 # round 8: SKILL +5 (a --partition the display list lacks is exit 2 unless --unlisted-partition, list flags split on commas
 # (+2); the cancel words must name what is cancelled (+2); ENV_KIND=conda in the GPU rail (+1)).
+# NF8: SKILL +3 (the cancel words: a range, or --asked with the question they answer — never ask again (+2); a box's launcher /
+# container WARNING is NO GRANT whatever the kind (+1); --asked on the cancel line and in the GPU rail (+0)).
 # round 4: run-watch +60 (997 → 1057) — R4-7 the rsk steer for --act/--approve and RS_WATCH_PARENT (exit 7 once rsk watch is gone, checked
 # before every ssh that acts) with its header lines +38, R4-13 fail-stop looked up every round in every state file + #failstop-released +12,
 # R4-14 a pre-target state line's target inferred or unknown, the settle-path WorkDir and the submit ssh's identity re-check +10.
