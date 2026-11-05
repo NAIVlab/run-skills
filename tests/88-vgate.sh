@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # tests/88-vgate.sh — phase A: tests/vgate/slurm-remote.sh (the V-gate reproductions, never run against a target here)
 # under stub sbatch/scontrol/squeue/sacct/scancel and an instant sleep: a scratch dir given relative to the remote home
-# reaches sbatch as an absolute --chdir and job.sh writes absolute paths; a failed sbatch stops the gate (exit 1).
+# reaches sbatch as an absolute --chdir and job.sh writes absolute paths; a failed sbatch stops the gate (exit 1). And
+# tests/vgate/launchers.sh on fake deepspeed / accelerate modules (its plumbing; the facts come from installed copies).
 set -u
 . "$RS_HOME/tests/lib.sh"
 G=$RS_HOME/tests/vgate/slurm-remote.sh; V=$T/vg; mkdir -p "$V/bin" "$V/home"
@@ -41,7 +42,16 @@ S=$(cat "$V/sbatch.log" 2>/dev/null)   # --rs-chain's singleton: two held jobs o
 has "$C" '^scontrol release 10[0-9]$' "...the second is released (the first stays held)"
 has "$C" '^squeue -h -j 10[0-9] -O State:0|,Reason:0|$' "...its State|Reason read (PENDING|Dependency| wanted)"
 has "$O" '^singleton_second=.*(want PENDING|Dependency| while 10[0-9] is held)$' "...printed as singleton_second="
-[ "$(printf '%s\n' "$C" | grep -c '^scancel 10[0-9]$')" -ge 2 ] && ok "...both cancelled" || bad "singleton repro: both cancelled"
+SI=$(grep -n -- ' -J rs-vgate-single ' "$V/sbatch.log" 2>/dev/null | cut -d: -f1 | while read -r n; do echo $((100 + n)); done)   # the stub's ids: 100 + line
+[ "$(printf '%s\n' $SI | wc -l)" = 2 ] && for s in $SI; do has "$C" "^scancel $s\$" "...singleton job $s cancelled"; done || bad "singleton repro: both cancelled ($SI)"
+DU=$((100 + $(grep -n -- ' -J rs-vgate-dup ' "$V/sbatch.log" 2>/dev/null | head -n 1 | cut -d: -f1)))   # R5-5: scancel's words (rsk cancel)
+L0=$(printf '%s\n' "$C" | grep -n "^scancel $DU\$" | head -n 1 | cut -d: -f1)   # (not the EXIT trap's: before the unknown-id probe)
+L1=$(printf '%s\n' "$C" | grep -n '^squeue -h -j 4000000000 -O JobID:0$' | head -n 1 | cut -d: -f1); L2=$(printf '%s\n' "$C" | grep -n '^scancel 4000000000$' | head -n 1 | cut -d: -f1)
+[ -n "$L0" ] && [ -n "$L1" ] && [ "$L0" -lt "$L1" ] && printf '%s\n' "$C" | head -n "$L0" | grep -q "^scancel $DU 1" \
+  && ok "scancel repro: the script's own dup job ($DU) cancelled again once ended" || bad "scancel repro: a second scancel of the ended dup job $DU ($L0, $L1)"
+has "$O" "^scancel_ended=rc=[0-9]* err=.*(want rc!=0 and 'job id $DU: … already completing or completed', or '… Invalid job id' once purged)\$" "...printed as scancel_ended= (its exit and words)"
+[ -n "$L1" ] && [ -n "$L2" ] && [ "$L1" -lt "$L2" ] && ok "scancel repro: an id no local job can have, scancel'd only after squeue -j lists none" || bad "scancel repro: squeue -j 4000000000 ($L1) before scancel 4000000000 ($L2)"
+has "$O" "^scancel_invalid=rc=[0-9]* err=.*(want rc!=0 and 'job id 4000000000: Invalid job id specified')\$" "...printed as scancel_invalid="
 
 echo "-- slurm-remote.sh: sbatch fails --"
 touch "$V/sbatch-fails"; : > "$V/calls.log"
@@ -49,3 +59,35 @@ O=$(vg scratch/vg2 gpu); RC=$?
 [ "$RC" = 1 ] && has "$O" '^vgate=fail sbatch (dup)' "a failed sbatch stops the gate (exit 1)" || bad "a failed sbatch stops the gate (rc=$RC)"
 hasnt "$O" 'dup_time=\|requeue=' "nothing measured on an empty job id"
 hasnt "$(cat "$V/calls.log")" 'scancel *$' "no scancel of an empty job id"
+
+echo "-- slurm-remote.sh: squeue lists the unknown id --"
+rm -f "$V/sbatch-fails"; : > "$V/calls.log"; cp "$V/bin/squeue" "$V/squeue.plain"
+printf '#!/bin/sh\necho "squeue $*" >> "%s/calls.log"\n[ "$*" != "-h -j 4000000000 -O JobID:0" ] || echo 4000000000\n' "$V" > "$V/bin/squeue"
+O=$(vg scratch/vg3 gpu); RC=$?; cp "$V/squeue.plain" "$V/bin/squeue"
+[ "$RC" = 0 ] && has "$O" '^scancel_invalid=skipped (squeue -j lists 4000000000 here)$' "an id squeue lists is never scancel'd: skipped" || bad "squeue lists the id: skipped (rc=$RC)"
+hasnt "$(cat "$V/calls.log")" '^scancel 4000000000' "...no scancel of it"
+
+echo "-- launchers.sh (R5-2's launcher facts, read from installed copies): its plumbing, on fake deepspeed / accelerate modules --"
+LG=$RS_HOME/tests/vgate/launchers.sh
+if command -v python3 >/dev/null 2>&1; then
+  FP=$T/fakepy; mkdir -p "$FP/deepspeed/launcher" "$FP/accelerate/commands" "$FP/accelerate/utils"
+  printf '__version__ = "0.0-fake"\n' > "$FP/deepspeed/__init__.py"; : > "$FP/deepspeed/launcher/__init__.py"
+  printf '%s\n' 'import argparse, os' 'def parse_args(args=None):' '    p = argparse.ArgumentParser()' \
+    '    p.add_argument("-i", "--include", default=""); p.add_argument("--num_gpus", "--num_accelerators", type=int, default=-1)' \
+    '    p.add_argument("--num_nodes", type=int, default=-1); p.add_argument("user_script"); return p.parse_args(args)' \
+    'def main(args=None):' '    visible_devices_env = "CUDA_VISIBLE_DEVICES"' '    print("but ignoring it")' '    del os.environ[visible_devices_env]' \
+    "DLTS_HOSTFILE = \"$T/no-hostfile\"" > "$FP/deepspeed/launcher/runner.py"
+  printf '__version__ = "0.0-fake"\n' > "$FP/accelerate/__init__.py"; : > "$FP/accelerate/commands/__init__.py"; : > "$FP/accelerate/utils/__init__.py"
+  printf '%s\n' 'import argparse' 'def launch_command_parser():' '    p = argparse.ArgumentParser(allow_abbrev=False)' \
+    '    p.add_argument("--gpu_ids", "--gpu-ids"); p.add_argument("training_script"); return p' > "$FP/accelerate/commands/launch.py"
+  printf '%s\n' 'def prepare_simple_launcher_cmd_env(args, current_env):' '    current_env["CUDA_VISIBLE_DEVICES"] = args.gpu_ids' > "$FP/accelerate/utils/launch.py"
+  O=$(PYTHONPATH=$FP bash "$LG" python3 2>&1); RC=$?
+  [ "$RC" = 0 ] && has "$O" "^ds_version=0.0-fake ds_abbrev=2 ds_short=localhost:1 ds_alias=2 ds_ignores_cvd=yes ds_hostfile=$T/no-hostfile:absent\$" "launchers.sh: the deepspeed line (parse_args and runner.main's source)" \
+    || { bad "launchers.sh on fakes (rc=$RC)"; printf '%s\n' "$O" | head -5 | sed 's/^/    | /'; }
+  has "$O" '^acc_version=0.0-fake acc_hyphen=0,1 acc_abbrev=refused acc_sets_cvd=yes$' "launchers.sh: the accelerate line (launch_command_parser and utils/launch.py's source)"
+  printf 'def main(args=None):\n    pass\n' >> "$FP/deepspeed/launcher/runner.py"; printf 'def f(args, current_env):\n    pass\n' > "$FP/accelerate/utils/launch.py"
+  O=$(PYTHONPATH=$FP bash "$LG" python3 2>&1); has "$O" 'ds_ignores_cvd=no ds_hostfile=' "...a runner that keeps the variable reads no"; has "$O" 'acc_sets_cvd=no$' "...and an accelerate that never sets it"
+  O=$(PYTHONPATH=$T/nowhere bash "$LG" python3 2>&1); RC=$?
+  [ "$RC" = 0 ] && has "$O" '^deepspeed=absent (' "launchers.sh without the packages: absent, never a guess" || bad "launchers.sh without packages (rc=$RC)"
+  O=$(bash "$LG" "$T/no-python" 2>&1); RC=$?; [ "$RC" = 1 ] && has "$O" '^vgate=fail ' "...an interpreter that does not run: vgate=fail, exit 1" || bad "launchers.sh, no interpreter (rc=$RC)"
+else echo "  SKIP: no python3 here: launchers.sh's plumbing not exercised"; fi

@@ -8,7 +8,8 @@
 # --comment merge, policy code (its own EXIT trap, fd 3) kept in the submit's subshell, and api=3: the --rs-mode plan block
 # (keys, bound fields — flags= the policy flags too — bound_hash, -y gates acknowledged), --rs-expect, --rs-chain, old parsers
 # given them; the FORCE=0 probes of t_policy and t_partition, a silent gate's output in warnings_id, a lint that reads
-# SBATCH_EXTRA as the scan does (an option's value is never an option).  bash tests/52-attempt.sh
+# SBATCH_EXTRA as the scan does (an option's value is never an option), info_prior (R5-4: receipts + squeue rows of the run),
+# the policy template's gate idiom (R5-10).  bash tests/52-attempt.sh
 set -u
 . "$RS_HOME/tests/lib.sh"
 subo() { local p=$1; shift; : > "$T/sbatch.log"; PATH="$T/bin:$PATH" bash "$p/.fx-slurm/submit.sh" "$@" 2>&1; }
@@ -311,7 +312,7 @@ PP=$(mk_proj fx-slurm "$PC"); printf 'path=/l\ncommit=0123abc\ndirty=2\n' > "$PP
 PA=(-g 2 -t 2:00:00 -m 64G -c 4 -n pj -- python t.py --msg "a b")
 O=$(subo "$PP" --rs-attempt pl1 --rs-mode plan "${PA[@]}"); RC=$?; A=$PP/.rs/attempts/pl1; B=$(blk "$O")
 rc_is 0 "$RC" "plan mode" "$O"; nosub "...sbatch never runs"
-[ "$(printf '%s\n' "$B" | sed 's/=.*//' | tr '\n' ' ')" = "@@plan v1 api kind target partition gres cpus mem time account name extra payload env_kind env_name wandb_mode env_hook venv_dir uv_sync_args conf_extra flags chain info_avail info_conf_sha256 info_profile_sha256 info_policy_sha256 info_policy_local_sha256 info_source_commit info_source_dirty warnings warnings_avail warnings_id bound_hash @@end " ] \
+[ "$(printf '%s\n' "$B" | sed 's/=.*//' | tr '\n' ' ')" = "@@plan v1 api kind target partition gres cpus mem time account name extra payload env_kind env_name wandb_mode env_hook venv_dir uv_sync_args conf_extra flags chain info_avail info_conf_sha256 info_profile_sha256 info_policy_sha256 info_policy_local_sha256 info_source_commit info_source_dirty info_prior warnings warnings_avail warnings_id bound_hash @@end " ] \
   && ok "ONE block, exactly these keys in this order" || { bad "plan block keys"; printf '%s\n' "$B" | sed 's/^/    | /'; }
 [ "$(printf '%s\n' "$O" | grep -c '^@@plan v1$')" = 1 ] && ok "...printed once, on stdout" || bad "...printed once"
 has "$(PATH="$T/bin:$PATH" bash "$PP/.fx-slurm/submit.sh" --rs-mode plan "${PA[@]}" 2>/dev/null)" '^@@end$' "...(stdout alone carries it)"
@@ -324,6 +325,7 @@ has "$B" '^info_avail=free:4/max_node:4/gpu_type:any$' "info_avail (envelope)"
 has "$B" "^info_conf_sha256=$(sha < "$PP/.hpc.conf")\$" "info_conf_sha256 = the conf's"; has "$B" "^info_profile_sha256=$(sha < "$PP/.fx-slurm/profile.sh")\$" "info_profile_sha256"
 has "$B" "^info_policy_sha256=$(sha < "$PP/.fx-slurm/policy.sh")\$" "info_policy_sha256"; has "$B" '^info_policy_local_sha256=none$' "info_policy_local_sha256=none (no overlay)"
 has "$B" '^info_source_commit=0123abc$' "info_source_commit (.run-source)"; has "$B" '^info_source_dirty=2$' "info_source_dirty"; has "$B" '^warnings=0$' "warnings=0"
+has "$B" '^info_prior=0$' "info_prior=0 (no earlier attempt of the run here: R5-4)"
 has "$B" '^conf_extra=--mail-type=END[\\]*,FAIL --exclude=n1$' "bound: conf_extra = the conf's SBATCH_EXTRA words alone, %q each (just before flags=)"
 has "$B" '^flags=$' "bound: flags= (no policy flag given: empty, just before chain=)"
 has "$B" '^warnings_avail=0$' "warnings_avail=0"; has "$B" "^warnings_id=$(printf '' | sha)\$" "warnings_id = the digest of no warning at all (sha256 of nothing)"
@@ -647,6 +649,60 @@ nosub "...nothing submitted"
 printf 'REMOTE_DIR=/x\nSBATCH_EXTRA="--dependency=singleton"\n' > "$D/.hpc.conf"; O=$(sq "$D" --rs-chain -n c3 -- echo hi)
 [ "$(printf '%s\n' "$O" | grep -c '^ARG:--dependency=singleton$')" = 1 ] && ok "--rs-chain + SBATCH_EXTRA's own singleton: one --dependency=singleton" || bad "--rs-chain + SBATCH_EXTRA singleton"
 printf 'REMOTE_DIR=/x\n' > "$D/.hpc.conf"; O=$(subo "$P" -n x -- echo --rs-chain); has "$O" '^ARG:--rs-chain$' "after --, --rs-chain is the payload's"; hasnt "$O" 'ARG:--dependency' "...and adds nothing"
+
+echo "-- R5-4: info_prior = the run's earlier attempts here (receipts of <run id> / <run id>--aNN, + squeue rows of this WorkDir) --"
+pri() { printf '%s\n' "$1" | sed -n 's/^info_prior=//p'; }
+rcp() { mkdir -p "$1/.rs/attempts/$2"; printf 'job=%s\nname=%s\npartition=gpu\nproj=%s\nnonce=%s\nat=1\n' "$4" "$3" "$1" "$2" > "$1/.rs/attempts/$2/receipt"; }
+IP=$(mk_proj fx-slurm 'REMOTE_DIR=/x'); ln -s "$IP" "$T/iplink"
+O=$(sq "$IP" --rs-mode plan -n r5 -- echo hi); RC=$?; HI=$(bh "$O")
+rc_is 0 "$RC" "a plan of a run with no history here" "$O"; [ "$(pri "$O")" = 0 ] && ok "...info_prior=0" || bad "...info_prior=0 (got '$(pri "$O")')"
+rcp "$IP" x1 r5 101; rcp "$IP" x2 r5--a02 102; rcp "$IP" x3 r5--a1 103; rcp "$IP" x4 r5x 104; rcp "$IP" x5 r5--a02x 105; rcp "$IP" x6 other 106
+rcp "$IP" x7 'r5--a003' 107; mkdir -p "$IP/.rs/attempts/x8"   # (no receipt: a plan, or never submitted)
+O=$(sq "$IP" --rs-mode plan -n r5 -- echo hi); [ "$(pri "$O")" = 3 ] && ok "receipts named r5, r5--a02, r5--a003 count; r5--a1, r5x, r5--a02x, other and a dir without one do not: info_prior=3" || bad "receipts counted (got '$(pri "$O")')"
+[ "$(bh "$O")" = "$HI" ] && ok "...envelope only: the bound_hash is the same as with no history" || bad "...info_prior changed the bound_hash"
+O=$(sq "$IP" --rs-mode plan -n r5--a04 -- echo hi); [ "$(pri "$O")" = 3 ] && ok "a plan named r5--a04: the run id r5 (minus --aNN, as rsk's ledger reads it) -> 3" || bad "r5--a04 (got '$(pri "$O")')"
+O=$(sq "$IP" --rs-mode plan -n r5x -- echo hi); [ "$(pri "$O")" = 1 ] && ok "another run (r5x): only its own receipt" || bad "r5x (got '$(pri "$O")')"
+rows "101|r5|RUNNING|None|0|N/A|$IP|" "201|r5--a07|COMPLETED|None|0|N/A|$IP|" "202|r5|PENDING|Priority|0|N/A|/elsewhere|" "203|r5--a08|FAILED|None|0|N/A|$T/iplink|" \
+  "204|r5x|RUNNING|None|0|N/A|$IP|" "205|r5|RUNNING|None|0|N/A||"
+O=$(sq "$IP" --rs-mode plan -n r5--a09 -- echo hi); RC=$?
+rc_is 0 "$RC" "squeue rows of the run (not the plan's own name: no duplicate)" "$O"
+[ "$(pri "$O")" = 5 ] && ok "+ squeue rows of this WorkDir (also via a symlink, also ended but still listed), none twice: job 101 has a receipt -> 3 + 201 + 203 = 5" || bad "squeue rows counted (got '$(pri "$O")')"
+O=$(sq "$IP" --rs-mode plan --same-name-ok -n r5 -- echo hi); [ "$(pri "$O")" = 5 ] && ok "...also when the duplicate guard is off (--same-name-ok): squeue is still asked" || bad "--same-name-ok plan (got '$(pri "$O")')"
+O=$(sq "$IP" --rs-mode plan --rs-chain -n r5 -- echo hi); [ "$(pri "$O")" = 5 ] && ok "...and for a chain segment (--rs-chain)" || bad "--rs-chain plan (got '$(pri "$O")')"
+touch "$T/squeue.fail"; O=$(sq "$IP" --rs-mode plan --same-name-ok -n r5 -- echo hi); RC=$?
+rc_is 0 "$RC" "squeue failing: the plan goes on" "$O"; [ "$(pri "$O")" = unknown ] && ok "...info_prior=unknown (rsk: a relaunch, fail closed)" || bad "squeue failing -> unknown (got '$(pri "$O")')"
+O=$(sq "$IP" --rs-mode plan -n r5 -- echo hi); [ "$(pri "$O")" = unknown ] && ok "...also with the duplicate guard on (its warning, then unknown)" || bad "guard on, squeue failing (got '$(pri "$O")')"
+rm -f "$T/squeue.fail" "$T/squeue.rows"
+if [ "$(id -u)" != 0 ]; then chmod 000 "$IP/.rs/attempts/x6/receipt"
+  O=$(sq "$IP" --rs-mode plan -n r5 -- echo hi); [ "$(pri "$O")" = unknown ] && ok "a receipt that cannot be read: info_prior=unknown" || bad "unreadable receipt (got '$(pri "$O")')"
+  chmod 644 "$IP/.rs/attempts/x6/receipt"; else echo "  SKIP: root reads any receipt: the unreadable-receipt case is not testable"; fi
+cp -R "$RS_USER_DIR" "$T/user-glob"; printf 'set -f; shopt -s failglob\n' > "$T/user-glob/targets/fx-slurm/policy.local.sh"
+IG=$(RS_USER_DIR=$T/user-glob mk_proj fx-slurm 'REMOTE_DIR=/x'); rcp "$IG" g1 r5 301
+O=$(sq "$IG" --rs-mode plan --same-name-ok -n r5 -- echo hi); RC=$?   # (no duplicate guard: nothing else turns globbing back on)
+rc_is 0 "$RC" "a policy that turns on set -f and failglob" "$O"; [ "$(pri "$O")" = 1 ] && ok "...cannot hide a receipt (info_prior=1, not 0)" || bad "set -f policy hides receipts (got '$(pri "$O")')"
+O=$(sq "$IP" --rs-mode plan -n r5 -- echo hi); W1=$(wid "$O"); HX=$(bh "$O")
+O=$(sq "$IP" --rs-expect "$HX" --rs-warnings "$W1" -n r5 -- echo hi); RC=$?
+rc_is 0 "$RC" "--rs-expect: info_prior is no part of the approval (submits)" "$O"; hasnt "$O" '^@@plan' "...and prints no block when it holds"
+rcp "$IP" x9 r5 108; O=$(sq "$IP" --rs-expect "$HX" --rs-warnings "$W1" -n r5 -- echo hi); RC=$?
+rc_is 0 "$RC" "...nor does a new attempt of the run since the plan" "$O"
+
+echo "-- R5-10: the policy template's gate idiom (WARNING, then test FORCE): printed under -y too, so a plan shows it from the real call --"
+TG=$(sed -n 's/^  # \(\[ "\$PART" != paid \] || .*\)$/\1/p' "$RS_HOME/targets/_template-slurm/policy.sh")
+has "$TG" "echo \"WARNING: .*\" >&2; \[ \"\$FORCE\" = 1 \] || exit 1; }\$" "the template's example gate is written in the idiom (the WARNING, then FORCE)"
+tgp() { cp -R "$RS_USER_DIR" "$T/$1"; { printf '%s\n' "eval \"\$(declare -f t_partition | sed '1s/^t_partition/t_partition_shipped/')\"" \
+  't_partition() { [ "$1" != paid ] || { P_GPUS=1-4; return 0; }; t_partition_shipped "$1"; }' "t_policy() {" "  $2" "  return 0" "}"; } > "$T/$1/targets/fx-slurm/policy.local.sh"; }
+tgp user-tg "$TG"; PT=$(RS_USER_DIR=$T/user-tg mk_proj fx-slurm 'REMOTE_DIR=/x')
+O=$(subo "$PT" --rs-mode plan -p paid -n tg -- echo hi); RC=$?; HT=$(bh "$O"); WT=$(wid "$O")
+rc_is 0 "$RC" "plan -p paid with the template's gate" "$O"; has "$(blk "$O")" '^warnings=1$' "...its WARNING counted once"
+[ "$(printf '%s\n' "$O" | grep -c "^WARNING: 'paid' is charged")" = 2 ] && ok "...printed by the probe AND by the real call (FORCE=1): the plan shows it without the probe" || bad "...printed twice (probe + real call)"
+O=$(subo "$PT" -p paid -n tg -- echo hi); RC=$?; rc_is 1 "$RC" "a submit without -y stops at it" "$O"; nosub "...nothing submitted"
+O=$(subo "$PT" -p paid -y -n tg -- echo hi); RC=$?; rc_is 0 "$RC" "-y submits past it" "$O"; has "$O" "^WARNING: 'paid' is charged" "...and the -y submit logs the WARNING (the idiom prints it before testing FORCE)"
+O=$(subo "$PT" --rs-expect "$HT" --rs-warnings "$WT" -y -p paid -n tg -- echo hi); RC=$?; rc_is 0 "$RC" "the approved submit (its card's warnings_id): submits" "$O"
+tgp user-tg2 '[ "$PART" != paid ] || [ "$FORCE" = 1 ] || { echo "WARNING: '"'"'$PART'"'"' is charged to the group'"'"'s account. Re-run -y to submit there." >&2; exit 1; }'
+PT2=$(RS_USER_DIR=$T/user-tg2 mk_proj fx-slurm 'REMOTE_DIR=/x'); O=$(subo "$PT2" -p paid -y -n tg -- echo hi); RC=$?
+rc_is 0 "$RC" "(the P2 form: FORCE tested first)" "$O"; hasnt "$O" '^WARNING:' "...silent under -y — why the template prints first"
+O=$(subo "$PT2" --rs-mode plan -p paid -n tg -- echo hi); [ "$(printf '%s\n' "$O" | grep -c "^WARNING: 'paid' is charged")" = 1 ] \
+  && ok "...a plan sees the P2 form only through the probe (once)" || bad "...P2 form: plan prints it once (probe only)"
 
 echo "-- the api=3 pre-scan: separate words, validated before the claim --"
 B0=$(natt "$P")

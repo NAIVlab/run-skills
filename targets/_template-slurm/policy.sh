@@ -17,9 +17,12 @@
 #     one, and probes t_partition the same way right before its real call, with the PART that is submitted (its `return 1`
 #     is an unknown partition, not a gate). So BOTH may run twice and must have no side effects (no files, nothing sent).
 #     Inside the probe every `exit 1` is a -y gate that is noted and passed — the function goes on, so a first gate hides none
-#     after it, and code after a gate must not assume the gate stopped the run; any other exit code is the verdict. Write a
-#     gate as one WARNING line, then exit 1 without -y: `echo "WARNING: … Re-run -y …" >&2; [ "$FORCE" = 1 ] || exit 1`. A
-#     gate that prints no WARNING: line gets a generic one, and all the probe printed (digit runs masked) joins the card's
+#     after it, and code after a gate must not assume the gate stopped the run; any other exit code is the verdict.
+#  The gate idiom (a rule, not a style): print the WARNING, THEN test FORCE —
+#       echo "WARNING: … Re-run -y …" >&2; [ "$FORCE" = 1 ] || exit 1
+#     — one WARNING: line, printed with -y too, so a plan (FORCE=1) shows every gate on the card and a -y submit logs it.
+#     Never the P2 form `[ "$FORCE" = 1 ] || { echo "WARNING: …" >&2; exit 1; }`: silent under -y, only the probe finds it.
+#     A gate that prints no WARNING: line gets a generic one, and all the probe printed (digit runs masked) joins the card's
 #     warnings_id. (The probe passes a gate by defining a function named exit; a policy that turns on `set -o posix`, where
 #     bash refuses such a function, makes every plan and approved submit fail closed with exit 2.)
 # submit.sh runs this code in a subshell after its journal claim: an EXIT trap or fds set here stay there (3/4 are closed).
@@ -33,4 +36,7 @@ t_partition() {
     *) return 1 ;;
   esac
 }
-t_policy() { :; }   # nothing gated by default; kept so an overlay can always wrap t_policy_shipped
+t_policy() {   # nothing gated by default; kept so an overlay can always wrap t_policy_shipped. A -y gate, in the idiom:
+  # [ "$PART" != paid ] || { echo "WARNING: '$PART' is charged to the group's account. Re-run -y to submit there." >&2; [ "$FORCE" = 1 ] || exit 1; }
+  return 0
+}

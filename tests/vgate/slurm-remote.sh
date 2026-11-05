@@ -8,8 +8,10 @@
 # it can run more than `true`); one --requeue job that this script requeues once (env and stored script after a
 # requeue; a login-node dir seen from the compute node; torch arch flags without a GPU when VENV= is given), then
 # cancelled. Also the identity reads rsk cancel and run-watch's fail-stop / --adopt rely on (squeue -O / sacct -o of
-# its own jobs). And one bash fact, no job: a function named exit outranks the builtin (submit.sh's policy probe).
-# Prints key=value lines. Writes only under <scratch-dir>; cancels only the jobs it submitted. NOT part of selftest.
+# its own jobs), and scancel's words for an ended job and an unknown id (rsk cancel). And one bash fact, no job: a
+# function named exit outranks the builtin (submit.sh's policy probe).
+# Prints key=value lines. Writes only under <scratch-dir>; cancels only the jobs it submitted (plus one scancel of an id
+# no job can have, after squeue -j shows none). NOT part of selftest.
 set -u
 D=$1; P=$2; shift 2; VENV=""
 case "${1:-}" in VENV=*) VENV=${1#VENV=}; shift ;; esac
@@ -48,6 +50,14 @@ scancel "$j" "$j2" "$j5" "$j6"; sleep 8
 echo "comment_sacct=$(sacct -X -n -P -j "$j" -o Comment 2>&1 | head -n 1)"
 # identity of an ended job (run-watch --adopt, rsk cancel's "gone"): JobID|JobName|User|WorkDir, -P (no trailing '|')
 echo "id_sacct=$(sacct -X -n -j "$j" -o JobID,JobName,User,WorkDir -P 2>&1 | head -n 1) (want $j|rs-vgate-dup|$U|$D)"
+# rsk cancel (R5-5): a non-zero scancel is "nothing to cancel" only when its own line names that job id and says it is
+# invalid or already completing / completed — scancel's words and exit for this script's own ended job ($j, cancelled
+# above), and for an id no local job can have (>= 2^26: slurm.conf(5) MaxJobId, local ids use 26 bits, the higher bits
+# are a federated job's cluster id), sent only after squeue -j does not list it
+e=$(scancel "$j" 2>&1); r=$?; echo "scancel_ended=rc=$r err=$(printf %s "$e" | head -c 200 | tr '\n' ' ') (want rc!=0 and 'job id $j: … already completing or completed', or '… Invalid job id' once purged)"
+if [ -z "$(squeue -h -j 4000000000 -O JobID:0 2>/dev/null)" ]; then e=$(scancel 4000000000 2>&1); r=$?
+  echo "scancel_invalid=rc=$r err=$(printf %s "$e" | head -c 200 | tr '\n' ' ') (want rc!=0 and 'job id 4000000000: Invalid job id specified')"
+else echo "scancel_invalid=skipped (squeue -j lists 4000000000 here)"; fi
 
 # 1b. --rs-chain = --dependency=singleton: a second job of the same name and user waits while the first has not ended
 s1=$(sb --hold -t 00:01:00 -J rs-vgate-single --dependency=singleton --wrap true); got "$s1" single1

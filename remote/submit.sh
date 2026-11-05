@@ -17,7 +17,8 @@
 # and sbatch; --rs-expect HASH submits only if rs_bound still gives that hash AND this call's warnings_id is the approved
 # card's (--rs-warnings ID; default: no warning at all, so -y never passes another one) — else the block, `changed: <keys>`
 # (from the approved plan's own journal, when it is here), ERROR, exit 6; under --rs-expect a failed squeue is exit 1.
-# --rs-chain = a singleton segment.
+# Envelope info_prior=<n|unknown> (not bound): the run's earlier attempts here (rs_prior) — rsk reads n > 0, or no number, as a
+# relaunch. --rs-chain = a singleton segment.
 # Every time limit sbatch could read (-t, the conf, the policy's or SBATCH_EXTRA's --time / -t in any value form; sbatch
 # keeps the last) must be explicit — never 0, UNLIMITED or INFINITE — and within MaxTime. Parsing uses no here-string or
 # heredoc (bash <= 5.0 writes them to $TMPDIR: a full one would fail a parse silently).
@@ -285,16 +286,19 @@ fi
 # caller says so or SBATCH_EXTRA/policy chains it (--dependency=singleton waits for the first). Same squeue view as run-watch.
 _chain=0; _prev=""; for _w in "${SB_ARGS[@]}"; do
   case "$_prev:$_w" in -d:*singleton*|--dependency:*singleton*|*:--dependency=*singleton*|*:-d*singleton*) _chain=1 ;; esac; _prev=$_w; done
+_p2=$(cd "$PROJ" && pwd -P); _q=""; _sq=""   # ONE squeue: the guard's rows and a plan's info_prior (rs_prior); _sq ok|failed|skip
+rs_wd() { [ "$1" = "$PROJ" ] || [ "$1" = "$_p2" ] || [ "$(CDPATH='' cd -- "$1" 2>/dev/null && pwd -P)" = "$_p2" ]; }   # WorkDir = this project
+{ [ "$SAME_OK" = 0 ] && [ "$_chain" = 0 ]; } || [ "$PLAN" = 1 ] || [ -n "$EXPECT" ] || _sq=skip
+[ -n "$_sq" ] || { _q=$(squeue -h -u "${USER:-$(id -un)}" --states=all -O "JobID:0|,Name:0|,State:0|,Reason:0|,RestartCnt:0|,StartTime:0|,WorkDir:0|" 2>"$A/squeue.err") && _sq=ok || { _sq=failed; _q=""; }; }
 if [ "$SAME_OK" = 0 ] && [ "$_chain" = 0 ]; then
-  _p2=$(cd "$PROJ" && pwd -P)
-  if _q=$(squeue -h -u "${USER:-$(id -un)}" --states=all -O "JobID:0|,Name:0|,State:0|,Reason:0|,RestartCnt:0|,StartTime:0|,WorkDir:0|" 2>"$A/squeue.err"); then
+  if [ "$_sq" = ok ]; then
     _live=""   # same name, not finished, WorkDir = this project: either of our paths, or one that resolves to it (a symlink)
     set -f; _ifs=$IFS; IFS=$'\n'   # one row per line, split by expansion (no here-string); the Name may hold '|': fields from the right
     for _l in $_q; do
       _j=${_l%%|*}; _r=${_l#*|}; _r=${_r%|}; _w=${_r##*|}; _r=${_r%|*}; _r=${_r%|*}; _r=${_r%|*}; _r=${_r%|*}; _s=${_r##*|}; _n=${_r%|*}
       [ "$_n" = "$NAME" ] && [ -n "$_w" ] || continue
       case "$_s" in COMPLETED|CANCELLED|FAILED|TIMEOUT|PREEMPTED|NODE_FAIL|BOOT_FAIL|DEADLINE|OUT_OF_MEMORY|REVOKED) continue ;; esac
-      [ "$_w" = "$PROJ" ] || [ "$_w" = "$_p2" ] || [ "$(CDPATH='' cd -- "$_w" 2>/dev/null && pwd -P)" = "$_p2" ] || continue
+      rs_wd "$_w" || continue
       _live="$_live$_j $_s"$'\n'
     done; IFS=$_ifs; set +f
     if [ -n "$_live" ]; then _j=$(printf %s "$_live" | head -n 1)
@@ -362,6 +366,20 @@ rs_changed() {   # rs_changed BOUND HASH: `changed: <keys>` against the approved
   fi
   [ "$W_ID" = "$RS_WARN" ] || k="${k:+$k }warnings"; [ -z "$k" ] || echo "changed: $k"
 }
+rs_prior() {   # PRIOR (R5-4): the run's earlier attempts here, whoever submitted them — this project's journal receipts named the run id
+  # (NAME minus a trailing --aNN, as rsk's ledger reads it) or <run id>--aNN, + squeue's rows of such a name with this WorkDir (live,
+  # or ended and still listed) that no receipt names; unknown (rsk: a relaunch, fail closed) if squeue failed or a receipt is unreadable
+  local rid=$NAME r l n j w c=0 js=" " _ifs=$IFS; PRIOR=unknown; set +f; shopt -u failglob 2>/dev/null || :   # (a policy's options hide nothing)
+  [[ $NAME =~ ^(.+)--a[0123456789][0123456789]+$ ]] && rid=${BASH_REMATCH[1]}
+  rs_runof() { case "$1" in "$rid") ;; "$rid--a"[0123456789][0123456789]*) case "${1#"$rid--a"}" in *[!0123456789]*) return 1 ;; esac ;; *) return 1 ;; esac; }
+  [ "$_sq" = ok ] || return 0
+  for r in "$PROJ"/.rs/attempts/*/receipt; do [ -e "$r" ] || [ -L "$r" ] || continue; n=""; j=""   # plain bash reads, no fork per receipt
+    { while IFS= read -r l || [ -n "$l" ]; do case "$l" in name=*) [ -n "$n" ] || n=${l#name=} ;; job=*) [ -n "$j" ] || j=${l#job=} ;; esac; done < "$r"; } 2>/dev/null || return 0
+    ! rs_runof "$n" || { c=$((c + 1)); js="$js$j "; }; done
+  set -f; IFS=$'\n'   # squeue's rows split as the duplicate guard does (fields from the right: the Name may hold '|')
+  for l in $_q; do j=${l%%|*}; r=${l#*|}; r=${r%|}; w=${r##*|}; r=${r%|*}; r=${r%|*}; r=${r%|*}; r=${r%|*}; n=${r%|*}
+    rs_runof "$n" && [ -n "$w" ] && rs_wd "$w" && case "$js" in *" $j "*) false ;; esac || continue; c=$((c + 1)); js="$js$j "; done
+  IFS=$_ifs; set +f; PRIOR=$c; }
 rs_plan() {   # plan mode: the block, exit 0. --rs-expect: the SAME rs_bound hash and the approved card's warnings_id (--rs-warnings
   local b h f k v ch="" ok=0  # ID; none given: no warning at all); else the block, `changed:` and ERROR, exit 6
   b=$(rs_bound "$@") && h=$(printf '%s\n' "$b" | rs_sha) && [ "${#h}" = 64 ] \
@@ -374,6 +392,7 @@ rs_plan() {   # plan mode: the block, exit 0. --rs-expect: the SAME rs_bound has
   for f in conf:"$A/conf" profile:"$SELF/profile.sh" policy:"$SELF/policy.sh" policy_local:"$SELF/policy.local.sh"; do
     v=none; [ ! -f "${f#*:}" ] || v=$(rs_sha < "${f#*:}"); printf 'info_%s_sha256=%s\n' "${f%%:*}" "$v"; done
   for k in commit dirty; do v=$(sed -n "s/^$k=//p" "$PROJ/.run-source" 2>/dev/null | head -n 1) || v=""; printf 'info_source_%s=%q\n' "$k" "${v:-none}"; done
+  rs_prior; printf 'info_prior=%s\n' "$PRIOR"   # the run's earlier attempts here (an older submit.sh lacks the line)
   printf 'warnings=%s\nwarnings_avail=%s\nwarnings_id=%s\nbound_hash=%s\n@@end\n' "$W_N" "$W_AV" "$W_ID" "$h"
   [ "$ok" = 1 ] || { [ -z "$ch" ] || echo "$ch" >&2; }
   [ "$ok" = 1 ] || [ "$h" = "$EXPECT" ] || { echo "ERROR: the resolved submission differs from the approved plan (bound_hash $h, --rs-expect $EXPECT) — nothing submitted; plan it again" >&2; exit 6; }

@@ -54,7 +54,8 @@ checks the user's recorded authorisations (§3). Exit 0 `covered by <id> (…, "
 words: say so in your report, with the record and its words. Exit 4 `needs user: approval — plan <id>` = **show the card
 verbatim, wait for the user's words**, then `--plan <id> --approve "<their words>"`. A sweep: plan each member, show
 every card, one `--approve` with several `--plan`. Exit 6 = the card went stale (used, superseded, expired, drifted:
-it says what changed; `needs: sync`) or that run is live: sync or plan again, show the new card. Exit 5 after a submit = SUBMIT_UNKNOWN, never resubmitted (it blocks that run until `rsk status` settles it);
+it says what changed; `needs: sync`) or that run is live: sync or plan again, show the new card. Exit 5 after a submit = SUBMIT_UNKNOWN, never resubmitted (it blocks that run until `rsk status` settles it),
+unless it says `<t> not reached — nothing sent` (Slurm: ssh never opened the session) = NOT_SUBMITTED, which frees the plan too;
 `plan <id> is free again` = the target proved nothing went out: fix the cause, `rsk launch --plan <id>` retries it under the same record.
 Slurm: `references/procedure-slurm.md` (sync → bootstrap → plan → submit → monitor, the storage model, what `submit.sh`
 checks). Workstation: `references/procedure-nohup.md` (sync → bootstrap → GPUs → plan → launch → monitor). Conf keys:
@@ -73,9 +74,12 @@ approvals, grants, denies); act when it covers the action, ask only when it does
   [--max-time T] [--allow-warnings availability|any] --max-live N|none --max-launches N|none --expires <date>|none` —
   exactly the scope and limits they stated (`none` where they set none; unclear → ask). Never invent a grant, never widen
   one. "Never X" → `rsk grant deny --quote "<their words>" …`: a deny always wins (`rsk watch --act` too) and matches
-  what it cannot rule out (a job without a plan, a watch row, a run of unknown class). A sweep they approved shares one
-  approval, never one question each. The action is the plan's, never a flag's: a run that ran before = `relaunch`, a
-  singleton chain = `chain` (each one that applies is checked); a run's class is set only at its first attempt.
+  what it cannot rule out (a job without a plan, a watch row, a run of unknown class). `--job` is for cancels only: a
+  run's launches are denied with `--name '<run>'` (exit 2 otherwise); `-T` must name a target the harness knows (exit 2
+  `unknown target`). A sweep they approved shares one approval, never one question each. The action is the plan's,
+  never a flag's: a run that ran before = `relaunch`, a singleton chain = `chain` (each one that applies is checked; a
+  run ran before also when only the target's journal shows it — run-watch's runs never enter the ledger: the plan's
+  `info_prior` —, and a deploy that cannot say counts as one: fail closed); a run's class is set only at its first attempt.
 - Preemption recovery they authorised runs within its budget: a requeueing partition restarts the job itself; else
   `rsk watch <table> --act` resubmits approved rows within `#@ allow preempt=N`, or `rsk launch --relaunch <run>` under a
   `relaunch` grant (the configuration of the run's latest attempt that ran, and only after an infrastructure end — Slurm
@@ -102,7 +106,9 @@ restore `grants.json`, or move it and its `.prev` aside and `rsk grant recount`:
 - **Check the existing authorisation before every submit, launch or cancel; ask only outside it** (§3). Workstations are
   often shared: never launch onto a GPU another job is using without the user's words naming it — auto-pick takes the
   idlest GPUs with no compute process; read the card's busy line. On a box the run command never picks GPUs (`-d`/`-g`
-  do: a `CUDA_VISIBLE_DEVICES=…` in front of it is refused). Cancel only after the identity check (`rsk cancel`).
+  do): RUN's text that sets or clears `CUDA_VISIBLE_DEVICES` or a sibling, anywhere, is refused (exit 2); a launcher
+  given its own GPU flags (deepspeed `--num_gpus`…, `accelerate launch --gpu_ids`…) is a card WARNING — let it use the
+  landing, or name its GPUs to the user. Cancel only after the identity check (`rsk cancel`).
 - Slurm: partition and QOS are `submit.sh`'s decision — no raw `sbatch`/`srun`/`salloc`, no `scontrol update`, no
   `--partition` inside `SBATCH_EXTRA`. A policy refusal (exit 3) is final; `-y` also confirms policy warnings
   (availability, occupancy, SU cost): rsk sends it only when the approved card showed warnings or the covering grant's

@@ -20,7 +20,9 @@ SBATCH_EXTRA singleton makes a launch a chain): a match → exit 3 with the deny
 `#@ ok` written); and again on every lease refresh — a new matching deny → run-watch gets TERM, exit 3. What a row
 cannot show counts as matching (fail closed): its GPU type (the partition's policy may force one: a GPU-type deny
 matches every row of its target), its partition (the target's t_policy may rewrite -p: a partition deny matches every
-Slurm row of its target), its plan (no bound hash: a deny of plans matches every row in its scope). A damaged record that may be a deny matches every row; an unreadable grants.json → exit 6
+Slurm row of its target), its plan (no bound hash: a deny of plans matches every row in its scope). A row's target is
+compared as a normalised name (`fx/`, `fx/.`, `FX` are fx; a spelling that is not one plain name matches every target
+deny — run-watch itself refuses such a row). A damaged record that may be a deny matches every row; an unreadable grants.json → exit 6
 ("grants unreadable"), before anything starts and on a refresh (run-watch gets TERM).
 run-watch runs with RS_VIA_RSK=1 and RS_WATCH_PARENT=<this rsk's pid>, as its direct child: in every mode it stops
 (exit 7, LEASE_ENDED: nothing more submitted or cancelled, its lock released) once that pid is gone or is no longer its
@@ -94,6 +96,16 @@ def tables(argv: list[str]) -> list[str]:
     return out
 
 
+def kind_of(kinds: dict[str, str], tgt: str) -> str:
+    """The kind of a row's target: its own name's, else the one target its normalised spelling names (grants.target_key:
+    `fx/`, `FX` …); '' when unknown or ambiguous (every action then counts: fail closed)."""
+    if tgt in kinds:
+        return kinds[tgt]
+    key = grants.target_key(tgt)
+    hits = {v for n, v in kinds.items() if key is not None and grants.target_key(n) == key}
+    return hits.pop() if len(hits) == 1 else ""
+
+
 def table_rows(path: Path, kinds: dict[str, str]) -> tuple[set[str], list[dict]]:
     """(the actions the table's `#@ allow` line lets run-watch take, one plan-like dict per row) — read only to check
     denies (run-watch parses and validates the table itself). Row: `name target done submit-words` (-p -g -G -t …
@@ -132,7 +144,7 @@ def table_rows(path: Path, kinds: dict[str, str]) -> tuple[set[str], list[dict]]
                 i += 2
                 continue
             i += 1
-        plan = {"target": tgt, "kind": kinds.get(tgt, ""), "name": name, "warnings": "0"}
+        plan = {"target": tgt, "kind": kind_of(kinds, tgt), "name": name, "warnings": "0"}
         if "-p" in opt:                  # asked, never certain: t_policy may rewrite PART (policy.sh API) — any
             plan["asked_partition"] = opt["-p"]   # partition, so a partition deny matches it (fail closed)
         if "-G" in opt or "-g" in opt:   # the count only: the GPU type is never certain here (the partition's policy may
@@ -183,6 +195,11 @@ def deny_hit(led: L.Ledger, proj: Path, argv: list[str], kinds: dict[str, str]) 
                     if sc.get("runs") or sc.get("plans"):
                         notes.append("a row has no plan (bound hash) to compare: a deny of plans matches every row in "
                                      "its scope")
+                    if sc.get("targets") and row["target"] not in kinds:
+                        k = grants.target_key(row["target"])
+                        notes.append(f"the row's target {row['target']!r} is not a target name as spelled "
+                                     + (f"(it names {k}: compared as that)" if k else
+                                        "(not one plain name: it may be any target)"))
                     return (f"{t}: row {row['name']} on {row['target']} ({a}): {why}"
                             + (" — " + "; ".join(notes) if notes else ""))
     return ""

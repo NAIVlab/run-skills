@@ -10,7 +10,9 @@
 # --act under an approved fail-stop, fail-stop and unknown submits across tables, a target column in state lines, the
 # settle path's job name, base-10 numbers, lock exit 6, '#@ ok' lines / headers this copy cannot read; round 4: another
 # table's fail-stop taken every round also by rows with their own state (R4-13), the settle path's and the submit ssh's
-# WorkDir, older state lines' targets (R4-14), the rsk watch steer and RS_WATCH_PARENT (exit 7 once it is gone: R4-7).
+# WorkDir, older state lines' targets (R4-14), the rsk watch steer and RS_WATCH_PARENT (exit 7 once it is gone: R4-7);
+# round 5: a table keeps every fail-stop that holds it, --release clears only its own (R5-7); a row's target is a plain
+# target name rs_targets lists (R5-8).
 set -u
 . "$RS_HOME/tests/lib.sh"
 export WORLD=$T/world RBIN=$T/rbin TBIN=$T/bin; mkdir -p "$WORLD" "$RBIN"
@@ -700,3 +702,73 @@ q "1001|b|RUNNING|None|0|$NOW|$P|" "1002|c|RUNNING|None|0|$NOW|$P|"; acct "1000|
 has "$O" 'CANCEL name=b .*job=1001 by=fail-stop' "SIGKILLed during a fail-stop cancel: that cancel is reported"; has "$O" 'reason=parent-gone .*at=cancel' "  ...the next cancel is not sent"
 [ "$(cat "$WORLD/scancel.log" 2>/dev/null)" = 1001 ] && grep -q '^#failstop-pending c$' "$P/logs/run-watch/t.state" && ok "  ...one scancel; c kept as a pending fail-stop cancel" || bad "  ...scancel $(cat "$WORLD/scancel.log" 2>/dev/null)"
 O=$(rwy t.tsv --once --act --max-active 4); has "$O" 'CANCEL name=c target=fx-y job=1002 by=fail-stop fail-stop=a' "  ...the next --act run sends it (identity checked)"
+
+echo "-- round 5 (R5-7): a table keeps every fail-stop that holds it; --release clears only the stops its trigger named --"
+mk5() { local f=$1; shift; { echo '#@ run-watch v1'; echo '#@ allow launch errors=0 fail-stop'; for r in "$@"; do echo "$r fx-slurm - $ROW"; done; } > "$P/$f"; rw "$f" --approve "ok $f" >/dev/null; }
+reset; mk5 t.tsv a b; mk5 v.tsv x c; mk5 u.tsv b c d   # u: a row of each stopped group (b of t's, c of v's) + d, never launched
+q "1000|a|RUNNING|None|0|$NOW|$P|" "1001|b|RUNNING|None|0|$NOW|$P|" "1002|x|RUNNING|None|0|$NOW|$P|" "1003|c|RUNNING|None|0|$NOW|$P|"
+rw t.tsv --once --act --max-active 2 --adopt a=1000 --adopt b=1001 >/dev/null; rw v.tsv --once --act --max-active 2 --adopt x=1002 --adopt c=1003 >/dev/null
+q "1001|b|RUNNING|None|0|$NOW|$P|" "1002|x|RUNNING|None|0|$NOW|$P|" "1003|c|RUNNING|None|0|$NOW|$P|"; acct "1000|a|FAILED|1:0|$P"; rw t.tsv --once --act --max-active 2 >/dev/null
+q "1003|c|RUNNING|None|0|$NOW|$P|"; acct "1000|a|FAILED|1:0|$P" "1001|b|CANCELLED by 1|0:0|$P" "1002|x|FAILED|1:0|$P"; rw v.tsv --once --act --max-active 2 >/dev/null
+q; acct "1000|a|FAILED|1:0|$P" "1001|b|CANCELLED by 1|0:0|$P" "1002|x|FAILED|1:0|$P" "1003|c|CANCELLED by 1|0:0|$P"
+grep -q '^#failstop a 1000$' "$P/logs/run-watch/t.state" && grep -q '^#failstop x 1002$' "$P/logs/run-watch/v.state" && [ "$(sort "$WORLD/scancel.log" | paste -sd, -)" = 1001,1003 ] \
+  && [ "$(nsub)" = 0 ] && ok "setup: t stopped (a:1000, b cancelled), v stopped (x:1002, c cancelled)" || bad "R5-7 setup"
+O=$(rw u.tsv --once --act --max-active 3)
+has "$O" 'reason=fail-stop-inherited trigger=a:1000 from=logs/run-watch/t.state' "a table with rows of two stopped groups takes t's stop"
+has "$O" 'reason=fail-stop-inherited trigger=x:1002 from=logs/run-watch/v.state also-held-by=a:1000' "  ...and v's beside it (FS-release-one-of-two-stops)"
+[ "$(grep -c '^#failstop ' "$P/logs/run-watch/u.state")" = 2 ] && ok "  ...u.state keeps both" || bad "  ...u.state: $(grep '^#failstop' "$P/logs/run-watch/u.state" | paste -sd'|' -)"
+O=$(rw u.tsv --once --act --max-active 3 --release a)
+has "$O" 'RELEASE table=u.tsv fail-stop=a held-by=x:1002 -- that fail-stop is cleared; another still holds this table .*--release x (user OK)' "--release a clears t's stop only and names the one still holding u"
+hasnt "$O" 'LAUNCH' "  ...d stays held (the reproduction launched it)"; [ "$(nsub)" = 0 ] && ok "  ...0 sbatch" || bad "  ...$(nsub) sbatch"
+SU=$(cat "$P/logs/run-watch/u.state"); has "$SU" '^#failstop x 1002$' "  ...u.state: x's stop kept"; hasnt "$SU" '^#failstop a ' "  ...a's gone"
+has "$SU" '^#failstop-released a:1000$' "  ...and remembered as released"
+O=$(rw u.tsv --once --act --max-active 3); hasnt "$O" 'trigger=a:1000\|LAUNCH' "the next run: a's stop is not taken again, x's still holds"; [ "$(nsub)" = 0 ] && ok "  ...0 sbatch" || bad "  ...$(nsub)"
+O=$(rw u.tsv --once --act --max-active 3 --release x); has "$O" 'RELEASE table=u.tsv fail-stop=x -- fail-stop cleared' "--release x then clears the last stop"
+has "$O" 'LAUNCH name=d ' "  ...the group resumes: d launched"; [ "$(nsub)" = 1 ] && ok "  ...one sbatch" || bad "  ...$(nsub)"
+reset; mk5 u.tsv a b d; mk5 v.tsv x d   # u's own stop first, then v's (v shares d): v forms its own stop beside u's
+q "1000|a|RUNNING|None|0|$NOW|$P|" "1001|b|RUNNING|None|0|$NOW|$P|" "1002|x|RUNNING|None|0|$NOW|$P|"
+rw u.tsv --once --act --max-active 2 --adopt a=1000 --adopt b=1001 >/dev/null; rw v.tsv --once --act --max-active 1 --adopt x=1002 >/dev/null
+q "1001|b|RUNNING|None|0|$NOW|$P|" "1002|x|RUNNING|None|0|$NOW|$P|"; acct "1000|a|FAILED|1:0|$P"; rw u.tsv --once --act --max-active 2 >/dev/null
+q; acct "1000|a|FAILED|1:0|$P" "1001|b|CANCELLED by 1|0:0|$P" "1002|x|FAILED|1:0|$P"; O=$(rw v.tsv --once --act --max-active 1)
+has "$O" 'ATTENTION name=x .*reason=fail-stop trigger=x:1002' "v holding u's stop still forms its own when x fails (both groups stop)"
+grep -q '^#failstop x 1002$' "$P/logs/run-watch/v.state" && [ "$(nsub)" = 0 ] && ok "  ...v.state records it, 0 sbatch" || bad "  ...v stop ($(nsub))"
+O=$(rw u.tsv --once --act --max-active 2); has "$O" 'reason=fail-stop-inherited trigger=x:1002 from=logs/run-watch/v.state also-held-by=a:1000' "u (its own stop a) takes v's stop too"
+O=$(rw u.tsv --once --act --max-active 2 --release a)
+has "$O" 'ATTENTION name=a .*reason=release-held held-by=x:1002 -- .*--release x (user OK), then --release a' "--release a of u's own trigger: a gets no submit while x's stop holds u"
+has "$O" 'RELEASE table=u.tsv fail-stop=a held-by=x:1002' "  ...a's stop is cleared"; [ "$(nsub)" = 0 ] && ok "  ...0 sbatch (no retry of a, no launch of d)" || bad "  ...$(nsub)"
+O=$(rw u.tsv --once --act --max-active 2 --release x); has "$O" 'RELEASE table=u.tsv fail-stop=x -- fail-stop cleared' "--release x: no stop left"
+has "$O" 'LAUNCH name=d ' "  ...d (held by u's stop) launched"; hasnt "$O" 'name=a .*RE\(SUBMIT\|TRY\)' "  ...a still waits for its own --release"
+O=$(rw u.tsv --once --act --max-active 2 --release a); has "$O" 'RESUBMIT name=a .*release=1' "--release a once more: its one submit"
+[ "$(nsub)" = 2 ] && ok "  ...two sbatch in all (d, a)" || bad "  ...$(nsub)"
+l6; printf '#failstop z 1999\n' >> "$P/logs/run-watch/t.state"   # a second stop on t (trigger z: not a row here, as one taken from another table)
+O=$(rw t.tsv --once --act --max-active 4 --release a); has "$O" 'ATTENTION name=a .*reason=release-held held-by=z:1999' "--release a while z's stop holds t: a stays held"
+[ "$(nsub)" = 0 ] && ok "  ...0 sbatch" || bad "  ...$(nsub)"
+ST5=$(cat "$P/logs/run-watch/t.state"); has "$ST5" '^#failstop z 1999$' "  ...t.state keeps z's stop"; hasnt "$ST5" '^#failstop-pending' "  ...a's pending cancel of b went with a's stop"
+receipt "$N" 1001 b; O=$(rw t.tsv --once --act --max-active 4); has "$O" 'ADOPT name=b .*job=1001 note=receipt' "b tracked from its receipt"
+[ ! -s "$WORLD/scancel.log" ] && ok "  ...never cancelled for a's released stop" || bad "  ...scancel: $(cat "$WORLD/scancel.log")"
+l6; printf '#failstop z 1999\n' >> "$P/logs/run-watch/t.state"; rw t.tsv --once >/dev/null   # rewritten by this copy: each stop with its own pending line
+[ "$(grep '^#failstop' "$P/logs/run-watch/t.state" | paste -sd'|' -)" = '#failstop a 1000|#failstop-pending b|#failstop z 1999|#failstop-pending ' ] \
+  && ok "two stops in a state file: each '#failstop' line followed by its own '#failstop-pending' (an empty one too)" || bad "layout: $(grep '^#failstop' "$P/logs/run-watch/t.state" | paste -sd'|' -)"
+mkdir -p "$T/old5/bin" "$T/old5/lib"   # the run-watch before R5-7 (c1e8864) reads one stop: the last pair
+if git -C "$RS_HOME" show c1e8864:bin/run-watch > "$T/old5/bin/run-watch" 2>/dev/null && git -C "$RS_HOME" show c1e8864:lib/common.sh > "$T/old5/lib/common.sh" 2>/dev/null; then
+  receipt "$N" 1001 b; O=$( cd "$P" && PATH="$T/bin:$PATH" RS_WATCH_OBS_TIMEOUT=15 RS_WATCH_SUBMIT_TIMEOUT=15 bash "$T/old5/bin/run-watch" t.tsv --once --act --max-active 4 2>&1 )
+  [ ! -s "$WORLD/scancel.log" ] && [ "$(nsub)" = 0 ] && ok "c1e8864's run-watch on that file: the table stays held, b's pending (a's) is not taken as z's" || bad "older copy: scancel $(cat "$WORLD/scancel.log" 2>/dev/null) sbatch $(nsub)"
+else ok "c1e8864 not in this clone's history: the older-copy check SKIP"; fi
+
+echo "-- round 5 (R5-8): a row's target is a target name, spelled as rs_targets lists it --"
+reset; q
+for tg in fx-slurm/ fx-slurm/. fx-slurm// ./fx-slurm fx-slurm/../fx-slurm; do
+  table "#@ allow launch" "a $tg - $ROW"; O=$(rw t.tsv --approve go); RC=$?
+  [ "$RC" = 2 ] && [ "$(grep -c '^#@ ok' "$P/t.tsv")" = 0 ] && has "$O" "target '$tg'" "target '$tg': --approve refused (exit 2), nothing written" || bad "target '$tg': --approve (rc=$RC)"
+  O=$(rw t.tsv --once --act --max-active 1); RC=$?
+  [ "$RC" = 2 ] && [ "$(nsub)" = 0 ] && [ ! -s "$WORLD/ssh.log" ] && ok "  ...--act refused (exit 2) before any ssh" || bad "  ...--act (rc=$RC, $(nsub) sbatch)"
+done
+if [ "$(id -u)" != 0 ]; then   # a target whose profile resolves but which rs_targets does not list (its root not listable)
+  U3=$T/user3; mkdir -p "$U3"; cp -R "$RS_USER_DIR/." "$U3/"; chmod 311 "$U3/targets"
+  ( export RS_USER_DIR=$U3; . "$RS_HOME/lib/common.sh"; ! rs_targets | grep -qx fx-slurm && rs_target_dir fx-slurm >/dev/null ) \
+    && ok "setup: rs_target_dir resolves fx-slurm in a root rs_targets cannot list" || bad "R5-8 setup"
+  reset; q; table "#@ allow launch" "a fx-slurm - $ROW"; ( export RS_USER_DIR=$U3; rw t.tsv --approve go ) >/dev/null
+  O=$( export RS_USER_DIR=$U3; rw t.tsv --once --act --max-active 1 ); RC=$?; chmod 755 "$U3/targets"
+  [ "$RC" = 2 ] && has "$O" "target 'fx-slurm' is not a target name this harness lists" "a target rs_targets does not list is refused (exit 2)" || bad "unlisted target (rc=$RC)"
+  [ ! -s "$WORLD/ssh.log" ] && [ "$(nsub)" = 0 ] && ok "  ...before any ssh" || bad "  ...ssh or sbatch ran"
+else ok "running as root (permissions not enforced): the unlisted-target check SKIP"; fi

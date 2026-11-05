@@ -43,8 +43,11 @@ every key; [`../AGENTS.md`](../AGENTS.md) documents the `policy.sh` API (`t_part
 - **`policy.sh`** encodes what the scheduler will not tell you up front: per-partition GPU ranges, sensible cpu and
   memory per GPU, partition walltime caps (a request over the cap would pend forever), forced GPU types, preemption
   notes. `t_policy` can refuse a submission (exit 3) or require an acknowledgement flag — use it for queues that
-  must never be hit by accident. A `-y` gate (`echo "WARNING: … Re-run -y …" >&2; [ "$FORCE" = 1 ] || exit 1`, in
-  `t_policy` or `t_partition`) shows on rsk's plan card: for a plan and an approved submit, `submit.sh` first runs
+  must never be hit by accident. Write every `-y` gate (in `t_policy` or `t_partition`) in one idiom, as the template
+  does — print the WARNING, then test FORCE: `echo 'WARNING: … Re-run -y …' >&2; [ "$FORCE" = 1 ] || exit 1` — so a
+  plan shows every gate, from the real call too, and a `-y` submit logs it. Never the P2 form
+  `[ "$FORCE" = 1 ] || { echo 'WARNING: …' >&2; exit 1; }`: it is silent under `-y` and found only by the probe below
+  (`tests/52` 'R5-10'). Such a gate shows on rsk's plan card: for a plan and an approved submit, `submit.sh` first runs
   `( FORCE=0; t_policy )` in a subshell, then the real one, and probes `t_partition` the same way right before its real
   call — so each may run twice and must have no side effects (no files written, nothing sent). In the probe every
   `exit 1` is a gate that is noted and passed (the function goes on: one gate never hides the next, and code after a gate

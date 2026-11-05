@@ -35,14 +35,14 @@ def block(kind="slurm", target="fx", name="exp--train--a--scratch--s0--a01", war
                  ("venv_dir", "''"), ("uv_sync_args", "''"), ("conf_extra", kw.get("conf_extra", kw.get("extra", ""))),
                  ("flags", kw.get("flags", "")), ("chain", kw.get("chain", "0"))]
         info = [("info_avail", "free:4/max_node:4/gpu_type:any"), ("info_conf_sha256", "a" * 64),
-                ("info_source_commit", "none"), ("info_source_dirty", "none")]
+                ("info_source_commit", "none"), ("info_source_dirty", "none"), ("info_prior", kw.get("prior", "0"))]
     else:
         bound = [("kind", "nohup"), ("target", target), ("name", name), ("gpus_req", kw.get("gpus_req", "n=1")),
                  ("exclude", ""), ("nice", ""), ("busy_ok", kw.get("busy_ok", "")), ("payload", payload.replace(" ", "\\ ")),
                  ("env_kind", "none"), ("env_hook", "''"), ("venv_dir", "''"), ("uv_sync_args", "''"), ("env_name", "''")]
         info = [("info_gpus", kw.get("info_gpus", "1")), ("info_uuids", "GPU-x"), ("info_busy", kw.get("busy", "")),
-                ("info_run_gpu", "checked")]
-        info = [(k, v) for k, v in info if k not in kw.get("drop", ())]
+                ("info_run_gpu", "checked"), ("info_prior", kw.get("prior", "0"))]
+    info = [(k, v) for k, v in info if k not in kw.get("drop", ())]
     bound = [(k, v) for k, v in bound if k not in kw.get("drop", ())]
     lines = [f"{k}={v}" for k, v in bound]
     h = hashlib.sha256(("\n".join(lines) + "\n").encode()).hexdigest()
@@ -881,6 +881,104 @@ class Round4(Fixture):
         rc, text = self.cli("launch", "-T", "fx", "--", "c")
         self.assertEqual(rc, CONFLICT, text)
         self.assertEqual(sum(1 for w in self.calls if "--rs-expect" in w), 0)
+
+
+class Round5(Fixture):
+    """R5-4 (RW-unledgered-relaunch-deny): a run run-watch launched never enters the ledger, so `rsk launch -n a` was a
+    plain launch — a deny of relaunch ('do not relaunch a, it is broken') never matched it and a launch grant covered
+    it. The block's envelope info_prior (the target's journal receipts / live jobs of the run) now makes it a relaunch,
+    and so does a block that cannot say (no readable info_prior: fail closed)."""
+
+    def test_r5_4_a_run_the_target_knows_is_a_relaunch_though_the_ledger_never_saw_it(self):
+        G.add(self.led, G.new_grant("launch the a runs on fx", {"targets": ["fx"], "names": ["a*"]}, ["launch"],
+                                    max_live=None, max_launches=None, expires=None))
+        self.answers = [self.plan_reply(name="a", prior="1")]
+        rc, text = self.cli("launch", "-T", "fx", "-n", "a", "--", "python", "train.py")
+        self.assertEqual(rc, NEEDS_USER, text)                       # was: covered, submitted (exit 0)
+        self.assertIn(" — relaunch on fx (slurm)", text)
+        self.assertIn("  prior      1 earlier attempt(s) of a on fx", text)
+        self.assertIn("action relaunch not in launch", text)
+        self.assertEqual(self.led.runs(), {})                         # the ledger has no attempt of it
+        G.add(self.led, G.new_deny("do not relaunch a, it is broken", {"names": ["a"]}, ["relaunch"]))
+        self.answers = [self.plan_reply(name="a", prior="1")]
+        rc, text = self.cli("launch", "-T", "fx", "-n", "a", "--", "python", "train.py")
+        self.assertEqual(rc, REFUSED, text)
+        self.assertIn("do not relaunch a, it is broken", text)
+        self.assertEqual(len(self.calls), 2)                          # plans only: nothing submitted
+        self.assertTrue(all("--rs-mode" in c for c in self.calls))
+
+    def test_r5_4_a_relaunch_grant_never_resumes_what_only_the_journal_shows(self):
+        G.add(self.led, G.new_grant("auto-resume preempted runs on fx", {"targets": ["fx"]}, ["launch", "relaunch"],
+                                    max_live=None, max_launches=None, expires=None))
+        self.answers = [self.plan_reply(name="a", prior="2")]
+        rc, text = self.cli("launch", "-T", "fx", "-n", "a", "--", "python", "train.py")
+        self.assertEqual(rc, NEEDS_USER, text)                       # its end is not the ledger's: the user's call
+        self.assertIn("the ledger has no earlier attempt of the run that ran", text)
+        self.assertIn("no previous attempt in the ledger to repeat", text)
+
+    def test_r5_4_a_block_that_cannot_say_is_a_relaunch(self):
+        G.add(self.led, G.new_grant("launch on fx", {"targets": ["fx"]}, ["launch"], max_live=None, max_launches=None,
+                                    expires=None))
+        for kw in ({"drop": ("info_prior",)}, {"prior": "x"}, {"prior": "-1"}, {"prior": "''"}, {"prior": "1e3"}):
+            self.answers = [self.plan_reply(name="b", **kw)]
+            rc, text = self.cli("launch", "-T", "fx", "-n", "b", "--", "c")
+            self.assertEqual(rc, NEEDS_USER, (kw, text))
+            self.assertIn(" — relaunch on fx (slurm)", text)
+            self.assertIn("  prior      unknown — the deploy does not count the run's earlier attempts", text)
+        self.answers = [self.plan_reply(name="b", prior="0"), self.submitted("101")]   # 0 and no ledger attempt: launch
+        rc, text = self.cli("launch", "-T", "fx", "-n", "b", "--", "c")
+        self.assertEqual(rc, OK, text)
+        self.assertIn(" — launch on fx (slurm)", text)
+        self.assertNotIn("  prior  ", text)
+        self.assertEqual(X.info_prior({"info_prior": "0"}), 0)
+        self.assertEqual([X.info_prior(b) for b in ({}, {"info_prior": ""}, {"info_prior": "07"}, {"info_prior": "²"})],
+                         [None, None, 7, None])
+
+    def test_r5_4_nohup_too_and_an_approval_records_the_relaunch(self):
+        self.answers = [self.plan_reply(kind="nohup", target="ws", name="r", prior="2")]
+        rc, text = self.cli("launch", "-T", "ws", "-N", "r", "--", "c")
+        self.assertEqual(rc, NEEDS_USER, text)
+        self.assertIn(" — relaunch on ws (nohup)", text)
+        self.answers = [lambda nonce, words: X.Reply(0, f"[ws] started PID 4242 on GPU(s) 1 ; log /p/logs/r-1.log ; pid "
+                                                        "file /p/logs/r-1.pid\n", "")]
+        rc, text = self.cli("launch", "--plan", self.plan_id(text), "--approve", "yes, relaunch r")
+        self.assertEqual(rc, OK, text)
+        ap = next(r for r in self.led.state().grants if r["kind"] == "approval")
+        self.assertEqual(ap["actions"], ["relaunch"])
+        att = self.led.read_run("r").data["attempts"]["a01"]
+        self.assertEqual(att["request"]["action"], "relaunch")
+
+    def test_r5_6_a_submit_whose_session_never_opened_sent_nothing(self):
+        """R5-6's proof (cancel.not_reached) for a Slurm submit: ssh's own exit 255, no answer, and its words that the
+        session never opened = nothing sent — NOT_SUBMITTED, the approval's use given back, the plan free again (was:
+        SUBMIT_UNKNOWN, sticky until rsk status could read the journal). Any other 255 may have been sent: unknown."""
+        self.answers = [self.plan_reply()]
+        pid = self.plan_id(self.cli("launch", "-T", "fx", "--", "c")[1])
+        self.answers = [X.Reply(255, "", "ssh: connect to host fxhost port 22: Connection refused\n")]
+        rc, text = self.cli("launch", "--plan", pid, "--approve", "yes, run it")
+        self.assertEqual(rc, UNKNOWN, text)
+        self.assertIn("fx not reached — nothing sent: ssh: connect to host fxhost port 22: Connection refused", text)
+        self.assertIn(f"plan {pid} is free again", text)
+        att = self.led.read_run("exp--train--a--scratch--s0").data["attempts"]["a01"]
+        self.assertEqual(L.attempt_state(att), "NOT_SUBMITTED")
+        self.assertFalse(L.is_live(att))
+        aps = [r for r in self.led.state().grants if r["kind"] == "approval"]
+        self.assertEqual((len(aps), aps[0]["used"]), (1, []))
+        self.answers = [self.submitted("101")]
+        rc, text = self.cli("launch", "--plan", pid)                     # the host is back: the same approval
+        self.assertEqual(rc, OK, text)
+        for i, r in enumerate((X.Reply(255, "", "Connection to fxhost closed by remote host.\n"),      # the session was up
+                               X.Reply(255, "@@api api=3\n", "ssh: connect to host fxhost port 22: Connection refused\n"),
+                               X.Reply(1, "", "ssh: connect to host fxhost port 22: Connection refused\n"))):
+            name = f"exp--train--u{i}--scratch--s0"
+            self.answers = [self.plan_reply(name=name)]
+            p = self.plan_id(self.cli("launch", "-T", "fx", "-n", name, "--", "c")[1])
+            self.answers = [r]
+            rc, text = self.cli("launch", "--plan", p, "--approve", "go")
+            self.assertNotIn("not reached", text)
+            if r.rc == 255:
+                self.assertEqual(rc, UNKNOWN, text)
+                self.assertEqual(L.attempt_state(self.led.read_run(name).data["attempts"]["a01"]), "SUBMIT_UNKNOWN")
 
 
 class Nohup(Fixture):
