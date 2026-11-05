@@ -179,18 +179,21 @@ R6-6 and 'round-6 integration', `tests/vgate/local.sh` `env_anywhere=`) are exit
 expanded (first command), the wrapper refuses to start the payload (rc 2). The conf is read (profile, then `.ws.conf`,
 child `bash --noprofile --norc`, fds 3/4/9 closed) in every mode before `rs_launchers` (a plan / `--rs-expect` refuses one
 that does not source, exit 2). `rs_launchers`: deepspeed / accelerate launch (and their aliases) with their own GPU
-flags; accelerate's config `gpu_ids` (read-only: `--config_file`, else the default config under `$PROJ/.cache/huggingface`;
-unreadable, > 64 KiB, relative after a `cd`, or a RUN naming `HF_HOME` warns too; no `--config_file` beside an
-`ENV_HOOK` or a conf / RUN naming `HF_HOME` / `ACCELERATE_…`: `the config accelerate reads is unknown`); deepspeed with
-`/job/hostfile` and no `--hostfile`; container runtimes (docker / podman / nerdctl `--gpus --runtime --device nvidia…
---privileged`, a bare `-e NVIDIA_VISIBLE_DEVICES`, `nvidia-docker run`; apptainer / singularity `--cleanenv
---containall`); a tool that starts the command without this launch's environment or elsewhere (container `exec`, compose,
-`kubectl exec`, tmux, `screen -dm`, `setpriv --reset-env`, `sudo` without `-E`, `doas`, `systemd-run`, `ssh`, `srun`) → a
+flags; accelerate's config `gpu_ids` (read-only: `--config_file`, else the default config under
+`$PROJ/.cache/huggingface`; unreadable, > 64 KiB, relative after a `cd`, or a RUN naming `HF_HOME` warns too; no
+`--config_file` beside an `ENV_HOOK`, `ENV_KIND=conda` (R8-4: `conda activate` applies the env's own variables) or a
+conf / RUN naming `HF_HOME` / `ACCELERATE_…`: `the config accelerate reads is unknown`); deepspeed with `/job/hostfile`
+and no `--hostfile`; container runtimes (docker / podman / nerdctl `--gpus --runtime --device nvidia… --privileged`, a
+bare `-e NVIDIA_VISIBLE_DEVICES`, `nvidia-docker run`; apptainer / singularity `--cleanenv --containall`); a tool that
+starts the command without this launch's environment or elsewhere (container `exec`, compose, `kubectl exec`, tmux — any
+alias or unique prefix tmux runs as a warned command (R8-6: a threshold table that `tests/88` checks against this
+machine's tmux) —, `screen -dm`, `setpriv --reset-env`, `sudo` without `-E`, `doas`, `systemd-run`, `ssh`, `srun`) → a
 counted `WARNING:` naming it, what and landing (grant kind `any` only; spellings: `tests/61` 'R5-2' / 'R7-3'; facts:
-`tests/vgate/launchers.sh` + `containers.sh` + `envdrop.sh`, plumbing `tests/88`); the configs / hostfile it read are
-bound (`launch_cfg`). What the payload's own code does is beyond any check. P7: run-launch without `RS_VIA_RSK`
-while rsk is installed (on PATH or `$(uv tool dir --bin)/rsk`) prints `use: rsk launch …` and exits 2 (else it launches,
-with a NOTE; a Slurm target points at `rsk launch`) — a nudge, not a guard; `tests/lib.sh` exports `RS_VIA_RSK`.
+`tests/vgate/launchers.sh` + `containers.sh` + `envdrop.sh`, plumbing `tests/88`); the configs / hostfiles it read are
+bound (`launch_cfg`; R8-5: each file deepspeed's `-H` / `--hostfile` names too, resolved as `--config_file`). What the
+payload's own code does is beyond any check. P7: run-launch without `RS_VIA_RSK` while rsk is installed (on PATH or
+`$(uv tool dir --bin)/rsk`) prints `use: rsk launch …` and exits 2 (else it launches, with a NOTE; a Slurm target points
+at `rsk launch`) — a nudge, not a guard; `tests/lib.sh` exports `RS_VIA_RSK`.
 
 ### Authorisation (`grants.py`, `ledger.py`; used by `launch.py`, `cancel.py`; docs/DESIGN.md "Authorization")
 
@@ -200,22 +203,29 @@ chain and cancel calls `grants.check()` first — a deny → 3 (its quote), a co
 writes with `.prev`, single-use `plans/`, append-only `audit.jsonl`): `approval` (the plan ids + bound hashes of the cards
 the user approved, claimed and recorded in one lock hold, expiring with the plans (24 h) — a sweep is one record — or named
 jobs to cancel, each bound to its identity in `scope.idents` (Slurm target, job id, run name, WorkDir; nohup target, pid,
-start, boot_id), for 1 h, used up by its first cancel that passed authorisation, never refunded; one without `idents` covers
-nothing), `grant` (a standing predicate: scope + actions + `max_live` / `max_launches` / `expires`, all three stated, `none`
-= the user set none; `resubmit` is refused in a new one; `allow_warnings` = `availability` (warnings == warnings_avail) |
-`any`, a stored `true` = `any`; `cancel_own` cancels count against `max_launches`, refunded only when the answer proves
-nothing was signalled), `deny` (always wins; one of `launch` stops relaunch/chain too; its name globs also match the run id,
+start, boot_id), for 1 h, used up by its first cancel that passed authorisation, never refunded; one without `idents`
+covers nothing; the `--approve` words must name each job — its id / pid, its run's id or name — as a whole token, else
+exit 4, nothing recorded: `cancel.named` / `cancel.unnamed`, R8-2), `grant` (a standing predicate: scope + actions +
+`max_live` / `max_launches` / `expires`, all three stated, `none` = the user set none; `resubmit` is refused in a new
+one; `allow_warnings` = `availability` (warnings == warnings_avail) | `any`, a stored `true` = `any`; `cancel_own`
+cancels count against `max_launches`, refunded only when the answer proves nothing was signalled), `deny` (always wins;
+one of `launch` stops relaunch/chain too; its name globs also match the run id,
 and a glob ending in an attempt's `--aNN` (2+ digits) or in a glob that can match one (`x--a*`) stands for its run —
 every attempt, cancels and `rsk watch` rows included (`grants.run_glob(s)`, R7-1; a NOTE at `rsk grant deny|import`);
 a fact it scopes that is unknown matches: a cancel of a job without a plan, an `rsk watch` row — no bound hash, its GPU type
 and partition never certain —, a run with an attempt recorded without a class; targets compared as `grants.target_key`
 names — `fx/`, `./fx`, `FX` are fx, a spelling that is not one plain name matches every target deny; `scope.jobs` only
 with cancel actions, else invalid; `rsk grant add|deny|import` refuse a target `rs_targets` does not list, exit 2
-`unknown target`, never a partition (`T_PARTITIONS` is a display list, `harness.split_partitions`: commas and whitespace,
-`policy.sh` decides; one the scoped targets' lists lack gets a NOTE, `grants.partition_note`; a GPU type: a NOTE only;
-`grants.check_scope`); `rsk grant list`, `rsk status` (R7-6) and `rsk doctor` (`== grants ==`, every ledger, exit code
-unchanged) flag an active record naming an unknown TARGET (`grants.scope_problems`, `--json` `scope_problems`: `never
-matches`), list / status NOTE an unlisted partition (`grants.scope_notes`, `--json` `scope_notes`); a deny naming a run
+`unknown target`, and a partition no scoped Slurm target's `T_PARTITIONS` lists, unless `--unlisted-partition` (import:
+`"unlisted_ok": true`, not stored) — then a NOTE (R8-3, `grants.unlisted_partitions`, `grants.check_scope(…,
+unlisted_ok)`; `T_PARTITIONS` is a display list, `harness.split_partitions`: commas and whitespace, `policy.sh` decides;
+no list or only workstations: the NOTE only, `grants.partition_note`; a GPU type: a NOTE only); every list argument
+split on commas and stripped, an empty or spaced item exit 2, `--job` ids / pids only (`grants._split`, R8-1), a stored
+spaced item invalid (`grants._spaced`); `rsk grant list`, `rsk status` (R7-6) and `rsk doctor` (`== grants ==`, every
+ledger, exit code unchanged) flag an active record naming an unknown TARGET (`grants.scope_problems`, `--json`
+`scope_problems`: `never matches`), list / status NOTE an unlisted partition (`grants.scope_notes`, `--json`
+`scope_notes`), and show a record `validate()` rejects as INVALID — `--json` `{record, invalid, fail_closed}`, never
+described (R8-7); a deny naming a run
 (`scope.names`) with `relaunch`/`resubmit` matches every launch-type action of it, launch included, on any target in its
 scope (`grants.run_deny`; a launch grant right after it: FLAG). A deny `validate()` rejects, an id `d-…` or a missing /
 damaged `kind` is a deny matching everything until fixed or revoked (a non-object: until removed by hand); any

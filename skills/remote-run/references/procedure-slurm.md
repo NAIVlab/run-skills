@@ -133,23 +133,37 @@ Denies: `rsk grant deny --job` is for cancels only (`--action cancel` / `cancel_
 run's launches are denied with `--name '<run>'`). `-T` of `rsk grant add|deny` and every scope target of `rsk grant
 import` must be a target the harness knows, spelled as INDEX lists it (else exit 2 `unknown target`, nothing recorded).
 A deny compares targets as normalised names (`fx/`, `./fx`, `FX` are `fx`); a spelling that is not one plain name
-matches every target deny (fail closed). A `--partition` (import: `scope.partitions`) is never refused: `T_PARTITIONS`
-is the profile's display list (split on commas and whitespace: `gpu,preempt` is two) and `policy.sh` (`t_partition`)
-decides which partitions exist, so one the scoped targets' lists (every target the harness knows, without `-T`) do not
-name is recorded as given, with `NOTE: partition P is not in the profile's display list (T_PARTITIONS of <t>: a, b;
-<u>: none) — recorded as given: policy.sh, not the profile, decides which partitions exist; the record matches only a
-plan whose partition is spelled exactly so` (a workstation-only scope adds ` (<t>: a workstation has no partitions — no
-launch there names one)`; import puts `(scope.partitions of #i in FILE)` after P): check the spelling with the user. A
-GPU type has no list anywhere: never checked, only echoed (`NOTE: GPU type X is not checked … — compare it with the
-target's reference`). `rsk grant list`, `rsk status` (its grants block is grant list's) and `rsk doctor`, for every
-project's ledger (`== grants ==`), flag every active record naming a TARGET the harness does not know — `WARNING: <id>
-(<kind>): target X is not one the harness knows (<known>) — never matches[ there] (the user's deny is not enforced there
-| it covers nothing there) — fix or revoke: rsk grant revoke <id> --quote "<the user's words>", then record it again
-with a scope the harness knows` (`--json`: `scope_problems`); a stored partition its targets' lists do not name gets the
-NOTE above in grant list and status (`--json`: `scope_notes`), never `never matches`: tell the user. A deny's `--name`
-written as an attempt's job name — `<run>--aNN`, two or more digits, as squeue, sacct and the log show it — or as a glob
-over attempt names (`x--a*`, `x--a0?`, `x--a[0-9][0-9]`: an `--a` suffix of digits, `*`, `?` or `[…]` that can match two
-or more digits) stands for the whole run: an attempt is launched once, so it matches every attempt of that run (launch,
+matches every target deny (fail closed). A `--partition` (import: `scope.partitions`) that no scoped Slurm target's
+`T_PARTITIONS` lists (every target the harness knows, without `-T`) is exit 2, nothing recorded: `partition P is not in
+the profile's display list (T_PARTITIONS of <t>: a, b) — nothing recorded: check the spelling with the user (a misspelt
+partition never matches: the deny would not be enforced, the grant would cover nothing); if it is a real partition the
+display list omits (policy.sh decides which exist), record it again with --unlisted-partition` (import:
+`(scope.partitions of #i in FILE)` after P, and `… with "unlisted_ok": true in record #i`). `T_PARTITIONS` is the
+profile's display list (split on commas and whitespace: `gpu,preempt` is two) and `policy.sh` (`t_partition`) decides
+which partitions exist, so check the spelling with the user first; only when they confirm a real partition the list
+omits, `--unlisted-partition` (import: that record's `"unlisted_ok": true`, a boolean, never stored) records it as
+given, with `NOTE: partition P is not in the profile's display list (T_PARTITIONS of <t>: a, b; <u>: none) — recorded as
+given: policy.sh, not the profile, decides which partitions exist; the record matches only a plan whose partition is
+spelled exactly so`. No check, the NOTE only, when a scoped Slurm target's profile lists no `T_PARTITIONS` (`<u>: none`)
+or only workstations are in scope (` (<t>: a workstation has no partitions — no launch there names one)`). Every list
+argument of `rsk grant add|deny` (`-T`, `--partition`, `--gpu-type`, `--class`, `--name`, `--job`, `--run`, `--action`;
+repeatable, `a,b`) is split on commas and each item stripped (`--name 'b1, b2'` is b1 and b2); an empty item or one with
+whitespace inside is exit 2 naming it, nothing recorded (`--job '101 102': item '101 102' holds whitespace …`, `--job
+'101,': an empty item …`) — a space-separated list is never split on a guess; `--job` takes job ids or pids only (`123`,
+`123_4`). A stored record (import, a hand edit) with a list item holding whitespace is invalid (`whitespace in a scope
+item`): as a deny it matches everything (fail closed), anything else covers nothing. A GPU type has no list anywhere:
+never checked, only echoed (`NOTE: GPU type X is not checked … — compare it with the target's reference`). `rsk grant
+list`, `rsk status` (its grants block is grant list's) and `rsk doctor`, for every project's ledger (`== grants ==`),
+flag every active record naming a TARGET the harness does not know — `WARNING: <id> (<kind>): target X is not one the
+harness knows (<known>) — never matches[ there] (the user's deny is not enforced there | it covers nothing there) — fix
+or revoke: rsk grant revoke <id> --quote "<the user's words>", then record it again with a scope the harness knows`
+(`--json`: `scope_problems`); a stored partition its targets' lists do not name gets the NOTE above in grant list and
+status (`--json`: `scope_notes`), never `never matches`: tell the user. A record `validate()` rejects (a hand edit, a
+damaged entry) is listed as `<id>  INVALID — <what>: <why>` and, in the `--json` of both `rsk grant list` and `rsk
+status`, as `{record, invalid, fail_closed}` — never described; no view fails on one. A deny's `--name` written as an
+attempt's job name — `<run>--aNN`, two or more digits, as squeue, sacct and the log show it — or as a glob over attempt
+names (`x--a*`, `x--a0?`, `x--a[0-9][0-9]`: an `--a` suffix of digits, `*`, `?` or `[…]` that can match two or more
+digits) stands for the whole run: an attempt is launched once, so it matches every attempt of that run (launch,
 relaunch, chain, cancel) and `rsk watch` rows of it, and it is that run the deny names below. It is recorded as given,
 with `NOTE: name <run>--a02 is an attempt's name (--aNN): the deny stands for run <run> — every attempt of it, the next
 one included (an attempt is launched once)` (a glob: `NOTE: name x--a* matches attempts' names (--aNN): the deny stands
@@ -266,6 +280,13 @@ the earlier attempts) — confirm the trainer's own resume line after every rest
 mismatch, nothing cancelled; exit 3 = someone else's job: never). It acts on the user's words naming that job, or —
 for your own judgment that a run should stop — on a `cancel_own` grant (runs rsk launched only); else exit 4: ask.
 `cancel_own` covers only an attempt the ledger shows live: a job of a run the ledger shows ended needs the user's words.
+The words given to `--approve` must name what is cancelled, as a whole word: for `--job J` the job id J or the run's id
+or job name; for `rsk cancel <run>` the run id or name, or every job id it cancels (a chain: the run, or all its jobs).
+A token inside a longer one does not count (`101` is not named by `1101` or `101_2`, `sw1` not by `sw10`, `exp--sw1` or
+`sw1-b`; trailing punctuation is fine: `cancel job 101.`), and "cancel it" names nothing: exit 4 `needs user: the words
+do not name <J|run> — "<words>" names none of: job J = run <run> (<name>) on <t>; nothing recorded or cancelled`, no
+approval and no ssh — ask the user which one they mean. This is a check against a slip ("cancel job 101" approving 102),
+not proof of consent. A `cancel_own` grant (no `--approve`) is unchanged.
 A deny of the user's matches a cancel whatever it cannot rule out: a deny of plans (`rsk grant deny --run <hash>`, one
 that covers cancels) matches every cancel of a job the ledger has no plan for.
 An approval (`--approve`) is bound to the identity it was given for (target, job id, run name, WorkDir), expires after

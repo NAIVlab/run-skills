@@ -76,7 +76,8 @@ if command -v python3 >/dev/null 2>&1; then
   printf '__version__ = "0.0-fake"\n' > "$FP/deepspeed/__init__.py"; : > "$FP/deepspeed/launcher/__init__.py"
   printf '%s\n' 'import argparse, os' 'def parse_args(args=None):' '    p = argparse.ArgumentParser()' \
     '    p.add_argument("-i", "--include", default=""); p.add_argument("--num_gpus", "--num_accelerators", type=int, default=-1)' \
-    '    p.add_argument("--num_nodes", type=int, default=-1); p.add_argument("user_script"); return p.parse_args(args)' \
+    '    p.add_argument("--num_nodes", type=int, default=-1); p.add_argument("-H", "--hostfile", default=DLTS_HOSTFILE)' \
+    '    p.add_argument("user_script"); return p.parse_args(args)' \
     'def main(args=None):' '    visible_devices_env = "CUDA_VISIBLE_DEVICES"' '    resource_pool = {}' \
     '    if not resource_pool and len(os.environ.get(visible_devices_env, "")):' '        print("but ignoring it")' '        del os.environ[visible_devices_env]' \
     "DLTS_HOSTFILE = \"$T/no-hostfile\"" > "$FP/deepspeed/launcher/runner.py"
@@ -92,7 +93,7 @@ if command -v python3 >/dev/null 2>&1; then
   printf '%s\n' 'def prepare_simple_launcher_cmd_env(args, current_env):' '    if args.gpu_ids != "all" and args.gpu_ids is not None:' \
     '        current_env["CUDA_VISIBLE_DEVICES"] = args.gpu_ids' > "$FP/accelerate/utils/launch.py"
   O=$(PYTHONPATH=$FP bash "$LG" python3 2>&1); RC=$?
-  [ "$RC" = 0 ] && has "$O" "^ds_version=0.0-fake ds_abbrev=2 ds_short=localhost:1 ds_alias=2 ds_ignores_cvd=yes ds_hostfile=$T/no-hostfile:absent ds_pool_cvd=yes\$" "launchers.sh: the deepspeed line (parse_args and runner.main's source)" \
+  [ "$RC" = 0 ] && has "$O" "^ds_version=0.0-fake ds_abbrev=2 ds_short=localhost:1 ds_alias=2 ds_hostfile_flag=h1,h2,h3,h4,h5,h7 ds_ignores_cvd=yes ds_hostfile=$T/no-hostfile:absent ds_pool_cvd=yes\$" "launchers.sh: the deepspeed line (parse_args — the -H / --hostfile spellings on the real argparse, R8-5 — and runner.main's source)" \
     || { bad "launchers.sh on fakes (rc=$RC)"; printf '%s\n' "$O" | head -5 | sed 's/^/    | /'; }
   has "$O" '^acc_version=0.0-fake acc_hyphen=0,1 acc_abbrev=refused acc_sets_cvd=yes acc_all=yes acc_cfg_gpu_ids=yes acc_cfg_hyphen=c.yaml acc_cfg_default=$HF_HOME/accelerate/default_config.yaml acc_cfg_json_only=default_config.json$' \
     "launchers.sh: the accelerate line (launch_command_parser, launch.py's and utils/launch.py's source, config_args under a scratch HF_HOME holding only a .json)"
@@ -142,7 +143,37 @@ EG=$RS_HOME/tests/vgate/envdrop.sh
 if command -v tmux >/dev/null 2>&1; then O=$(bash "$EG" tmux 2>&1)
   has "$O" '^tmux_version=[^ ]* tmux_server_env=unset (want unset) tmux_first_env=5 (want 5) tmux_session=other (want other)$' \
     "fact (this machine's tmux): a session made while a tmux server runs gets the SERVER's environment, not the client's CUDA_VISIBLE_DEVICES, in another session"
+  has "$O" '^tmux_split_prefix_env=unset (want unset) tmux_prefix=' "fact (this machine's tmux, R8-6): \`tmux split -d\` (split-window named by a prefix) runs the command in the server's session: no CUDA_VISIBLE_DEVICES"
+  TP=$(printf '%s\n' "$O" | sed -n 's/^tmux_split_prefix_env=.* tmux_prefix=\([^ ]*\) tmux_alias=[^ ]*$/\1/p'); TA=$(printf '%s\n' "$O" | sed -n 's/^tmux_split_prefix_env=.* tmux_alias=\([^ ]*\)$/\1/p')
+  rv() { printf '%s\n' "$1" | tr ',' '\n' | sed -n "s/^$2://p"; }   # rv LIST WORD -> what this tmux runs for `tmux WORD`
+  if printf '%s\n' "$TA" | tr ',' '\n' | grep -qx 'popup:display-popup'; then   # tmux 3.2+ (display-popup): the whole line, as wanted
+    has "$TP" '^sp:split-window,ru:run-shell,i:if-shell,pi:pipe-pane,new:new-session,new-:new-session|new-window,new-s:new-session,new-w:new-window,resp:respawn-pane|respawn-window,display-po:display-popup,send-k:send-keys,s:ambiguous,r:ambiguous,p:ambiguous,n:ambiguous,ne:ambiguous,res:ambiguous,display-p:ambiguous,send-:ambiguous,split-p:unknown$' \
+      "fact (this machine's tmux, R8-6): tmux runs a unique prefix of a command name — sp ru i pi new-s new-w display-po send-k; new- / resp only among warned ones; s r p n ne res display-p send- ambiguous, split-p unknown"
+    has "$TA" '^neww:new-window,send:send-keys,splitw:split-window,splitp:split-window,split-pane:split-window,respawnp:respawn-pane,respawnw:respawn-window,run:run-shell,if:if-shell,popup:display-popup,pipep:pipe-pane$' \
+      "fact (this machine's tmux, R8-6): the aliases, and the default command-aliases splitp / split-pane"
+  else echo "  SKIP: this tmux has no display-popup (< 3.2): the whole-line check is for 3.2+ (the threshold checks below still run)"; fi
+  LT=$(sed -n 's/^ *for o in \(new-session:[0-9][^;]*\); do$/\1/p' "$RS_HOME/remote/launch.sh"); e=""; [ -n "$LT" ] || e=" (launch.sh's tmux table not found)"
+  for o in $LT; do c=${o%:*}; n=${o##*:}; w=$(printf %s "$c" | cut -c1-"$n"); r=$(rv "$TP" "$w")   # at its length: warned command(s) only
+    case "$r" in ''|ambiguous|unknown|'?'*) e="$e $w=${r:-missing}" ;; *) for x in $(printf %s "$r" | tr '|' ' '); do case " $LT " in *" $x:"*) ;; *) e="$e $w=$r" ;; esac; done ;; esac
+    [ "$n" -le 1 ] || { w=$(printf %s "$c" | cut -c1-$((n - 1))); r=$(rv "$TP" "$w")   # one shorter: ambiguous with another, unknown, or not a warned one
+      case "$r" in ambiguous|unknown) ;; ''|*'|'*|'?'*) e="$e $w=${r:-missing}" ;; *) case " $LT " in *" $r:"*) e="$e $w=$r" ;; esac ;; esac; }
+  done
+  [ -z "$e" ] && ok "R8-6: each length in launch.sh's tmux table is the shortest prefix this tmux runs only as warned commands (new: new-session's alias; one shorter: ambiguous with another command, or unknown)" || bad "R8-6: launch.sh's tmux table vs this tmux:$e"
+  LA=$(sed -n 's/^ *case "\$t" in \(neww|[^)]*\)) v=\$t ;; esac ;;$/\1/p' "$RS_HOME/remote/launch.sh"); e=""; [ -n "$LA" ] || e=" (launch.sh's alias list not found)"
+  for w in $(printf %s "$LA" | tr '|' ' '); do r=$(rv "$TA" "$w"); case " $LT " in *" $r:"*) ;; *) [ "$w:$r" = popup:unknown ] || e="$e $w=${r:-missing}" ;; esac; done
+  [ -z "$e" ] && ok "R8-6: each alias in launch.sh's tmux list is one this tmux runs as a warned command" || bad "R8-6: launch.sh's tmux aliases vs this tmux:$e"
 else echo "  SKIP: no tmux here: the tmux fact is not reproduced (run envdrop.sh on a box)"; fi
+TB=$T/tbin; mkdir -p "$TB"   # envdrop.sh's tmux plumbing on a stub: an older tmux's usage line, the ambiguous / unknown lines, anything else
+printf '%s\n' '#!/usr/bin/env bash' '[ "$1" != -V ] || { echo "tmux 2.9-stub"; exit 0; }' 'while [ "$#" -gt 0 ]; do case "$1" in -S|-f) shift 2 ;; *) break ;; esac; done' \
+  'case "$1" in kill-server) exit 0 ;; new-session|split) eval "c=\${$#}"; case "$c" in *probe*) setsid sh -c "$c" </dev/null >/dev/null 2>&1 & ;; esac; exit 0 ;; esac' \
+  '[ "${2:-}" = "-~" ] || exit 1' \
+  'case "$1" in sp|splitp) echo "usage: split-window [-bdhvP] [-c start-directory] [shell-command]" ;; resp) echo "ambiguous command: resp, could be: respawn-pane, respawn-window" ;;' \
+  '  s) echo "ambiguous command: s, could be: send-keys, set-option" ;; display-po) echo "unknown command: display-po" ;; *) echo "server exited unexpectedly" ;; esac; exit 1' > "$TB/tmux"; chmod +x "$TB/tmux"
+O=$(PATH="$TB:$PATH" bash "$EG" tmux 2>&1); RC=$?; L2=$(printf '%s\n' "$O" | sed -n '2p')
+[ "$RC" = 0 ] && has "$L2" '^tmux_split_prefix_env=5 (want unset) tmux_prefix=sp:split-window,ru:?(server_exited_unexpectedly),' "envdrop.sh: the tmux R8-6 line on a stub (plumbing): an older tmux's usage line names the command; any other reply is ?(…), never a guess" \
+  || { bad "envdrop.sh: tmux stub (rc=$RC)"; printf '%s\n' "$O" | head -3 | sed 's/^/    | /'; }
+has "$L2" ',resp:respawn-pane|respawn-window,' "...ambiguous among the warned commands only: their names"; has "$L2" ',s:ambiguous,' "...ambiguous with another: ambiguous"
+has "$L2" ',display-po:unknown,' "...unknown command: unknown"; has "$L2" ' tmux_alias=neww:?(server_exited_unexpectedly),.*,splitp:split-window,' "...the alias list asked the same way"
 if command -v setpriv >/dev/null 2>&1; then O=$(bash "$EG" setpriv 2>&1)
   has "$O" '^setpriv_version=[^ ]* setpriv_reset_env=unset (want unset) setpriv_reset_prefix=unset (want unset)$' "fact (this machine's setpriv): --reset-env, and its prefix --res, clear CUDA_VISIBLE_DEVICES"
 else echo "  SKIP: no setpriv here: the setpriv fact is not reproduced (run envdrop.sh on a box)"; fi

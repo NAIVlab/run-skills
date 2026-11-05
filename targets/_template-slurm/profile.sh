@@ -21,6 +21,6 @@ T_DEFAULT_GPU_TYPE=any           # gres type name, or 'any' (count-only availabi
 T_MAXTIME=7-00:00:00             # cluster-wide walltime cap; policy.sh lowers it per partition (P_MAXTIME)
 T_FORBIDDEN_QOS=''               # QOS names rejected when found in SBATCH_EXTRA
 T_SBATCH_EXTRA_ALLOW=''          # extra sbatch options SBATCH_EXTRA may use beyond the shipped set (e.g. '--open-mode -w'); others warn
-T_PARTITIONS='gpu cpu'           # a display list (error messages, run-avail's sinfo -p; spaces or commas separate); policy.sh is the authority: rsk grant never refuses a --partition this lacks, it records it with a NOTE
+T_PARTITIONS='gpu cpu'           # a display list (error messages, run-avail's sinfo -p; spaces or commas separate); policy.sh is the authority: rsk grant refuses a --partition this lacks (exit 2) unless --unlisted-partition, then records it with a NOTE — list every partition users name
 T_WATCH_RECOVER=1                # 0 = run-watch never resubmits here (reports needs-ok); 1 = within a table's approved budget
 T_BOOTSTRAP_JOB=''                # submit.sh flags for `run-bootstrap --job` (e.g. '-p cpu -c 8 -m 32G -t 02:00:00'); '' = pass them

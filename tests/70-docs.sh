@@ -553,7 +553,7 @@ for w in "a container started so does not get this launch's CUDA_VISIBLE_DEVICES
 has "$PNOT" '`with a config it cannot read here (…)`' "procedure-nohup: the unreadable-config form"; has "$LSH" 'a config it cannot read here (' "...launch.sh's"
 has "$PNOT" '`--config_file FILE` (relative to the project dir), else `$PROJ/.cache/huggingface/accelerate/default_config.yaml`' "procedure-nohup: which config is read"
 has "$PNOT" 'no other grant covers a GPU container run' "procedure-nohup: only the card or an any grant covers a container run"
-has "$ST" 'a container runtime picking GPUs (`docker run --gpus`…, `apptainer --cleanenv`…)' "$F rail: containers"; has "$ST" '(accelerate.s `gpu_ids`, `/job/hostfile`; no `--config_file` while `ENV_HOOK`, `HF_HOME` or `ACCELERATE_…` may move it)' "$F rail: launcher settings (R7-4: a config it cannot locate too)"
+has "$ST" 'a container runtime picking GPUs (`docker run --gpus`…, `apptainer --cleanenv`…)' "$F rail: containers"; has "$ST" '(accelerate.s `gpu_ids`, `/job/hostfile`; no `--config_file` while `ENV_HOOK`, `ENV_KIND=conda`, `HF_HOME` or `ACCELERATE_…` may move it)' "$F rail: launcher settings (R7-4: a config it cannot locate too; R8-4: conda)"
 has "$RT" 'a container started with GPUs of its own (`docker run --gpus`, `apptainer --cleanenv`)' "README: containers"
 has "$CKT" 'a container runtime that picks GPUs' "conf-keys RUN row: containers"; has "$PST" '`docker run --gpus` / `apptainer --cleanenv`' "project-setup: containers"
 has "$DT" 'A container does not inherit the landing at all' "DESIGN: containers"; has "$AT" '`rs_launchers`: deepspeed / accelerate launch' "AGENTS: rs_launchers"
@@ -596,8 +596,9 @@ has "$DT" 'matches EVERY launch-type action of that run — launch and chain inc
 has "$DT" 'becomes a deny only once a has run: a deny always wins' "DESIGN: the conditional wish"; has "$AT" '`grants.run_deny`' "AGENTS: run_deny"
 has "$RT" '"never relaunch a" stops every launch of a in its scope' "README: the same"
 has "$TG" 'def test_r6_1_a_relaunch_deny_that_names_a_run_stops_every_launch_of_it' "...test_grants.py pins it"; has "$(cat "$RS_HOME/tests/62-rsk-launch.sh")" 'round 6 R6-1' "...tests/62 end to end"
-# R6-5 → R7-2: T_PARTITIONS is the profile's DISPLAY list (policy.sh decides): a --partition is never refused, an unlisted one
-# is recorded with a NOTE; the list splits on commas and whitespace; a GPU type is echoed, never checked
+# R6-5 → R7-2 → R8-3: T_PARTITIONS is the profile's DISPLAY list (policy.sh decides): a --partition it lacks is exit 2 unless
+# --unlisted-partition (the user confirmed it is real), then recorded with a NOTE; the list splits on commas and whitespace;
+# a GPU type is echoed, never checked (the R8-3 refusal itself: the round 8 section below)
 hasnt "$GP" 'raise RskError(f"unknown partition ' "R7-2: grants.check_scope no longer refuses a partition"
 hasnt "$PSLT$ST$DT$AT$PKT$I" '`unknown partition`\|unknown partition .P. (--partition)' "R7-2: no doc promises the partition refusal any more"
 has "$PSLT" "\`NOTE: partition P is not in the profile's display list (T_PARTITIONS of <t>: a, b; <u>: none) — recorded as given: policy.sh, not the profile, decides which partitions exist; the record matches only a plan whose partition is spelled exactly so\`" "procedure-slurm: the R7-2 NOTE"
@@ -608,13 +609,15 @@ has "$PSLT" '`(scope.partitions of #i in FILE)` after P' "procedure-slurm: impor
 has "$PSLT" 'split on commas and whitespace: `gpu,preempt` is two' "procedure-slurm: commas separate"
 has "$HP" 'partitions=split_partitions(f\[6\])' "...harness.targets reads each profile's T_PARTITIONS"; has "$HP" 're.split(r"\[\\s,\]+", text)' "...split on commas and whitespace"
 has "$PSLT" '`NOTE: GPU type X is not checked' "procedure-slurm: a GPU type is echoed"; has "$GP" 'f"NOTE: GPU type {' "...grants.py"
-has "$ST" 'a `--partition` is recorded as given (a NOTE when `T_PARTITIONS`, a display list, lacks it: check the spelling; GPU types are never checked)' "$F: --partition recorded with a NOTE"
-has "$DT" 'A partition is never refused: `T_PARTITIONS` is the profile.s display list' "DESIGN: the same"; has "$DT" "\`tests/62\` 'round 7 R7-2'" "DESIGN cites tests/62"
-has "$AT" 'never a partition (`T_PARTITIONS` is a display list, `harness.split_partitions`' "AGENTS: the same"; has "$AT" '`grants.partition_note`' "AGENTS: partition_note"
-has "$(tr '\n' ' ' < "$RS_HOME/targets/_template-slurm/profile.sh")" 'a display list (error messages, run-avail.s sinfo -p; spaces or commas separate); policy.sh is the authority: rsk grant never refuses a --partition this lacks' "slurm template: T_PARTITIONS is a display list"
+has "$ST" 'a `--partition` the target.s `T_PARTITIONS` display list lacks is exit 2 too: check the spelling with the user — one they confirm is real (policy.sh decides) takes `--unlisted-partition` and is recorded with a NOTE (GPU types are never checked)' "$F: --partition: exit 2 unless --unlisted-partition, then a NOTE (R8-3)"
+has "$DT" 'A partition is checked against `T_PARTITIONS`, the profile.s display list' "DESIGN: the same"; has "$DT" "\`tests/62\` 'round 7 R7-2' records and enforces such a deny; 'round 8 R8-3' refuses the typo" "DESIGN cites tests/62"
+has "$AT" 'a partition no scoped Slurm target.s `T_PARTITIONS` lists, unless `--unlisted-partition`' "AGENTS: the same"; has "$AT" '`T_PARTITIONS` is a display list, `harness.split_partitions`' "AGENTS: split_partitions"; has "$AT" '`grants.partition_note`' "AGENTS: partition_note"
+has "$(tr '\n' ' ' < "$RS_HOME/targets/_template-slurm/profile.sh")" 'a display list (error messages, run-avail.s sinfo -p; spaces or commas separate); policy.sh is the authority: rsk grant refuses a --partition this lacks (exit 2) unless --unlisted-partition, then records it with a NOTE' "slurm template: T_PARTITIONS is a display list"
 hasnt "$(cat "$RS_HOME/targets/_template-slurm/profile.sh")" 'what `rsk grant` checks a --partition against' "slurm template: the R6-5 'checked against' wording is gone"
 has "$PKT" '`T_PARTITIONS` is a display list (error messages, `run-avail`.s `sinfo -p`; spaces or commas separate): `policy.sh`.s `t_partition` decides which partitions exist' "packs.md: the same"
-has "$I" '`T_PARTITIONS` is a display list (spaces or commas; `policy.sh` decides which partitions exist — `rsk grant` only NOTEs a `--partition` it lacks)' "INSTALL: the same"
+has "$I" '`T_PARTITIONS` is a display list (spaces or commas; `policy.sh` decides which partitions exist — `rsk grant` refuses a `--partition` it lacks, exit 2, unless `--unlisted-partition`: list every partition the user may name)' "INSTALL: the same"
+for f in "$PSLT" "$ST" "$DT" "$AT" "$PKT" "$I" "$(cat "$RS_HOME/targets/_template-slurm/profile.sh")"; do   # R8-3: the R7-2 promise is gone everywhere
+  hasnt "$f" 'is never refused\|never refuses a --partition\|never refuses one the list lacks\|only NOTEs a `--partition`\|never a partition (' "R8-3: no doc says a partition the display list lacks is never refused"; done
 has "$(cat "$RS_HOME/bin/run-avail")" "tr ' ' ','" "...run-avail hands sinfo -p a comma list (why commas separate)"
 has "$TG" 'def test_r7_2_a_partition_the_profile_does_not_list_is_recorded_with_a_note' "...test_grants.py pins it"; has "$TG" 'def test_r7_2_t_partitions_splits_on_commas_and_whitespace' "...and the split"
 has "$(cat "$RS_HOME/tests/62-rsk-launch.sh")" 'round 7 R7-2' "...tests/62 end to end (a policy partition the profile omits: recorded, enforced)"
@@ -725,7 +728,7 @@ has "$(la6 'nerdctl run --gpus all img')" "^WARNING: RUN runs nerdctl with --gpu
 has "$(la6 'python -m accelerate.commands.accelerate_cli launch --gpu_ids 0 t.py')" '^WARNING: RUN runs .* with --gpu_ids — such a launcher' "rs_launchers: python -m accelerate.commands.accelerate_cli launch is accelerate"
 has "$PNOT" '`docker` / `podman` / `nerdctl` /' "procedure-nohup: nerdctl"; has "$PNOT" '`python -m accelerate.commands.accelerate_cli launch`' "procedure-nohup: accelerate_cli"
 # R7-4: accelerate launch with no --config_file when the config it reads is unknown (an ENV_HOOK, a conf or RUN naming HF_HOME / ACCELERATE_…)
-w='with no --config_file: the config accelerate reads is unknown (ENV_HOOK .<hook>. may move it | .ws.conf names <NAME>, which may move it | RUN names <NAME>, which may move it | .ws.conf did not source here | .ws.conf could not be read here)'
+w='with no --config_file: the config accelerate reads is unknown (ENV_HOOK .<hook>. may move it | ENV_KIND=conda: conda activate .<env>. applies the env.s own variables (HF_HOME / ACCELERATE_… among them), which may move it | .ws.conf names <NAME>, which may move it | RUN names <NAME>, which may move it | .ws.conf did not source here | .ws.conf could not be read here)'
 has "$PNOT" "$w" "procedure-nohup: the R7-4 WARNING"
 has "$PNOT" 'give it --config_file FILE (read here, bound in the plan) and drop any GPU flags and settings, or name the GPUs it will use to the user' "...its advice"
 has "$LSH" 'give it --config_file FILE (read here, bound in the plan) and drop any GPU flags and settings, or name the GPUs it will use to the user' "...launch.sh's"
@@ -733,7 +736,7 @@ for k in "ENV_HOOK '\${EH//" '.ws.conf names ${BASH_REMATCH\[2\]}, which may mov
   has "$LSH" "$k" "...launch.sh's reason: $k"; done
 has "$PNOT" 'when the conf sets `ENV_HOOK` (env.sh sources it after setting `HF_HOME`, and it may set anything)' "procedure-nohup: why a hook makes it unknown"
 has "$PNOT" 'the project.s own default config is still read, and bound, beside it' "procedure-nohup: the default config is still read"
-has "$DT" "\`tests/61\` 'R7-4'" "DESIGN cites tests/61 R7-4"; has "$T61" 'R7-4: ' "...tests/61 R7-4"; has "$CKT" 'this conf sets `ENV_HOOK`, or it or RUN names `HF_HOME` / `ACCELERATE_…` other than as an expansion' "conf-keys RUN row: R7-4"
+has "$DT" "\`tests/61\` 'R7-4'" "DESIGN cites tests/61 R7-4"; has "$T61" 'R7-4: ' "...tests/61 R7-4"; has "$CKT" 'this conf sets `ENV_HOOK` or `ENV_KIND=conda`, or it or RUN names `HF_HOME` / `ACCELERATE_…` other than as an expansion' "conf-keys RUN row: R7-4 (+ R8-4: conda)"
 la7() { ( DEV=0; PROJ=$T/la6; RS_CFGWHY=$2; eval "$LA"; rs_launchers "$1" 2>&1 ); }
 has "$(la7 'accelerate launch t.py' "ENV_HOOK 'h.sh' may move it")" "^WARNING: RUN runs accelerate launch with no --config_file: the config accelerate reads is unknown (ENV_HOOK 'h.sh' may move it) — " "rs_launchers: the doc's hook case"
 has "$(la7 'ACCELERATE_USE_CPU=0 accelerate launch t.py' '')" "unknown (RUN names ACCELERATE_USE_CPU, which may move it)" "rs_launchers: the doc's RUN-names-ACCELERATE_ case"
@@ -784,6 +787,99 @@ has "$PNOT" 'rc is always 0–255' "procedure-nohup: the exit record"; has "$DT"
 for f in "$PNOT" "$DT"; do has "$f" 'RS_STRESS_TEST=1 bash selftest.sh' "a doc names the opt-in reproduction"; has "$f" 'bash 5.2.37 returned -1' "a doc names the bash fact"; done
 has "$LSH" '\[ "$_rw_w" -lt 0 \] || \[ "$_rw_w" -gt 255 \] || \[ "$_rw_w" = 127 \] || _rw_rc=$_rw_w' "...launch.sh's wrapper keeps 143"
 has "$T61" 'RS_STRESS_TEST' "...tests/61's opt-in section"; has "$T61" 'bash 5.2.37 here wrote rc=-1 term=1 in 3 of 60 such runs' "...where the fact was seen"
+echo "-- round 8: what the docs now promise, each beside the code that does it (docs @@ code) --"
+TST=$(cat "$RS_HOME/tests/py/test_status.py"); T88=$(cat "$RS_HOME/tests/88-vgate.sh"); TPS=$(tr '\n' ' ' < "$RS_HOME/targets/_template-slurm/profile.sh")
+# R8-1: every list argument of rsk grant add|deny is split on commas, each item stripped; an empty item or one holding whitespace is
+# exit 2 naming it; --job takes job ids / pids; validate() rejects a stored list item with whitespace (an invalid deny matches everything)
+has "$PSLT" 'Every list argument of `rsk grant add|deny` (`-T`, `--partition`, `--gpu-type`, `--class`, `--name`, `--job`, `--run`, `--action`; repeatable, `a,b`) is split on commas and each item stripped (`--name .b1, b2.` is b1 and b2)' "procedure-slurm: R8-1, the split"
+has "$PSLT" "an empty item or one with whitespace inside is exit 2 naming it, nothing recorded (\`--job '101 102': item '101 102' holds whitespace …\`, \`--job '101,': an empty item …\`)" "procedure-slurm: R8-1, the refusals"
+has "$GP" ': item {p!r} holds whitespace — no name, job id, partition, ' "...grants._split's words"; has "$GP" ': an empty item (items are separated by commas' "...the empty item's"
+has "$GP" 'FLAGS = {"targets": "-T", "partitions": "--partition", "gpu_types": "--gpu-type", "classes": "--class",' "...every list flag goes through grants._arg"
+has "$PSLT" '`--job` takes job ids or pids only (`123`, `123_4`)' "procedure-slurm: --job ids only"; has "$GP" 'JOB_ID = re.compile(r"\[0-9\]+(?:_\[0-9\]+)?")' "...grants.JOB_ID"
+has "$PSLT" 'with a list item holding whitespace is invalid (`whitespace in a scope item`): as a deny it matches everything (fail closed), anything else covers nothing' "procedure-slurm: a stored spaced item"
+has "$GP" ': whitespace in a scope item (it never matches what it names; ' "...grants.validate's words"; has "$GP" '^SPACE_FREE = ("targets", "partitions", "gpu_types", "classes", "names", "runs", "plans", "jobs")' "...grants.SPACE_FREE"
+has "$ST" 'List flags split on commas (`--name .b1, b2.` is two); an empty item or one holding a space is exit 2' "$F §3: R8-1"
+has "$DT" 'Every list argument of `rsk grant add|deny` (targets, partitions, GPU types, classes, names, jobs, runs, actions) is split on commas and each item stripped' "DESIGN: R8-1"
+has "$DT" 'so such a deny, imported or edited in by hand, is invalid and matches everything (R8-1; cancel identities, which hold a WorkDir, are exempt)' "DESIGN: R8-1, stored items"
+has "$AT" 'every list argument split on commas and stripped, an empty or spaced item exit 2, `--job` ids / pids only (`grants._split`, R8-1), a stored spaced item invalid (`grants._spaced`)' "AGENTS: R8-1"
+for t in test_r8_1_split_strips_comma_items_and_refuses_empty_or_spaced_ones test_r8_1_a_stored_item_with_whitespace_is_invalid_and_a_deny_then_matches_everything \
+         test_r8_1_rsk_grant_lists_split_on_commas_stripped_whitespace_inside_is_exit_2; do has "$TG" "def $t" "...test_grants.py: $t"; done
+has "$T62" 'round 8 R8-1' "...tests/62 end to end"
+# R8-2: rsk cancel --approve: the user's words must name what is cancelled, as a whole token, else exit 4 and nothing is recorded
+has "$ST" 'Their words must name what is cancelled, as a whole word — the job id / pid or the run.s id or name (`rsk cancel <run>`: the run, or every job id) — else exit 4 `needs user: the words do not name …`, nothing recorded: ask which one they mean ("cancel it" names nothing)' "$F §3: R8-2"
+has "$PSLT" 'The words given to `--approve` must name what is cancelled, as a whole word: for `--job J` the job id J or the run.s id or job name; for `rsk cancel <run>` the run id or name, or every job id it cancels (a chain: the run, or all its jobs)' "procedure-slurm: R8-2"
+has "$PSLT" '`needs user: the words do not name <J|run> — "<words>" names none of: job J = run <run> (<name>) on <t>; nothing recorded or cancelled`, no approval and no ssh' "procedure-slurm: R8-2, its words"
+has "$PSLT" '(`101` is not named by `1101` or `101_2`, `sw1` not by `sw10`, `exp--sw1` or `sw1-b`; trailing punctuation is fine: `cancel job 101.`)' "procedure-slurm: whole tokens (test_cancel.Named pins these examples)"
+has "$PNOT" 'The `--approve` words must name what is stopped, as a whole word: the pid (`--job <pid>`) or the run.s id or name' "procedure-nohup: R8-2"
+has "$PNOT" '`needs user: the words do not name <pid|run> — "<words>" names none of: pid P = run <run> (<name>) on <t>; nothing recorded or cancelled`' "procedure-nohup: R8-2, its words"
+has "$CP" 'out(f"needs user: the words do not name {asked or ' "...cancel.authorize prints them"; has "$CP" 'f"none of: {what} on {target}; nothing recorded or cancelled")' "...the rest of them"
+has "$CP" 'what = "; ".join(f"{unit} {i.job}" + (f" = run {i.run} ({i.name})"' "...job J = run <run> (<name>)"; has "$CP" 'unit = "job" if kind == "slurm" else "pid"' "...job / pid"
+has "$CP" 'def named(' "...cancel.named"; has "$CP" 'def unnamed(' "...cancel.unnamed"; has "$CP" 'miss = unnamed(items, words) if words is not None else \[\]' "...checked before the approval is recorded"
+has "$DT" 'This is a token check against good-faith slips, not proof of consent' "DESIGN: R8-2's honest limit"; has "$DT" '(R8-2, `cancel.named` / `cancel.unnamed`)' "DESIGN: R8-2"
+has "$AT" '`cancel.named` / `cancel.unnamed`, R8-2' "AGENTS: R8-2"; has "$RT" '"cancel job 123" must name the job (its id, or the run.s name)' "README: R8-2"
+for t in test_r8_2_the_users_words_must_name_what_is_cancelled test_r8_2_a_chain_needs_its_run_or_every_job_and_cancel_own_is_unchanged \
+         test_r8_2_nohup_words_name_the_pid_or_the_run test_r8_2_named_takes_whole_tokens_only_the_docs_examples; do has "$TC" "def $t" "...test_cancel.py: $t"; done
+has "$T62" 'round 8 R8-2' "...tests/62 end to end"
+# R8-3: a partition no scoped Slurm target's T_PARTITIONS lists is exit 2 unless --unlisted-partition (import: "unlisted_ok": true)
+has "$PSLT" "is exit 2, nothing recorded: \`partition P is not in the profile's display list (T_PARTITIONS of <t>: a, b) — nothing recorded: check the spelling with the user (a misspelt partition never matches: the deny would not be enforced, the grant would cover nothing); if it is a real partition the display list omits (policy.sh decides which exist), record it again with --unlisted-partition\`" "procedure-slurm: the R8-3 refusal"
+has "$GP" "the profile's display list (T_PARTITIONS of {lists}) — nothing recorded: check the \"$" "...grants.check_scope's words"
+has "$GP" '"spelling with the user (a misspelt partition never matches: the deny would not be "$' "...the rest"; has "$GP" 'omits (policy.sh decides which exist), record it again with {unlisted_how}", USAGE)' "...record it again with"
+has "$GP" '^UNLISTED_FLAG = "--unlisted-partition"$' "...grants.UNLISTED_FLAG"; has "$GP" 'def unlisted_partitions(' "...grants.unlisted_partitions"
+has "$PSLT" '`… with "unlisted_ok": true in record #i`' "procedure-slurm: import's form"; has "$GP" "unlisted_how=f'\"unlisted_ok\": true in record #{i}')" "...grants.py's"
+has "$PSLT" '(import: that record.s `"unlisted_ok": true`, a boolean, never stored)' "procedure-slurm: unlisted_ok"; has "$GP" 'ok = raw.pop("unlisted_ok", False)' "...import pops it (never stored)"
+has "$PSLT" 'No check, the NOTE only, when a scoped Slurm target.s profile lists no `T_PARTITIONS` (`<u>: none`) or only workstations are in scope' "procedure-slurm: where nothing is checked"
+has "$GP" 'if unchecked or not any(t.kind != "nohup" for t in scoped):' "...unlisted_partitions: no list, or no Slurm target"
+has "$DT" 'The rule now (R8-3): a partition no scoped Slurm target.s list names' "DESIGN: R8-3"; has "$DT" 'a typo (`dbug` for `debug`) left the user.s "never" unenforced' "DESIGN: why"
+has "$AT" '(R8-3, `grants.unlisted_partitions`, `grants.check_scope(…, unlisted_ok)`' "AGENTS: R8-3"
+has "$PKT" 'refuses one the list lacks (exit 2: a typo would never match) unless the user confirms it is real (`--unlisted-partition`; import: `"unlisted_ok": true`)' "packs.md: R8-3"
+has "$TG" 'def test_r8_3_a_partition_the_display_list_lacks_is_exit_2_unless_unlisted_partition' "...test_grants.py pins it"; has "$T62" 'round 8 R8-3' "...tests/62 end to end"
+# R8-4: ENV_KIND=conda leaves the config accelerate launch reads (without --config_file) unknown: conda activate runs after HF_HOME
+has "$PNOT" 'when `ENV_KIND=conda` (env.sh runs `conda activate` after setting `HF_HOME`, and it applies the env.s own variables' "procedure-nohup: R8-4"
+has "$LSH" "RS_CFGWHY=\"ENV_KIND=conda: conda activate '\${EN//\[\[:cntrl:\]\]/?}' applies the env's own variables (HF_HOME / ACCELERATE_… among them), which may move it\"" "...launch.sh's reason, word for word"
+has "$DT" 'when `ENV_KIND=conda` (env.sh runs `conda activate` after exporting `HF_HOME`' "DESIGN: R8-4"; has "$DT" "\`tests/61\` 'R8-4'" "DESIGN cites tests/61 R8-4"; has "$T61" 'R8-4: ' "...tests/61 R8-4"
+has "$AT" '`ENV_KIND=conda` (R8-4: `conda activate` applies the env.s own variables)' "AGENTS: R8-4"
+a=$(grep -n 'export HF_HOME=' "$RS_HOME/remote/env.sh" | head -1 | cut -d: -f1); b=$(grep -n 'conda activate "$ENV_NAME"' "$RS_HOME/remote/env.sh" | head -1 | cut -d: -f1)
+[ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ] && ok "env.sh fact R8-4 rests on: HF_HOME is exported (line $a) before conda activate (line $b)" || bad "env.sh: HF_HOME before conda activate ($a, $b)"
+# R8-5: a hostfile deepspeed's -H / --hostfile names is read and bound in launch_cfg
+has "$PNOT" 'A hostfile named by deepspeed.s `-H FILE` / `--hostfile FILE` (`-HFILE`, `-H=FILE`, `--hostfile=FILE`, an argparse prefix such as `--hostf`; every one given) is read too, as `--config_file` is' "procedure-nohup: R8-5"
+has "$PNOT" 'deepspeed.s `-H`/`--hostfile` file(s), else `/job/hostfile`)' "procedure-nohup: launch_cfg names it"; has "$LP" "each file deepspeed's -H / --hostfile" "...launch.py's _cfgs says so"
+has "$DT" '`ds_hostfile_flag` — want `h1,h2,h3,h4,h5,h7`' "DESIGN: launchers.sh's ds_hostfile_flag"; has "$VL" 'ds_hostfile_flag=' "...launchers.sh prints it"
+has "$DT" "\`tests/61\` 'R8-5'" "DESIGN cites tests/61 R8-5"; has "$T61" 'R8-5: ' "...tests/61 R8-5"; has "$AT" 'R8-5: each file deepspeed.s `-H` / `--hostfile` names too' "AGENTS: R8-5"
+la8() { ( DEV=0; PROJ=$T/la6; eval "$LA"; rs_launchers "$1" 2>/dev/null; echo "cfg=$LAUNCH_CFG" ); }
+printf 'localhost slots=1\n' > "$T/la6/hosts"
+for r in 'deepspeed --hostfile hosts t.py' 'deepspeed -Hhosts t.py' 'deepspeed -H=hosts t.py' 'deepspeed --hostf hosts t.py' 'deepspeed --hostfile=hosts t.py'; do
+  has "$(la8 "$r")" '^cfg=hosts:[0-9a-f]\{64\}$' "rs_launchers binds the doc's spelling: $r"; done
+cp "$T/la6/hosts" "$T/hosts.abs"; has "$(la8 "deepspeed -H $T/hosts.abs t.py")" "^cfg=$T/hosts.abs:[0-9a-f]\{64\}\$" "rs_launchers: an absolute path (outside the project) as given"
+has "$(la8 'cd x && deepspeed -H hosts t.py')" '^cfg=hosts:unreadable$' "rs_launchers: relative after a cd: unreadable"
+has "$(la8 'deepspeed -H $HF t.py')" '^cfg=\$HF:unreadable$' "rs_launchers: through an expansion: unreadable"
+has "$(la8 'deepspeed t.py --hostfile')" "^cfg='':unreadable\$" "rs_launchers: a flag with no value: '':unreadable (the block %q-quotes it)"
+# R8-6: tmux runs a command by any unique prefix of its name, an alias or a default command-alias
+has "$PNOT" 'or a unique prefix tmux accepts (`split`, `spl`, `sp`, `run-`, `ru`, `i`, `if-`, `pi`; `new-` and `resp` too: a word at least as long as the shortest prefix only these commands share' "procedure-nohup: R8-6"
+has "$PNOT" '`s`, `r`, `p`, `ne`, `res`, `display-p` or `send-`, which tmux finds ambiguous with a command not listed here and refuses, do not warn' "procedure-nohup: what does not warn"
+hasnt "$PNOT" '`pipe-pane` and their prefixes (a session made' "procedure-nohup: the pre-R8-6 'their prefixes' wording is gone"
+has "$DT" 'under any name tmux runs them by — an alias, a default command-alias (`splitp`, `split-pane`) or any unique prefix tmux accepts' "DESIGN: R8-6"
+has "$AT" 'tmux — any alias or unique prefix tmux runs as a warned command (R8-6' "AGENTS: R8-6"
+has "$LSH" 'for o in new-session:3 new-window:3 split-window:2 respawn-pane:4 respawn-window:4 run-shell:2 if-shell:1 display-popup:10 pipe-pane:2 send-keys:6; do' "...launch.sh's prefix table"
+has "$LSH" 'case "$t" in neww|send|splitw|splitp|split-pane|respawnp|respawnw|popup|pipep) v=$t ;; esac' "...and its alias list"
+for k in tmux_split_prefix_env tmux_prefix tmux_alias; do
+  has "$PNOT" "\`$k=\`" "procedure-nohup cites envdrop.sh's $k="; has "$DT" "\`$k=\`" "DESIGN cites envdrop.sh's $k="; has "$VE" "$k=" "...tests/vgate/envdrop.sh prints $k="; done
+has "$T88" "R8-6: each length in launch.sh.s tmux table is the shortest prefix" "...tests/88 checks the table against this machine's tmux"
+for r in 'tmux split -d p' 'tmux spl p' 'tmux sp p' 'tmux run- p' 'tmux ru p' 'tmux i p' 'tmux if- p' 'tmux pi p' 'tmux new- p' 'tmux resp p' 'tmux splitp p' 'tmux split-pane p'; do
+  has "$(la6 "$r")" "^WARNING: RUN starts its command through tmux" "rs_launchers warns for the doc's: $r"; done
+for r in 'tmux s p' 'tmux r p' 'tmux p x' 'tmux ne p' 'tmux res p' 'tmux display-p' 'tmux send- p'; do
+  hasnt "$(la6 "$r")" 'WARNING' "rs_launchers: no warning for the doc's $r (tmux finds it ambiguous)"; done
+# R8-7: rsk status never crashes on a damaged grants record; --json lists one validate() rejects as {record, invalid, fail_closed}
+has "$PSLT" 'in the `--json` of both `rsk grant list` and `rsk status`, as `{record, invalid, fail_closed}` — never described; no view fails on one' "procedure-slurm: R8-7"
+has "$STP" '{"record": g, "invalid": grants.valid(g), "fail_closed": grants.fail_closed(g)}' "...status.py's --json"; has "$GP" '{"record": r, "invalid": valid(r), "fail_closed": fail_closed(r)}' "...grant list --json"
+has "$DT" 'the `--json` of both as `{record, invalid, fail_closed}` (R8-7' "DESIGN: R8-7"; has "$AT" '`--json` `{record, invalid, fail_closed}`, never described (R8-7)' "AGENTS: R8-7"
+has "$TST" 'def test_r8_7_status_never_crashes_on_a_damaged_grants_record' "...test_status.py pins it"
+# round 8's honest limits (R7-8's list): tools left unwarned, tmux's own config, a .wandb_env setting HF_HOME
+for w in '`byobu`, `lxc` / `incus exec`, `ray job submit`, `mpirun` / `mpiexec` `--host` / `--hostfile`, `su -l`, `pixi run --clean-env`, `run0`' \
+         'tmux commands run from a user `command-alias`, a `-f` config, `source-file` or `set-hook`' 'a `.wandb_env` that sets `HF_HOME` (env.sh sources it after exporting `HF_HOME`'; do
+  has "$DT" "$w" "DESIGN honest limit: $w"; done
+has "$PNOT" 'tools not on the list at all (`byobu`, `lxc` / `incus exec`, `ray job submit`, `mpirun` / `mpiexec` `--host`, `su -l`, `pixi run --clean-env`, `run0`); tmux commands it runs from a user `command-alias`, a `-f` config, `source-file` or `set-hook`; and a `.wandb_env` that sets `HF_HOME`' "procedure-nohup: the same honest limits"
+a=$(grep -n '\. "$PROJ/.wandb_env"' "$RS_HOME/remote/env.sh" | head -1 | cut -d: -f1); b=$(grep -n 'export HF_HOME=' "$RS_HOME/remote/env.sh" | head -1 | cut -d: -f1)
+[ -n "$a" ] && [ -n "$b" ] && [ "$b" -lt "$a" ] && ok "env.sh fact the .wandb_env limit rests on: it is sourced (line $a) after HF_HOME is exported (line $b)" || bad "env.sh: .wandb_env after HF_HOME ($a, $b)"
 CK=$(cat "$RS_HOME/$CKF" 2>/dev/null)
 has "$CK" 'T_XFER_HOST.*profile' "conf-keys: the transfer host is a profile fact"
 hasnt "$CK" '^| `XFER_HOST`' "conf-keys: no XFER_HOST conf key (one per conf would misroute other targets)"
@@ -862,7 +958,7 @@ budget lib/common.sh 141; budget remote/env.sh 170; budget remote/bootstrap.sh 1
 # counts journal receipts named the run id or <run id>--aNN plus this WorkDir's squeue rows no receipt names, says unknown when squeue failed or a
 # receipt is unreadable, and undoes a policy's set -f / failglob (+15); the block line (+1)
 budget remote/status.sh 175   # generous on purpose: every lookup has an explicit failure branch; compressing them hides bugs
-budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 263; budget AGENTS.md 338; budget INSTALL.md 238 # AGENTS +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
+budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 263; budget AGENTS.md 348; budget INSTALL.md 238 # AGENTS +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
 # P3-P7 docs: AGENTS +25 (the rsk modules, tests/62, the authorisation model, the P7 nudge, the new rails); README +10 (what is asked and
 # what is not, the honest limit, the rsk launch step, src/); INSTALL +5 (doctor --legacy-refs, earlier permissions, standing words)
 # P3 review: AGENTS +8 (--rs-warnings, the plan skips launch.sh's env gate, the new bound fields, plan-scoped approvals, the review's never-covered list)
@@ -887,7 +983,10 @@ budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget RE
 # conf read in every mode, the accelerate config it cannot locate, the relative --config_file after a cd, nerdctl, the tools that start the
 # command elsewhere with envdrop.sh, launch_cfg bound (+6); an attempt's name stands for its run, T_PARTITIONS a display list with
 # partition_note / scope_notes, status flags too (+2)); README +1 (the tools that start the command elsewhere are a warning too)
-budget skills/remote-run/SKILL.md 148; budget bin/run-watch 1102   # round 3: SKILL +11 (the -y rule with grant kinds, --allow-warnings availability|any,
+# round 8: AGENTS +10 (rs_launchers: ENV_KIND=conda, tmux by any prefix with its tests/88 check, the -H / --hostfile file bound (+3);
+# grants: --unlisted-partition with unlisted_partitions / check_scope(unlisted_ok), list arguments split and checked (_split,
+# _spaced), status --json's INVALID records (+5); cancel words naming the job, cancel.named / unnamed (+2)); README +0
+budget skills/remote-run/SKILL.md 153; budget bin/run-watch 1102   # round 3: SKILL +11 (the -y rule with grant kinds, --allow-warnings availability|any,
 # derived actions and the sticky class, relaunch only after an infrastructure end, cancel approvals bound / 1 h / used up, rsk watch --act vs
 # denies (also in §3), `plan <id> is free again`); run-watch +116 lines (881 → 997), D11 — target column and same-target inheritance, sticky unknowns from any state file
 # (foreign/settled/R_FU, the journal hands back the row's own status), fail-stop inherited with rows plus --release of a non-row trigger, pending
@@ -903,6 +1002,8 @@ budget skills/remote-run/SKILL.md 148; budget bin/run-watch 1102   # round 3: SK
 # round 7: SKILL +5 (an attempt's name stands for its run, a --partition recorded with a NOTE (T_PARTITIONS a display list), rsk status
 # flags too (+1); the R7-8 sentence: the payload is code, an older run-watch (+2); an accelerate config it cannot locate and a tool
 # that starts the command elsewhere in the GPU rail (+2)).
+# round 8: SKILL +5 (a --partition the display list lacks is exit 2 unless --unlisted-partition, list flags split on commas
+# (+2); the cancel words must name what is cancelled (+2); ENV_KIND=conda in the GPU rail (+1)).
 # round 4: run-watch +60 (997 → 1057) — R4-7 the rsk steer for --act/--approve and RS_WATCH_PARENT (exit 7 once rsk watch is gone, checked
 # before every ssh that acts) with its header lines +38, R4-13 fail-stop looked up every round in every state file + #failstop-released +12,
 # R4-14 a pre-target state line's target inferred or unknown, the settle-path WorkDir and the submit ssh's identity re-check +10.

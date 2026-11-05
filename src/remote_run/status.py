@@ -427,11 +427,13 @@ def cmd_status(args: argparse.Namespace) -> int:
                                   for j in o.jobs],
                          "attempts_listed": o.attempts_ok} for o in obs],
             "runs": [{"run": r, "attempt": a, "state": L.attempt_state(att), **att} for r, a, att in v["runs"]],
-            "unledgered": v["unledgered"], "grants": [
-                {**g, "covers": grants.describe(g), "balance": grants.balance(g, st),
+            "unledgered": v["unledgered"], "grants": [   # R8-7: a record valid() rejects is never described — listed
+                {**g, "covers": grants.describe(g), "balance": grants.balance(g, st),   # as rsk grant list --json does
                  "scope_problems": grants.scope_problems(g, tl)[0] if tl is not None else None,
                  "scope_notes": grants.scope_notes(g, tl) if tl is not None else None}
-                for g in st.grants if isinstance(g, dict) and not g.get("revoked")],
+                if not grants.valid(g) else
+                {"record": g, "invalid": grants.valid(g), "fail_closed": grants.fail_closed(g)}
+                for g in st.grants if grants.valid(g) or not g.get("revoked")],
             "budgets_unknown": st.budgets_unknown, "lease": v["lease"], "lease_state": v["lease_state"],
             "watch_lock": v["watch_lock"],
             "needs_user": v["needs"], "notes": notes}, indent=1, ensure_ascii=False))

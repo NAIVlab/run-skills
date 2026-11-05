@@ -76,12 +76,14 @@ approvals, grants, denies); act when it covers the action, ask only when it does
   one. "Never X" → `rsk grant deny --quote "<their words>" …`: a deny always wins (`rsk watch --act` too) and matches
   what it cannot rule out (a job without a plan, a watch row, a run of unknown class). `--job` is for cancels only: a
   run's launches are denied with `--name '<run>'` (exit 2 otherwise) — an attempt's name (`<run>--a02`, `<run>--a*`)
-  stands for the run; `-T` must name a target the harness knows (exit 2 `unknown target`); a `--partition` is recorded
-  as given (a NOTE when `T_PARTITIONS`, a display list, lacks it: check the spelling; GPU types are never checked). A
-  deny naming a run with `relaunch`/`resubmit` stops every launch of it on any target in its scope (rsk cannot see every
-  earlier attempt): record "if a fails, don't relaunch it" only once a has run. `rsk grant list`, `rsk status` and `rsk
-  doctor` flag a record naming a target the harness does not know (`never matches`). A sweep they approved shares one
-  approval, never one question each. The action is the plan's, never a flag's: a run that ran before = `relaunch`, a
+  stands for the run; `-T` must name a target the harness knows (exit 2 `unknown target`); a `--partition` the target's
+  `T_PARTITIONS` display list lacks is exit 2 too: check the spelling with the user — one they confirm is real (policy.sh
+  decides) takes `--unlisted-partition` and is recorded with a NOTE (GPU types are never checked). List flags split on
+  commas (`--name 'b1, b2'` is two); an empty item or one holding a space is exit 2. A deny naming a run with
+  `relaunch`/`resubmit` stops every launch of it on any target in its scope (rsk cannot see every earlier attempt):
+  record "if a fails, don't relaunch it" only once a has run. `rsk grant list`, `rsk status` and `rsk doctor` flag a
+  record naming a target the harness does not know (`never matches`). A sweep they approved shares one approval, never
+  one question each. The action is the plan's, never a flag's: a run that ran before = `relaunch`, a
   singleton chain = `chain` (each one that applies is checked; a run ran before also when only the target's journal
   shows it — run-watch's runs never enter the ledger: the plan's `info_prior` —, and a deploy that cannot say counts as
   one: fail closed); a run's class is set only at its first attempt.
@@ -96,9 +98,11 @@ approvals, grants, denies); act when it covers the action, ask only when it does
   `NO GRANT` (an `SBATCH_EXTRA` word outside the grant allowlist) or `--same-name-ok`. `--max-time` caps every time limit.
 - "Cancel job 123" → `rsk cancel --job 123 -T <t> --approve "<their words>"`: cancelled once its identity checks out
   (Slurm: name, WorkDir, user; box: pid, start time, boot id); the approval is bound to it, lasts 1 h and is used up by
-  its first cancel, whatever came of it. Your own judgment that a run should stop → ask, unless the user authorised that
-  kind of decision (`cancel_own`; it covers only runs rsk launched for this project; its cancels count against
-  `--max-launches`).
+  its first cancel, whatever came of it. Their words must name what is cancelled, as a whole word — the job id / pid or
+  the run's id or name (`rsk cancel <run>`: the run, or every job id) — else exit 4 `needs user: the words do not name
+  …`, nothing recorded: ask which one they mean ("cancel it" names nothing). Your own judgment that a run should stop
+  → ask, unless the user authorised that kind of decision (`cancel_own`; it covers only runs rsk launched for this
+  project; its cancels count against `--max-launches`).
 - Never someone else's job or process, whatever was approved. Only the user's words at the time, never a grant: a GPU
   another job uses (their words name it: `-d <ids> --gpu-busy-ok`), a `--…-user-asked` policy gate, `rsk sync -D` and
   `rsk bootstrap --job` (both run only with `--approve "<their words>"`).
@@ -116,10 +120,11 @@ restore `grants.json`, or move it and its `.prev` aside and `rsk grant recount`:
   do): RUN's text that sets or clears `CUDA_VISIBLE_DEVICES` or a sibling, anywhere, is refused (exit 2), as
   `APPTAINERENV_<name>=` too, and so is one emptying the environment (`env -i`, `exec -c`); a launcher given its own GPU
   flags (deepspeed `--num_gpus`…, `accelerate launch --gpu_ids`…) is a card WARNING, as are its GPU settings (accelerate's
-  `gpu_ids`, `/job/hostfile`; no `--config_file` while `ENV_HOOK`, `HF_HOME` or `ACCELERATE_…` may move it), a container
-  runtime picking GPUs (`docker run --gpus`…, `apptainer --cleanenv`…) and a tool starting the command without this
-  launch's environment or elsewhere (`docker exec`, `tmux new`, `sudo` without `-E`, `ssh`, `srun`…) — let it use the
-  landing (run the command directly), or name its GPUs to the user. Cancel only after the identity check (`rsk cancel`).
+  `gpu_ids`, `/job/hostfile`; no `--config_file` while `ENV_HOOK`, `ENV_KIND=conda`, `HF_HOME` or `ACCELERATE_…` may
+  move it), a container runtime picking GPUs (`docker run --gpus`…, `apptainer --cleanenv`…) and a tool starting the
+  command without this launch's environment or elsewhere (`docker exec`, `tmux new`, `sudo` without `-E`, `ssh`,
+  `srun`…) — let it use the landing (run the command directly), or name its GPUs to the user. Cancel only after the
+  identity check (`rsk cancel`).
 - Slurm: partition and QOS are `submit.sh`'s decision — no raw `sbatch`/`srun`/`salloc`, no `scontrol update`, no
   `--partition` inside `SBATCH_EXTRA`. A policy refusal (exit 3) is final; `-y` also confirms policy warnings
   (availability, occupancy, SU cost): rsk sends it only when the approved card showed warnings or the covering grant's

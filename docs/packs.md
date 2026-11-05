@@ -38,8 +38,9 @@ every key; [`../AGENTS.md`](../AGENTS.md) documents the `policy.sh` API (`t_part
   `T_TMPDIR` (`project` or the job's `inherit`ed `$TMPDIR`), `T_COMPILE_CACHE`, and `T_SUFFIX` when two targets
   share a filesystem but not an OS or GPU architecture. `T_PARTITIONS` is a display list (error messages, `run-avail`'s
   `sinfo -p`; spaces or commas separate): `policy.sh`'s `t_partition` decides which partitions exist. `rsk grant
-  add|deny|import --partition` never refuses one the list lacks — it records it as given with a NOTE, which `rsk grant
-  list` / `rsk status` repeat — so list the partitions your users name, spelled as the policy takes them.
+  add|deny|import --partition` refuses one the list lacks (exit 2: a typo would never match) unless the user confirms
+  it is real (`--unlisted-partition`; import: `"unlisted_ok": true`) — then it is recorded with a NOTE, which `rsk grant
+  list` / `rsk status` repeat — so list every partition your users name, spelled as the policy takes them.
 - **`T_DESC` and `T_TRIGGERS`** decide routing. `T_TRIGGERS` words are prepended to the installed skill
   description verbatim (some agents match skills lexically), so list the names people actually say: the target
   name, the site's nickname, notable partition or GPU names.

@@ -42,10 +42,10 @@ guard rails built in, and gives the agent a short, per-site reference instead of
   a preemption, a node failure, a reboot; never after a cancel, a failure or a timeout) with the limits you set. The
   agent asks only outside that — a charged partition, more resources, a wider scope, its own idea that a run should
   stop. Your words are recorded verbatim (`rsk grant`), and a "never" of yours also stops `rsk watch --act` ("never
-  relaunch a" stops every launch of a in its scope: rsk cannot see every earlier attempt); "cancel job 123" is bound
-  to that job, for an hour, once; a cancel first checks the job is this project's and yours, and someone else's job is
-  never touched. The record keeps you from being asked twice; it is bookkeeping, not proof that you agreed, and it
-  cannot make an agent comply — it constrains what goes through `rsk`.
+  relaunch a" stops every launch of a in its scope: rsk cannot see every earlier attempt); "cancel job 123" must name
+  the job (its id, or the run's name), and is bound to that job, for an hour, once; a cancel first checks the job is
+  this project's and yours, and someone else's job is never touched. The record keeps you from being asked twice; it is
+  bookkeeping, not proof that you agreed, and it cannot make an agent comply — it constrains what goes through `rsk`.
 - **Cheap, honest monitoring.** One deployed script, `status.sh`, returns a ~2 KB digest of a run: scheduler or PID
   state, restarts, exit footer, error/OOM/NaN hint counts, the wandb URL and the last lines — all from byte-bounded
   reads. The agent reviews often while a run is young or odd and backs off while it is healthy.

@@ -12,15 +12,19 @@
 # GPU flags (R5-2: a counted WARNING), or GPUs by its config (R6-3: accelerate's gpu_ids, deepspeed's /job/hostfile) or a
 # container runtime (R6-2: docker --gpus …, apptainer --cleanenv …; APPTAINERENV_NAME= refused), a tool that starts the
 # command without this launch's environment or elsewhere (R7-3: docker exec, tmux new, sudo without -E, ssh …: a counted WARNING),
-# accelerate's config unknown (R7-4: ENV_HOOK, a conf or RUN naming HF_HOME / ACCELERATE_…), the configs / hostfile read bound
-# as launch_cfg (R7-5: an edit after the card is exit 6), info_prior (R5-4).
+# accelerate's config unknown (R7-4: ENV_HOOK, a conf or RUN naming HF_HOME / ACCELERATE_…; R8-4: ENV_KIND=conda), the configs /
+# hostfile read bound as launch_cfg (R7-5: an edit after the card is exit 6; R8-5: deepspeed -H / --hostfile FILE too), tmux
+# commands by any prefix tmux takes (R8-6: split, spl, run-, i …), info_prior (R5-4).
 # Run by selftest.sh with RS_HOME set:  bash tests/61-launch-remote.sh
 set -u
 . "$RS_HOME/tests/lib.sh"
 if [ ! -r /proc/self/stat ] || ! command -v setsid >/dev/null 2>&1; then
   echo "  SKIP: 61-launch-remote — launch.sh is a Linux remote script (/proc, setsid); run selftest on Linux for it"; exit 0; fi
 H=$T/home; mkdir -p "$H/projects" "$H/miniconda3/etc/profile.d"
-printf 'conda() { case "$1" in activate) [ "$2" = broken ] && export CONDA_DEFAULT_ENV=other || export CONDA_DEFAULT_ENV=$2 ;; *) return 1 ;; esac; }\n' \
+# conda stub: `conda activate ENV` sets CONDA_DEFAULT_ENV and, as conda's activator does with the env's own variables
+# (`conda env config vars set HF_HOME=…`), exports HF_HOME when the env has one (here: <env>/hf_home; R8-4)
+printf '%s\n' 'conda() { case "$1" in activate) [ "$2" = broken ] && export CONDA_DEFAULT_ENV=other || export CONDA_DEFAULT_ENV=$2' \
+  '    [ ! -f "$HOME/miniconda3/envs/$2/hf_home" ] || export HF_HOME="$(cat "$HOME/miniconda3/envs/$2/hf_home")" ;; *) return 1 ;; esac; }' \
   > "$H/miniconda3/etc/profile.d/conda.sh"
 cat > "$T/bin/nvidia-smi" <<EOS
 #!/usr/bin/env bash
@@ -646,6 +650,15 @@ r7 'srun -n1 p' 'srun'; r7 'salloc -N1 p' 'salloc'; r7 'sbatch job.sh' 'sbatch';
 r7 'sudo p' 'sudo'; r7 '/usr/bin/sudo -n p' '/usr/bin/sudo'; r7 'sudo -u root p' 'sudo'; r7 'sudo -uE p' 'sudo'; r7 'sudo -p -E p' 'sudo'; r7 'sudo -p E p' 'sudo'
 r7 'sudo -i -E p' 'sudo'; r7 'sudo --login --preserve-env p' 'sudo'; r7 'sudo --preserve-env=CUDA_VISIBLE_DEVICES p' 'sudo'
 r7 'sudo --preserve-env=CUDA_DEVICE_ORDER p' 'sudo'; r7 'sudo --preserve-e p' 'sudo'; r7 'sudo p -E' 'sudo'
+# R8-6: tmux runs any unique prefix of a command name, an alias, or a default command-alias (splitp, split-pane) — the real
+# tmux shows it (tests/vgate/envdrop.sh tmux_prefix= / tmux_alias=, run by tests/88 on this machine's tmux): `tmux split`
+# / `spl` / `sp` is split-window, `run-` / `ru` run-shell, `i` / `if-` if-shell, `pi` pipe-pane. A word that is a prefix of a
+# warned command at least as long as the shortest one only warned commands share warns (new- and resp: ambiguous among them)
+for p in split spl sp split-w splitw splitp split-pane run- ru run run-s i if if- pi pipe pipe- pipep new new- new-s new-w neww \
+         resp respawn respawn- respawn-p respawnw display-po popup send send-k; do r7 "tmux -L s $p -d x" "tmux $p"; done
+r7 "/usr/bin/tmux spl -d -t base 'python t.py'" '/usr/bin/tmux spl'; r7 'bash -c "tmux ru x"' 'tmux ru'
+for p in s r p n ne res display-p send- split-p spx new-sessionx ls list-s kill-ses attach has; do   # ambiguous with a command launch.sh does not warn about, unknown, or not one that starts a command
+  O=$(L lr --rs-mode plan -N r7 -n 1 -- "tmux -L s $p x"); [ "$?" = 0 ] && hasnt "$O" '^WARNING:' "R8-6: no warning for tmux $p (tmux refuses it, or it starts nothing)" || bad "R8-6: tmux $p (plan not exit 0)"; done
 O=$(L lr --rs-mode plan -N r7 -n 1 -- 'sudo -i p'); has "$O" "^WARNING: RUN starts its command through sudo — a login shell (sudo -i / --login) resets the environment" "R7-3: sudo -i: the reason is the login shell"
 O=$(L lr --rs-mode plan -N r7 -n 1 -- 'sudo p'); has "$O" "^WARNING: RUN starts its command through sudo — sudo resets the environment (env_reset) unless -E, --preserve-env or --preserve-env=CUDA_VISIBLE_DEVICES,CUDA_DEVICE_ORDER — " "R7-3: sudo: the reason names what keeps the landing"
 O=$(L lr --rs-mode plan -N r7 -n 1 -- 'tmux new -d p'); has "$O" "through tmux new — starts it in a tmux session: with a tmux server's environment (a running server's, not this launch's) and outside this run" "R7-3: tmux: the reason (a server's environment, outside the run)"
@@ -712,6 +725,22 @@ O=$(L hk --rs-mode plan -N hkp -n 1 -- 'accelerate launch t.py'); [ "$?" = 0 ] &
 O=$(L hk --rs-mode plan -N hkp -n 1 -- 'ACCELERATE_USE_CPU=0 accelerate launch t.py'); has "$O" "unknown (RUN names ACCELERATE_USE_CPU, which may move it)" "R7-4: RUN naming ACCELERATE_…: a WARNING"
 O=$(L hk --rs-mode plan -N hkp -n 1 -- 'accelerate launch t.py --dir ${ACCELERATE_DIR:-x}'); [ "$?" = 0 ] && hasnt "$O" '^WARNING:' "R7-4: RUN expanding \${ACCELERATE_…} only: no warning" || bad "R7-4: \${ACCELERATE_…} (plan not exit 0)"
 O=$(L hk --rs-mode plan -N hkp -n 1 -- 'HF_HOME=/data/hf accelerate launch t.py'); has "$O" '^WARNING: RUN runs accelerate launch with a default config it cannot read here (RUN sets HF_HOME) — ' "R6-3's RUN-sets-HF_HOME line is unchanged (an approved card's warnings_id stays)"
+# R8-4: ENV_KIND=conda — env.sh runs `conda activate` after exporting HF_HOME, and conda applies the env's own variables
+# (`conda env config vars set HF_HOME=…`, activate.d): the config accelerate reads is unknown too (the stub above does that)
+CE=$(mkp ce 'WS_REMOTE_DIR=projects/ce
+ENV_KIND=conda
+ENV_NAME=train'); mkdir -p "$H/miniconda3/envs/train"; printf '%s\n' "$SH" > "$H/miniconda3/envs/train/hf_home"
+O=$(L ce --rs-attempt ce1 --rs-mode plan -N ce -n 1 -- 'accelerate launch train.py'); RC=$?; H8=$(bh "$O"); W8=$(wd "$O")
+[ "$RC" = 0 ] && [ "$(wn "$O")" = 1 ] && has "$O" "^WARNING: RUN runs accelerate launch with no --config_file: the config accelerate reads is unknown (ENV_KIND=conda: conda activate 'train' applies the env's own variables (HF_HOME / ACCELERATE_… among them), which may move it) — such a launcher may ignore CUDA_VISIBLE_DEVICES and pick GPUs itself (any on the box, another user's too), not only this launch's GPU(s) \[2\]: give it --config_file FILE (read here, bound in the plan)" \
+  "R8-4: ENV_KIND=conda, accelerate launch without --config_file: a WARNING (conda activate may move HF_HOME)" || { bad "R8-4: conda (rc=$RC)"; printf '%s\n' "$O" | grep -v '^[a-z_]*=' | head -4 | sed 's/^/    | /'; }
+has "$(blk "$O")" '^warnings=1$' "...counted (no grant covers it unless its kind is any)"; has "$(blk "$O")" '^env_kind=conda$' "...env_kind=conda"
+O=$(L ce --rs-attempt ce2 --rs-expect "$H8" --rs-warnings "$W8" -N ce -n 1 -- 'accelerate launch train.py'); RC=$?
+LK=$CE/$(kv log "$CE/.rs/attempts/ce2/receipt"); waitfor "$LK.rc"
+[ "$RC" = 0 ] && has "$(cat "$LK")" "^accelerate-stub: config=$SH/accelerate/default_config.yaml worker sees CUDA_VISIBLE_DEVICES=0,1\$" \
+  "...why: approved, conda activate set the env's HF_HOME, the (stub) accelerate reads that config and lands on 0,1 (GPU 1 is another user's; the landing was 2)" || bad "R8-4: the conda env's config (rc=$RC)"
+for r in 'accelerate launch --config_file c.yaml t.py' 'accelerate launch --gpu_ids 2 t.py' 'python t.py'; do
+  printf 'gpu_ids: all\n' > "$CE/c.yaml"; O=$(L ce --rs-mode plan -N cep -n 1 -- "$r")
+  [ "$?" = 0 ] && hasnt "$O" 'the config accelerate reads is unknown' "R8-4: conda, not for $r (the config is named, the ids are flags, or no accelerate)" || bad "R8-4: conda, $r (plan not exit 0)"; done
 printf 'WS_REMOTE_DIR=projects/hk\nENV_KIND=none\n( sleep 6 ) >/dev/null 2>&1 &\n' > "$HK/.ws.conf"   # a conf that leaves a process behind
 SECONDS=0; O=$(L hk --rs-mode plan -N hkp -n 1 -- 'python t.py'); RC=$?
 [ "$RC" = 0 ] && [ "$SECONDS" -lt 4 ] && ok "the conf is read without the caller's channel (fds 3/4) or the launch lock (9): a process it leaves behind never holds the plan's reply (${SECONDS}s)" \
@@ -763,7 +792,51 @@ has "$(blk "$O")" "^launch_cfg=$T/job/hostfile:$(sha "$T/job/hostfile")\$" "R7-5
 printf 'localhost slots=4\n' > "$T/job/hostfile"
 O=$(L dsh --rs-expect "$HH" --rs-warnings "$WH" -N dh -n 1 -- 'deepspeed train.py'); RC=$?
 [ "$RC" = 6 ] && has "$O" '^changed: launch_cfg$' "R7-5: the hostfile edited after the card -> exit 6, changed: launch_cfg" || bad "R7-5: hostfile drift (rc=$RC)"
-O=$(L dsh --rs-mode plan -N dh -n 1 -- 'deepspeed -H my.hf train.py'); has "$(blk "$O")" '^launch_cfg=$' "...with -H: the default hostfile is not read, nor bound"
+O=$(L dsh --rs-mode plan -N dh -n 1 -- 'deepspeed -H my.hf train.py'); has "$(blk "$O")" '^launch_cfg=my\.hf:unreadable$' "...with -H my.hf: the default hostfile is not read, nor bound — the named one is (R8-5; missing here: unreadable)"
+echo "-- R8-5: a hostfile named explicitly (deepspeed -H FILE / --hostfile FILE, argparse spellings) is read and bound too --"
+# the facts: deepspeed's runner takes -H / --hostfile (argparse: -HFILE, -H=FILE, --hostfile=FILE, a unique prefix --hostf; the
+# last one given wins) — tests/vgate/launchers.sh ds_hostfile_flag= reads it from an installed runner (tests/88: a fake one, the
+# real argparse); the stdlib part here, on a parser shaped as the runner's (-h/--help too: --h is ambiguous, refused)
+if command -v python3 >/dev/null 2>&1; then
+  F=$(python3 -I -c 'import argparse
+p = argparse.ArgumentParser(); p.add_argument("-H", "--hostfile", default="/job/hostfile"); p.add_argument("-i", "--include", default="")
+p.add_argument("-e", "--exclude", default=""); p.add_argument("--num_gpus", type=int, default=-1); p.add_argument("s"); p.add_argument("a", nargs=argparse.REMAINDER)
+def h(a):
+    try:
+        return p.parse_args(a).hostfile
+    except SystemExit:
+        return "refused"
+print(" ".join(h(a) for a in (["-H", "h1", "t.py"], ["-Hh2", "t.py"], ["-H=h3", "t.py"], ["--hostf", "h4", "t.py"], ["--hostfile=h5", "t.py"],
+      ["--ho=h6", "t.py"], ["-H", "h7", "-H", "h8", "t.py"], ["--h", "h9", "t.py"])))' 2>/dev/null)
+  [ "$F" = "h1 h2 h3 h4 h5 h6 h8 refused" ] && ok "fact: argparse (as deepspeed's runner) takes -H h, -Hh, -H=h, --hostf h, --hostfile=h, --ho=h; the last -H wins; --h is ambiguous with --help" \
+    || bad "fact: argparse hostfile spellings (got '$F')"
+else echo "  SKIP: no python3 here: the argparse hostfile facts not reproduced"; fi
+printf 'localhost slots=1\n' > "$DS/hosts"; HS=$(sha "$DS/hosts")
+O=$(L dsh --rs-attempt hx1 --rs-mode plan -N dx -n 1 -- 'deepspeed --hostfile hosts train.py'); RC=$?; HX=$(bh "$O"); WX=$(wd "$O")
+[ "$RC" = 0 ] && has "$(blk "$O")" "^launch_cfg=hosts:$HS\$" "R8-5: deepspeed --hostfile hosts: read and bound (launch_cfg=hosts:<its sha256>)" || bad "R8-5: --hostfile bound (rc=$RC)"
+[ "$(wn "$O")" = 1 ] && has "$O" '^WARNING: RUN runs deepspeed with --hostfile — such a launcher' "...its R5-2 WARNING unchanged (one line: an approved card's warnings_id stays)" || bad "R8-5: the --hostfile WARNING"
+printf 'localhost slots=4\n' > "$DS/hosts"
+O=$(L dsh --rs-attempt hx2 --rs-expect "$HX" --rs-warnings "$WX" -N dx -n 1 -- 'deepspeed --hostfile hosts train.py'); RC=$?
+[ "$RC" = 6 ] && has "$O" '^changed: launch_cfg$' "R8-5: the --hostfile edited after the card (slots=1 -> 4) -> exit 6, changed: launch_cfg" || { bad "R8-5: hostfile drift (rc=$RC)"; printf '%s\n' "$O" | grep -v '^[a-z_]*=' | head -4 | sed 's/^/    | /'; }
+[ ! -e "$DS/.rs/attempts/hx2/receipt" ] && ok "...nothing launched" || bad "...nothing launched"
+printf 'localhost slots=1\n' > "$DS/hosts"
+O=$(L dsh --rs-attempt hx3 --rs-expect "$HX" --rs-warnings "$WX" -N dx -n 1 -- 'deepspeed --hostfile hosts train.py'); RC=$?
+[ "$RC" = 0 ] && has "$O" "^plan: bound_hash=$HX = --rs-expect" "...the approved bytes back: launches" || bad "R8-5: same hostfile launches (rc=$RC)"
+for r in 'deepspeed -H hosts t.py' 'deepspeed -Hhosts t.py' 'deepspeed -H=hosts t.py' 'deepspeed --hostfile=hosts t.py' 'deepspeed --hostf hosts t.py' \
+         'deepspeed --ho=hosts t.py' 'python -m deepspeed.launcher.runner -H hosts t.py' "deepspeed -H $H/projects/dsh/hosts t.py" 'ds --num_gpus 1 -H hosts t.py'; do
+  O=$(L dsh --rs-mode plan -N dz -n 1 -- "$r"); has "$(blk "$O")" "^launch_cfg=hosts:$HS\$" "R8-5: $r -> hosts bound"; done
+O=$(L dsh --rs-mode plan -N dz -n 1 -- 'deepspeed -H a.hf -H hosts t.py'); has "$(blk "$O")" "^launch_cfg=a\.hf:unreadable,hosts:$HS\$" "R8-5: two -H: both bound (sorted; argparse takes the last)"
+for r in 'cd src && deepspeed -H hosts t.py' 'env -C src deepspeed --hostfile hosts t.py'; do
+  O=$(L dsh --rs-mode plan -N dz -n 1 -- "$r"); has "$(blk "$O")" '^launch_cfg=hosts:unreadable$' "R8-5: $r -> a relative hostfile after a cd: unreadable (not the project's hosts)"; done
+O=$(L dsh --rs-mode plan -N dz -n 1 -- 'deepspeed -H $HF t.py'); has "$(blk "$O")" '^launch_cfg=\\$HF:unreadable$' "R8-5: a hostfile named by an expansion: unreadable (%q-quoted)"
+O=$(L dsh --rs-mode plan -N dz -n 1 -- 'deepspeed t.py --hostfile'); [ "$(blk "$O" | sed -n 's/^launch_cfg=//p')" = "\\'\\':unreadable" ] && ok "R8-5: a dangling --hostfile: '':unreadable (%q-quoted)" || bad "R8-5: a dangling --hostfile ($(blk "$O" | grep '^launch_cfg='))"
+head -c 70000 /dev/zero | tr '\0' '#' > "$DS/big.hf"; O=$(L dsh --rs-mode plan -N dz -n 1 -- 'deepspeed -H big.hf t.py')
+has "$(blk "$O")" '^launch_cfg=big\.hf:unreadable$' "R8-5: a hostfile over 64 KiB: unreadable"; rm -f "$DS/big.hf"
+O=$(L dsh --rs-attempt hx4 --rs-mode plan -N dy -n 1 -- 'deepspeed -H new.hf t.py'); HN=$(bh "$O"); has "$(blk "$O")" '^launch_cfg=new\.hf:unreadable$' "R8-5: a hostfile missing at the card: new.hf:unreadable"
+printf 'localhost slots=1\n' > "$DS/new.hf"
+O=$(L dsh --rs-expect "$HN" --rs-warnings "$(wd "$O")" -N dy -n 1 -- 'deepspeed -H new.hf t.py'); RC=$?
+[ "$RC" = 6 ] && has "$O" '^changed: launch_cfg$' "R8-5: ...there at the launch -> exit 6, changed: launch_cfg" || bad "R8-5: hostfile appeared (rc=$RC)"
+rm -f "$DS/hosts" "$DS/new.hf"
 rm -f "$T/job/hostfile" "$T/bin/accelerate"
 
 echo "-- R5-4: info_prior = this project's journal receipts of the run (<run id> or <run id>--aNN) --"

@@ -6,8 +6,10 @@
 #   ssh <alias> 'bash -s <dir>/.venv/bin/python' < tests/vgate/launchers.sh
 # Prints one line per package (or `<pkg>=absent (…)`), and NOT in selftest (tests/88-vgate.sh runs it on fake modules):
 #   deepspeed: ds_version= ds_abbrev=<num_gpus from `--num_g 2`> ds_short=<include from `-ilocalhost:1`>
-#     ds_alias=<num_gpus from `--num_accelerators 2`> ds_ignores_cvd=<yes: runner.main deletes the VISIBLE_DEVICES variable and
-#     says "ignoring it" when --include/--exclude/--num_gpus/--num_nodes are given> ds_hostfile=<its default -H path>:present|absent
+#     ds_alias=<num_gpus from `--num_accelerators 2`> ds_hostfile_flag=<hostfile from `-H h1`, `-Hh2`, `-H=h3`, `--hostf h4`,
+#     `--hostfile=h5`, `-H h6 -H h7`: the spellings launch.sh reads and binds, R8-5> ds_ignores_cvd=<yes: runner.main deletes
+#     the VISIBLE_DEVICES variable and says "ignoring it" when --include/--exclude/--num_gpus/--num_nodes are given>
+#     ds_hostfile=<its default -H path>:present|absent
 #     (present: the runner reads that hostfile and ignores CUDA_VISIBLE_DEVICES even without flags) ds_pool_cvd=<yes: main
 #     turns CUDA_VISIBLE_DEVICES into --include only when no hostfile gave it a resource pool>
 #   accelerate: acc_version= acc_hyphen=<gpu_ids from `--gpu-ids 0,1`> acc_abbrev=<refused|taken: `--gpu_i 0`>
@@ -15,7 +17,7 @@
 #     "all"> acc_cfg_gpu_ids=<yes: commands/launch.py takes the config's gpu_ids when --gpu_ids is absent>
 #     acc_cfg_hyphen=<config_file from `--config-file c.yaml`> acc_cfg_default=<the default config, $HF_HOME/…>
 #     acc_cfg_json_only=<the default config's name when only default_config.json is a file there>
-# want: ds_abbrev=2 ds_short=localhost:1 ds_alias=2 ds_ignores_cvd=yes ds_pool_cvd=yes | acc_hyphen=0,1 acc_abbrev=refused
+# want: ds_abbrev=2 ds_short=localhost:1 ds_alias=2 ds_hostfile_flag=h1,h2,h3,h4,h5,h7 ds_ignores_cvd=yes ds_pool_cvd=yes | acc_hyphen=0,1 acc_abbrev=refused
 #   acc_sets_cvd=yes acc_all=yes acc_cfg_gpu_ids=yes acc_cfg_hyphen=c.yaml acc_cfg_default=$HF_HOME/accelerate/default_config.yaml
 #   acc_cfg_json_only=default_config.json
 set -u
@@ -32,10 +34,13 @@ def tryp(f, a):
 try:
     import deepspeed, deepspeed.launcher.runner as r
     a, b, c = tryp(r.parse_args, ["--num_g", "2", "t.py"]), tryp(r.parse_args, ["-ilocalhost:1", "t.py"]), tryp(r.parse_args, ["--num_accelerators", "2", "t.py"])
+    hf = [tryp(r.parse_args, x) for x in (["-H", "h1", "t.py"], ["-Hh2", "t.py"], ["-H=h3", "t.py"], ["--hostf", "h4", "t.py"],
+          ["--hostfile=h5", "t.py"], ["-H", "h6", "-H", "h7", "t.py"])]
     s = inspect.getsource(r.main)
     h = getattr(r, "DLTS_HOSTFILE", "")
-    print("ds_version=%s ds_abbrev=%s ds_short=%s ds_alias=%s ds_ignores_cvd=%s ds_hostfile=%s:%s ds_pool_cvd=%s" % (getattr(deepspeed, "__version__", "?"),
+    print("ds_version=%s ds_abbrev=%s ds_short=%s ds_alias=%s ds_hostfile_flag=%s ds_ignores_cvd=%s ds_hostfile=%s:%s ds_pool_cvd=%s" % (getattr(deepspeed, "__version__", "?"),
           a.num_gpus if a else "refused", b.include if b else "refused", c.num_gpus if c else "refused",
+          ",".join(str(getattr(x, "hostfile", "?")) if x else "refused" for x in hf),
           "yes" if "del os.environ[visible_devices_env]" in s and "ignoring it" in s else "no",
           h or "?", "present" if h and os.path.isfile(h) else "absent",
           "yes" if re.search(r"if not resource_pool and len\(", s) else "no"))

@@ -150,7 +150,9 @@ for its own ended job (`scancel_ended=`) and for an id no job can have (`scancel
 `squeue -j` lists none) — the words `rsk cancel` reads as "nothing to cancel" (below; not yet run on a cluster, so any
 other wording stays unknown: fail closed); `launchers.sh` reads the
 launcher facts behind the workstation's launcher WARNING back from an installed deepspeed / accelerate, launching
-nothing (`ds_abbrev ds_short ds_alias ds_ignores_cvd ds_hostfile`, `ds_pool_cvd` — yes: the runner turns
+nothing (`ds_abbrev ds_short ds_alias ds_ignores_cvd ds_hostfile`, `ds_hostfile_flag` — want `h1,h2,h3,h4,h5,h7`: the
+file of `-H h1`, `-Hh2`, `-H=h3`, `--hostf h4`, `--hostfile=h5` and the last of `-H h6 -H h7`, the spellings launch.sh
+binds —, `ds_pool_cvd` — yes: the runner turns
 `CUDA_VISIBLE_DEVICES` into `--include` only when no hostfile gave it a resource pool —, `acc_hyphen acc_abbrev
 acc_sets_cvd`, `acc_all`, `acc_cfg_gpu_ids` — the config's `gpu_ids` is taken when `--gpu_ids` is absent —,
 `acc_cfg_hyphen`, `acc_cfg_default` — want `$HF_HOME/accelerate/default_config.yaml` — and `acc_cfg_json_only` — want
@@ -166,8 +168,13 @@ tests/vgate/envdrop.sh`; `systemd-run` only when named, `'bash -s tmux screen se
 transient `--user` unit): `tmux_server_env=` (a session made while a server runs: want `unset`, it gets the server's
 environment), `tmux_first_env=` (the session that starts the server: want 5), `tmux_session=` and `screen_session=`
 (want `other`: outside the caller's session), `screen_dm_env=`, `setpriv_reset_env=` and `setpriv_reset_prefix=` (`--res`:
-want `unset`), `systemd_run_env=` (want `unset`); `tests/88` also runs it on this machine's own tmux and setpriv when they
-are installed. `local.sh` adds `env_anywhere=` (GNU env after a wrapper and its other options: want `rc=1` four
+want `unset`), `systemd_run_env=` (want `unset`), and a second tmux line: `tmux_split_prefix_env=` (`tmux split -d`, a
+command named by a prefix, into the server's session: want `unset`), `tmux_prefix=` and `tmux_alias=` (each word asked
+of the running server with an invalid flag, `-~`, so tmux names the command it resolved and runs nothing — the want
+list is in the script's header: `sp` is split-window, `ru` run-shell, `i` if-shell, `pi` pipe-pane, while `s`, `r`, `p`,
+`ne`, `res`, `display-p`, `send-` are ambiguous and `split-p` unknown); `tests/88` also runs it on this machine's own
+tmux and setpriv when they are installed, and checks launch.sh's tmux prefix table and alias list against that tmux.
+`local.sh` adds `env_anywhere=` (GNU env after a wrapper and its other options: want `rc=1` four
 times, then 125 — `--i` is ambiguous — or 1 on an older env). All of them run only with the user's OK, e.g. `ssh <alias>
 'bash -s <dir>/.venv/bin/python' < tests/vgate/launchers.sh`; `tests/88-vgate.sh` checks their plumbing on stubs and
 fake modules.
@@ -282,33 +289,44 @@ relative after a `cd` / `pushd` / `--chdir` / `env -C` in RUN: `(--config_file X
 project's file of that name is not the one read) and on a RUN that sets or unsets `HF_HOME`. Without `--config_file`
 the default config is only where env.sh put `HF_HOME` if nothing moved it: env.sh sources the `ENV_HOOK` last, after
 exporting `HF_HOME`, and a hook may set anything (`tests/61` 'R7-4': a hook points `HF_HOME` at a shared cache, and a
-stub accelerate reading its config lands on another user's GPU). So `accelerate launch` with neither `--config_file` nor `--gpu_ids` warns
-`the config accelerate reads is unknown (…)` when the conf sets `ENV_HOOK`, when the conf names `HF_HOME` or
-`ACCELERATE_…` outside a comment line and not as an expansion, when RUN names `ACCELERATE_…`, or when the conf did not
-source or could not be read — fail closed; the project's own default config is still read and bound beside it. To know
-the hook, launch.sh now reads the conf (profile, then `.ws.conf`, in a child bash without rc files, the caller's
-channel and the launch lock closed) in every mode, before this check; a plain launch whose conf does not source goes on
-to env.sh's gate. deepspeed's runner reads `/job/hostfile` when no `--hostfile` is given and then
-ignores `CUDA_VISIBLE_DEVICES` (it turns that into `--include` only without a hostfile's resource pool: `ds_hostfile=`,
-`ds_pool_cvd=`), so that file's presence warns. A warning's digits are masked in `warnings_id`, so `gpu_ids: 0` edited
-to `1` after the card would pass `--rs-expect` with the same warning: every config and hostfile the check read is
-therefore bound, `launch_cfg=<path>:<sha256>[,…]` (sorted and deduplicated; `<path>:unreadable` for one it could not
-read; empty when none; right before `busy_ok`), and an edit after the card is exit 6 `changed: launch_cfg` — rsk names
-the old and new digests and gives the use back; the ledger keeps the field with each attempt, so a relaunch grant
-repeats it (an edited config is `not the configuration of aNN it resumes`; an attempt recorded before the field has
-none, so its relaunch with a config is the user's call once). A container does not inherit the landing at all: docker,
-podman and nerdctl pass no host environment in (only `-e`), and `--gpus` (any value), `--runtime`,
-`--device nvidia.com/…` or `/dev/nvidia…`, `--privileged` or a bare `-e NVIDIA_VISIBLE_DEVICES` hand it GPUs its runtime
-picks — `nvidia-docker run` always —, while apptainer / singularity pass the environment in unless `--cleanenv` /
-`--containall` (`containers.sh`). Each is a counted WARNING (`… a container started so does not get this launch's
-CUDA_VISIBLE_DEVICES and may see GPUs its runtime picks …`), so a GPU container run is covered only by the user's
-approval of its card or a grant of kind `any`. A tool that starts the command elsewhere, or without this launch's
+stub accelerate reading its config lands on another user's GPU). So `accelerate launch` with neither `--config_file` nor
+`--gpu_ids` warns `the config accelerate reads is unknown (…)` when the conf sets `ENV_HOOK`, when `ENV_KIND=conda`
+(env.sh runs `conda activate` after exporting `HF_HOME`, and conda applies the env's own variables — `conda env config
+vars`, its `activate.d` scripts —, which may set `HF_HOME` or `ACCELERATE_…`: `tests/61` 'R8-4', the reason
+`ENV_KIND=conda: conda activate '<env>' applies the env's own variables (HF_HOME / ACCELERATE_… among them), which may
+move it`), when the conf names `HF_HOME` or `ACCELERATE_…` outside a comment line and not as an expansion, when RUN
+names `ACCELERATE_…`, or when the conf did not source or could not be read — fail closed; the project's own default
+config is still read and bound beside it. To know the hook, launch.sh now reads the conf (profile, then `.ws.conf`, in a
+child bash without rc files, the caller's channel and the launch lock closed) in every mode, before this check; a plain
+launch whose conf does not source goes on to env.sh's gate. deepspeed's runner reads `/job/hostfile` when no
+`--hostfile` is given and then ignores `CUDA_VISIBLE_DEVICES` (it turns that into `--include` only without a hostfile's
+resource pool: `ds_hostfile=`, `ds_pool_cvd=`), so that file's presence warns; a hostfile `-H FILE` / `--hostfile FILE`
+names (`-HFILE`, `-H=FILE`, `--hostfile=FILE`, argparse prefixes; every one given: `ds_hostfile_flag=`) is read as
+`--config_file` is — relative = the project's; after a cd in RUN, through an expansion or `~user`, or a flag with no
+value, `<file>:unreadable` — beside its `-H` / `--hostfile` WARNING (`tests/61` 'R8-5'). A warning's digits are masked
+in `warnings_id`, so `gpu_ids: 0` edited to `1` after the card would pass `--rs-expect` with the same warning: every
+config and hostfile the check read is therefore bound, `launch_cfg=<path>:<sha256>[,…]` (sorted and deduplicated;
+`<path>:unreadable` for one it could not read; empty when none; right before `busy_ok`), and an edit after the card is
+exit 6 `changed: launch_cfg` — rsk names the old and new digests and gives the use back; the ledger keeps the field with
+each attempt, so a relaunch grant repeats it (an edited config is `not the configuration of aNN it resumes`; an attempt
+recorded before the field has none, so its relaunch with a config is the user's call once). A container does not inherit
+the landing at all: docker, podman and nerdctl pass no host environment in (only `-e`), and `--gpus` (any value),
+`--runtime`, `--device nvidia.com/…` or `/dev/nvidia…`, `--privileged` or a bare `-e NVIDIA_VISIBLE_DEVICES` hand it
+GPUs its runtime picks — `nvidia-docker run` always —, while apptainer / singularity pass the environment in unless
+`--cleanenv` / `--containall` (`containers.sh`). Each is a counted WARNING (`… a container started so does not get this
+launch's CUDA_VISIBLE_DEVICES and may see GPUs its runtime picks …`), so a GPU container run is covered only by the
+user's approval of its card or a grant of kind `any`. A tool that starts the command elsewhere, or without this launch's
 environment, is the last way past the landing, and gets the same counted WARNING (`RUN starts its command through
 <tool …> — <reason> — so it may use GPUs other than this launch's GPU(s) […]: run the command directly (launch.sh
 detaches it), or name the GPUs it will use to the user`): a container's `exec` / `start` (its GPUs were set when it was
 created; `containers.sh` `<rt>_exec_env=`), compose `run` / `up` / `exec` / `start` / `restart`, `kubectl
 exec|run|debug|apply|create`, tmux's session-making and key-sending commands (a session made while a server runs gets
-the server's environment, not the client's: `envdrop.sh` `tmux_server_env=`), `screen` detached or remote-controlled
+the server's environment, not the client's: `envdrop.sh` `tmux_server_env=`) under any name tmux runs them by — an
+alias, a default command-alias (`splitp`, `split-pane`) or any unique prefix tmux accepts (`split`, `spl`, `sp`, `run-`,
+`ru`, `i`, `if-`, `pi`): a word warns when it is a prefix of a warned command at least as long as the shortest prefix
+only warned commands share in tmux's table (`new-` and `resp` too, ambiguous only among them), never one tmux finds
+ambiguous with a command not warned (`s`, `r`, `p`, `ne`, `res`, `display-p`, `send-`: tmux refuses those; `tmux_prefix=`,
+`tmux_alias=`, `tmux_split_prefix_env=`), `screen` detached or remote-controlled
 (`-dm`, `-X`: outside this run, which ends at once), `setpriv --reset-env` (and its prefix from `--res`), `sudo` unless it
 keeps both `CUDA_VISIBLE_DEVICES` and `CUDA_DEVICE_ORDER` (`-E`, `--preserve-env`, or `--preserve-env=` naming both;
 `-i` / `--login` always: sudoers' `env_reset`), and always `doas`, `systemd-run`, `ssh` and `srun` / `salloc` /
@@ -426,22 +444,37 @@ same profile directory —; a spelling that is not one plain name may be any tar
 compared with: `scope.jobs` (a job id or pid) exists only at a cancel, so a deny by job id is for cancels only — `rsk
 grant deny --job` with a launch action is exit 2 (a run's launches are denied by `--name '<run>'`), and such a record
 already stored is invalid. `rsk grant add|deny|import` refuse a target the harness does not list (exit 2 `unknown
-target`): a misspelt one would make a deny match nothing. A partition is never refused: `T_PARTITIONS` is the profile's
-display list (the shipped template says so; split on commas and whitespace, as `run-avail` hands it to `sinfo -p`), and
-`policy.sh`'s `t_partition` decides which partitions exist and may accept one the list omits — refusing it lost a
-user's deny of a real partition (round 6 did; `tests/62` 'round 7 R7-2' records and enforces such a deny now). A
-partition the scoped targets' lists do not name (every target the harness knows, without `-T`) is recorded as given, with
-`NOTE: partition P is not in the profile's display list (T_PARTITIONS of <t>: a, b; <u>: none) — recorded as given:
-policy.sh, not the profile, decides which partitions exist; the record matches only a plan whose partition is spelled
-exactly so` (a workstation-only scope adds that a workstation has no partitions, so no launch there names one). A GPU
-type has no list anywhere: it is echoed in a NOTE, never checked. A record stored before these checks, or whose target
+target`): a misspelt one would make a deny match nothing. A partition is checked against `T_PARTITIONS`, the profile's
+display list (the shipped template says so; split on commas and whitespace, as `run-avail` hands it to `sinfo -p`), but
+that list is not the authority: `policy.sh`'s `t_partition` decides which partitions exist and may accept one the list
+omits. Round 6 refused every unlisted partition and so lost a user's deny of a real one; round 7 recorded any partition
+with a NOTE, so a typo (`dbug` for `debug`) left the user's "never" unenforced with only a NOTE to show for it. The rule
+now (R8-3): a partition no scoped Slurm target's list names (every target the harness knows, without `-T`) is exit 2,
+nothing recorded — `partition P is not in the profile's display list (T_PARTITIONS of <t>: a, b) — nothing recorded:
+check the spelling with the user …; if it is a real partition the display list omits (policy.sh decides which exist),
+record it again with --unlisted-partition` —, and the caller who confirmed with the user that it is real gives
+`--unlisted-partition` (an import record `"unlisted_ok": true`, never stored): then it is recorded as given, with `NOTE:
+partition P is not in the profile's display list (T_PARTITIONS of <t>: a, b; <u>: none) — recorded as given: policy.sh,
+not the profile, decides which partitions exist; the record matches only a plan whose partition is spelled exactly so`
+(`tests/62` 'round 7 R7-2' records and enforces such a deny; 'round 8 R8-3' refuses the typo). No check, the NOTE only,
+when a scoped Slurm target's profile has no `T_PARTITIONS` or only workstations are in scope (a workstation has no
+partitions, so no launch there names one). A GPU type has no list anywhere: it is echoed in a NOTE, never checked.
+Every list argument of `rsk grant add|deny` (targets, partitions, GPU types, classes, names, jobs, runs, actions) is
+split on commas and each item stripped (`'b1, b2'` is b1 and b2: a deny keyed on ` b2` would never match `b2`); an
+empty item or one with whitespace inside is exit 2, naming it — a space-separated list is not split on a guess — and
+`--job` takes only job ids or pids. `validate()` rejects a stored list item with leading, trailing or inner whitespace
+(`whitespace in a scope item`), so such a deny, imported or edited in by hand, is invalid and matches everything (R8-1;
+cancel identities, which hold a WorkDir, are exempt). A record stored before these checks, or whose target
 was removed since, would still be inert, so `rsk grant list` and `rsk status` (whose grants block is the same) flag
 every active record naming a target the harness does not know — `WARNING: <id> (<kind>): target X is not one the
 harness knows (…) — never matches[ there] (the user's deny is not enforced there | it covers nothing there) — fix or
 revoke: …` (`--json`: `scope_problems`) — and repeat the partition NOTE for a stored record (`scope_notes`; a partition
 the list lacks may be real, so it is never "never matches"), and `rsk doctor` flags the unknown targets of every ledger
-under the state dir (`== grants ==`; its exit code is unaffected).
-A record that may be a deny but cannot be
+under the state dir (`== grants ==`; its exit code is unaffected). A record `validate()` rejects is never described:
+`rsk grant list` and `rsk status` show it as `<id>  INVALID — <what>: <why>`, and the `--json` of both as
+`{record, invalid, fail_closed}` (R8-7: a hand-damaged entry — `targets: 5`, a scope that is a string, an entry that is
+not an object — once crashed `rsk status --json`; `test_status`
+`test_r8_7_status_never_crashes_on_a_damaged_grants_record`). A record that may be a deny but cannot be
 read as one — a deny `validate()` rejects (a stored jobs + launch deny included), an id starting `d-`, a missing or damaged `kind` — is taken as a deny
 matching everything until it is fixed by hand or revoked (`rsk grant list` then shows `revoked: matches nothing`); an
 entry that is not an object at all, until it is removed by hand: fail closed. The same holds for the file: a `grants.json` that cannot be read at all (corrupt, no good `.prev`) may hold a
@@ -450,8 +483,16 @@ recount / restore`); while it is recovered from `.prev` or missing, every deny `
 `rsk grant recount` writes those denies and the recorded revocations back; a lost grant or approval is not rebuilt
 (fail closed): it needs the user's words again.
 Preemption: Slurm's own requeue, a run-watch table's `#@ allow preempt=N` (its `#@ ok` line carries the user's words),
-or a `relaunch` grant (after an infrastructure end, above). "Cancel job 123": `--approve` records a cancel approval
-naming that job and bound to the identity it was given for (Slurm: target, job id, run name, WorkDir; workstation:
+or a `relaunch` grant (after an infrastructure end, above). "Cancel job 123": the words given to `--approve` must name
+what is cancelled, as a whole word (R8-2, `cancel.named` / `cancel.unnamed`): for `--job J` the job id J (the pid on a
+workstation) or the run's id or job name; for `rsk cancel RUN` the run id or name, or every job id it cancels — a token
+inside a longer one does not count (`101` in `1101` or `101_2`, `sw1` in `sw10`, `exp--sw1` or `sw1-b`), trailing
+punctuation does (`job 101.`). Otherwise exit 4 `needs user: the words do not name <J|RUN> — "…" names none of: …;
+nothing recorded or cancelled`, with no approval and no ssh: "cancel job 101, it diverged" once approved and cancelled
+job 102, since the identity check only proves a job is this user's and this project's. This is a token check against
+good-faith slips, not proof of consent — an agent can still write words naming any job (the honest limit of every
+record); a `cancel_own` grant is unchanged. `--approve` then records a cancel approval naming that job and bound to the
+identity it was given for (Slurm: target, job id, run name, WorkDir; workstation:
 target, pid, start, boot id); it expires after an hour and is used up by the first cancel that passed authorisation,
 whatever came of it (an approval is never refunded — "cancel 123" said yesterday does not cancel a new job 123), and
 the identity check (name, WorkDir and user on Slurm; the receipt's pid, process start time and boot id on a workstation)
@@ -519,12 +560,16 @@ arbitrary payload code reaches is listed here rather than chased further):
   a check of its words, not of the payload — scripts it calls (one that itself calls tmux or sudo), an `exec -c` the
   text does not show at a command start, a value only an expansion supplies at run time (`x | env $PRE y`);
 - tools that replace the environment beyond the warned list (`su -`, `runuser -l`, `pkexec`, at / cron, a script that
-  itself calls tmux); a sudoers `env_delete` (not read: `sudo -E` is taken to keep the GPU variables); a docker daemon
+  itself calls tmux) and tools not on that list that start the command elsewhere or anew (`byobu`, `lxc` / `incus exec`,
+  `ray job submit`, `mpirun` / `mpiexec` `--host` / `--hostfile`, `su -l`, `pixi run --clean-env`, `run0`); tmux
+  commands run from a user `command-alias`, a `-f` config, `source-file` or `set-hook` (launch.sh reads RUN's text, not
+  tmux's config); a sudoers `env_delete` (not read: `sudo -E` is taken to keep the GPU variables); a docker daemon
   whose default runtime is nvidia (an image's own `NVIDIA_VISIBLE_DEVICES` then hands the container GPUs with no flag at
   all: `tests/vgate/containers.sh` prints `docker_default_runtime=`);
 - a GPU value or launcher flags that only an expansion or a script supplies (the wrapper re-checks only the first
   command's expanded leading words, for the GPU variables), and launcher settings in files rsk does not read: docker
-  `--env-file`, compose files, deepspeed's `.deepspeed_env`;
+  `--env-file`, compose files, deepspeed's `.deepspeed_env`, a `.wandb_env` that sets `HF_HOME` (env.sh sources it after
+  exporting `HF_HOME`; launch.sh reads the conf and `ENV_KIND`, not that file);
 - the launcher, config, container and tool checks read RUN's text, so they can fire on a word that is only an argument
   (`rsync -e ssh`, an `exec` inside `docker run … sh -c`) — fail closed, the card shows why — and they are warnings: the
   user's approval of the card, or a grant of kind `any`, lets such a run through;

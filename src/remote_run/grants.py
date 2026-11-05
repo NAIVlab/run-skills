@@ -74,11 +74,18 @@ The kinds:
             target_key() names (`fx/`, `fx/.`, `FX` are fx; a spelling that is not one plain name matches every
             target deny). scope.jobs is for cancels only: a deny with jobs and any launch action is invalid
             (`rsk grant deny --job` refuses it, exit 2; a stored one matches everything) — a run's launches are
-            denied by name. `rsk grant add|deny|import` refuse a target the harness does not know (exit 2); a
-            partition is never refused (R7-2: T_PARTITIONS is the profile's display list, policy.sh is the
-            authority — one it does not list is recorded with a NOTE saying so; a GPU type has no list: echoed only);
-            `rsk grant list`, `rsk status` and `rsk doctor` flag a stored record whose targets are unknown ("never
-            matches — fix or revoke": scope_problems()), and list / status add the NOTE for an unlisted partition.
+            denied by name. `rsk grant add|deny|import` refuse a target the harness does not know (exit 2), and
+            (R8-3) a partition no scoped target's T_PARTITIONS display list names — a typo would never match —
+            unless --unlisted-partition (import: the record's "unlisted_ok": true, not stored) says it is real:
+            then it is recorded with a NOTE saying so (T_PARTITIONS is a display list, policy.sh the authority; a
+            scoped Slurm target without T_PARTITIONS, or a workstation: no check, the NOTE only); a GPU type has no
+            list: echoed only. Every list argument (names, jobs, partitions, GPU types, targets, classes, actions)
+            is split on commas and stripped ('b1, b2'); an empty item or one with whitespace inside is exit 2, and
+            validate() rejects a stored list item holding whitespace (R8-1: it never matches — an invalid deny
+            matches everything); `rsk grant list`, `rsk status` and `rsk doctor` flag a stored record whose targets
+            are unknown ("never matches — fix or revoke": scope_problems()), and list / status add the NOTE for an
+            unlisted partition; status --json lists a record validate() rejects as {record, invalid, fail_closed}
+            (R8-7), never described.
   A grants.json that cannot be read at all (corrupt, no good .prev) holds denies that cannot be ruled out: check()
   raises RskError(CONFLICT) (unreadable()) and deny_match() matches everything — never "no deny".
   The class of a plan is the one its name carries (<exp>--<class>--…); --class only labels a name without one. The
@@ -108,8 +115,9 @@ API:
   run_deny(deny) -> bool            it names a run and lists relaunch / resubmit: it matches every launch of that run
   run_globs(names) -> [glob]        a deny's globs that end in --aNN (or a glob matching one: x--a*), with it removed
                                     (R7-1: an attempt's name = its run)
-  check_scope(scope, targets)       rsk grant add|deny|import: unknown target → RskError(USAGE); NOTE lines (an
-                                    unlisted partition, a GPU type)
+  check_scope(scope, targets, …, unlisted_ok=False)   rsk grant add|deny|import: an unknown target, or (R8-3) a
+                                    partition the scoped T_PARTITIONS lack without unlisted_ok → RskError(USAGE); NOTE
+                                    lines (an unlisted partition recorded, a GPU type)
   scope_problems(rec, targets)      a stored record's targets the harness does not know (list, status, doctor)
   scope_notes(rec, targets)         a stored record's partitions its targets' T_PARTITIONS do not list (list, status)
   unreadable(state) -> str          '' unless grants.json could not be read (the refusal text: exit 6)
@@ -699,6 +707,10 @@ def validate(rec: Any) -> dict:
             for k in LISTS:
                 if k in scope and not (isinstance(scope[k], list) and all(isinstance(x, str) and x for x in scope[k])):
                     errs.append(f"scope.{k} must be a list of non-empty strings")
+            spaced = _spaced(scope)
+            if spaced:                          # R8-1: ' b2' / '101 102' never match b2 / 102 (fail closed)
+                errs.append(f"{', '.join(spaced[:6])}: whitespace in a scope item (it never matches what it names; "
+                            "one item per list entry, no spaces)")
             for x in scope.get("runs") or []:
                 if isinstance(x, str) and not HEX64.fullmatch(x):
                     errs.append(f"scope.runs: {x[:20]!r} is not a bound hash (64 hex)")
@@ -897,7 +909,7 @@ def add(led: L.Ledger, rec: dict) -> dict:
     validate(rec)
     with led.locked():
         doc, got = load(led)
-        if any(r.get("id") == rec["id"] for r in doc["records"]):
+        if any(isinstance(r, dict) and r.get("id") == rec["id"] for r in doc["records"]):   # (a damaged entry: R8-7)
             raise RskError(f"grant record {rec['id']} exists already", USAGE)
         flags = after_deny(rec, doc["records"])
         doc["records"].append(rec)
@@ -979,14 +991,17 @@ def recount(led: L.Ledger) -> str:
                 uses.get(a["id"], {}).pop(a.get("nonce"), None)
         added = 0
         for r in doc["records"]:
-            have = {u.get("nonce") for u in r["used"]}
+            if not (isinstance(r, dict) and isinstance(r.get("used"), list) and isinstance(r.get("id"), str)):
+                continue                # a damaged record (R8-7): fixed by hand, never rewritten here
+            have = {u.get("nonce") for u in r["used"] if isinstance(u, dict)}
             for n, u in uses.get(r["id"], {}).items():
                 if n not in have:
                     r["used"].append(u)
                     added += 1
         if bad:
             note = f"audit.jsonl has {bad} unreadable line(s): budgets stay unknown"
-            doc["budgets_unknown"] = {"at": L.now(), "why": note, "ids": [r.get("id") for r in doc["records"]]}
+            doc["budgets_unknown"] = {"at": L.now(), "why": note,
+                                      "ids": [r.get("id") for r in doc["records"] if isinstance(r, dict)]}
         else:
             doc["budgets_unknown"] = None
             note = "budgets known again"
@@ -1007,15 +1022,17 @@ def recount(led: L.Ledger) -> str:
 
 def import_file(led: L.Ledger, path: Path, check: Any = None) -> list[dict]:
     """A JSON list of records the user's existing authorisations were written as (memory notes, a conf comment).
-    Every user-facing field must be in the file; only id / created_at / used / revoked may be left for rsk. CHECK(records)
-    runs on the validated records before anything is stored (rsk grant import: every scope target must be known)."""
+    Every user-facing field must be in the file; only id / created_at / used / revoked may be left for rsk. A record may
+    carry "unlisted_ok": true (R8-3: its partitions are real though the profile's T_PARTITIONS omits them; not stored).
+    CHECK(records, unlisted_ok flags) runs on the validated records before anything is stored (rsk grant import: every
+    scope target must be known, every partition listed unless its record says unlisted_ok)."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise RskError(f"{path}: cannot read a JSON list: {exc}", USAGE) from exc
     if not isinstance(data, list) or not data:
         raise RskError(f"{path}: expected a non-empty JSON list of records", USAGE)
-    out, errs = [], []
+    out, errs, unlisted = [], [], []
     for i, raw in enumerate(data):
         if not isinstance(raw, dict):
             errs.append(f"#{i}: not an object")
@@ -1023,20 +1040,27 @@ def import_file(led: L.Ledger, path: Path, check: Any = None) -> list[dict]:
         if raw.get("created_via", "import") != "import":
             errs.append(f"#{i}: created_via must be import (or absent)")
             continue
+        raw = dict(raw)
+        ok = raw.pop("unlisted_ok", False)      # R8-3: the file's --unlisted-partition (never stored)
+        if not isinstance(ok, bool):
+            errs.append(f"#{i}: unlisted_ok must be true or false (true: its partitions are real though the "
+                        "profile's T_PARTITIONS display list omits them)")
+            continue
         rec = {"created_via": "import", "used": [], "revoked": None, **raw}
         rec.setdefault("id", new_id(str(raw.get("kind", "grant")) if raw.get("kind") in KINDS else "grant"))
         rec.setdefault("created_at", L.now())
         try:
             out.append(no_resubmit(validate(rec)))
+            unlisted.append(ok)
         except RskError as exc:
             errs.append(f"#{i}: {exc}")
     if errs:
         raise RskError(f"{path}: nothing imported — " + " | ".join(errs), USAGE)
     if check is not None:
-        check(out)
+        check(out, unlisted)
     with led.locked():
         doc, got = load(led)
-        ids = {r.get("id") for r in doc["records"]}
+        ids = {r.get("id") for r in doc["records"] if isinstance(r, dict)}
         clash = [r["id"] for r in out if r["id"] in ids] + [r["id"] for i, r in enumerate(out) if r["id"] in
                                                             {x["id"] for x in out[:i]}]
         if clash:
@@ -1680,21 +1704,28 @@ def _overlap(a: dict, b: dict) -> bool:
 def after_deny(rec: dict, records: list[dict], window: float = FLAG_WINDOW_S) -> list[str]:
     """A grant/approval created shortly after a deny of an overlapping scope (or after one was revoked): the order
     an agent would work around a refusal in. Shown by status, list and the audit; it blocks nothing by itself."""
-    if not isinstance(rec, dict) or rec.get("kind") == "deny":
-        return []
+    if not isinstance(rec, dict) or rec.get("kind") == "deny" or valid(rec):
+        return []                               # (R8-7: an invalid record covers nothing: nothing to flag)
     records = [r for r in records if isinstance(r, dict)]
     ids = [r.get("id") for r in records]
     before = records[:ids.index(rec.get("id"))] if rec.get("id") in ids else records   # stored in creation order
     t, out = L.epoch(rec.get("created_at")), []
     for d in before:
-        if d.get("kind") != "deny" or not _overlap(d, rec):
+        if d.get("kind") != "deny":
             continue
+        try:
+            near = _overlap(d, rec)
+        except (TypeError, AttributeError):     # a hand-damaged deny (scope: "x", targets: 5) matches everything
+            near = True
+        if not near:
+            continue
+        did = d.get("id", "?")
         dt = t - L.epoch(d.get("created_at"))
         if 0 <= dt <= window:
-            out.append(f"created {_ago(dt)} after deny {d['id']} of an overlapping scope")
-        rv = d.get("revoked") or {}
+            out.append(f"created {_ago(dt)} after deny {did} of an overlapping scope")
+        rv = d.get("revoked") if isinstance(d.get("revoked"), dict) else {}
         if rv and 0 <= t - L.epoch(rv.get("at")) <= window:
-            out.append(f"created {_ago(t - L.epoch(rv.get('at')))} after deny {d['id']} was revoked")
+            out.append(f"created {_ago(t - L.epoch(rv.get('at')))} after deny {did} was revoked")
     return out
 
 
@@ -1742,8 +1773,35 @@ def lines(state: L.LedgerState, show_all: bool = False, indent: str = "  ", know
 
 
 # ================================================================================================ rsk grant
-def _split(vals: list[str]) -> list[str]:
-    return [x for v in vals or [] for x in v.split(",") if x]
+def _split(vals: list[str], flag: str = "") -> list[str]:
+    """R8-1: a list argument of rsk grant (names, jobs, partitions, GPU types, targets, classes, actions; repeatable,
+    a,b): split on commas, each piece stripped ('b1, b2' is b1 and b2). An empty piece ('a,,b', 'a,', '') or one with
+    whitespace inside ('101 102', 'exp a') is exit 2, naming it: such an item would never match anything (a deny that
+    never matches is the user's 'never' not enforced), and a space-separated list is not split on a guess."""
+    out: list[str] = []
+    for v in vals or []:
+        for x in v.split(","):
+            p = x.strip()
+            if not p:
+                raise RskError(f"{flag or 'a list'} {v!r}: an empty item (items are separated by commas: 'a,b' or "
+                               "'a, b') — nothing recorded", USAGE)
+            if any(c.isspace() for c in p):
+                raise RskError(f"{flag or 'a list'} {v!r}: item {p!r} holds whitespace — no name, job id, partition, "
+                               "GPU type, target, class or action does: separate items with commas ('a,b' or 'a, b') "
+                               "— nothing recorded", USAGE)
+            out.append(p)
+    return out
+
+
+SPACE_FREE = ("targets", "partitions", "gpu_types", "classes", "names", "runs", "plans", "jobs")   # R8-1 (not idents:
+#                                                     a cancel identity is JSON holding the WorkDir, which may have one)
+
+
+def _spaced(scope: dict) -> list[str]:
+    """R8-1: 'scope.K: ITEM' for every stored list item with leading / trailing / inner whitespace — it never matches
+    the name, job id, partition … it was meant for (validate() rejects the record: an invalid deny matches everything)."""
+    return [f"scope.{k}: {x!r}" for k in SPACE_FREE for x in (scope.get(k) if isinstance(scope.get(k), list) else [])
+            if isinstance(x, str) and any(c.isspace() for c in x)]
 
 
 def _limit_arg(v: str, what: str) -> int | None:
@@ -1754,15 +1812,34 @@ def _limit_arg(v: str, what: str) -> int | None:
     return int(v)
 
 
+FLAGS = {"targets": "-T", "partitions": "--partition", "gpu_types": "--gpu-type", "classes": "--class",
+         "names": "--name", "jobs": "--job", "runs": "--run", "actions": "--action"}
+JOB_ID = re.compile(r"[0-9]+(?:_[0-9]+)?")       # a Slurm job id (123, 123_4) or a pid: what rsk cancel takes
+
+
+def _arg(args: argparse.Namespace, key: str) -> list[str]:
+    """R8-1: the list argument KEY of rsk grant add|deny, split and checked (_split: exit 2 on an empty item or one
+    holding whitespace)."""
+    return _split(getattr(args, key, None) or [], FLAGS[key])
+
+
+def _jobs_arg(args: argparse.Namespace) -> list[str]:
+    jobs = _arg(args, "jobs")
+    bad = [j for j in jobs if not JOB_ID.fullmatch(j)]
+    if bad:
+        raise RskError(f"--job {', '.join(bad)}: a Slurm job id (123, 123_4) or a nohup run's pid — a deny naming "
+                       "anything else never matches a cancel — nothing recorded", USAGE)
+    return jobs
+
+
 def _scope_from(args: argparse.Namespace, deny: bool) -> dict:
-    sc: dict[str, Any] = {k: _split(getattr(args, k, [])) for k in ("targets", "partitions", "gpu_types", "classes",
-                                                                   "names")}
+    sc: dict[str, Any] = {k: _arg(args, k) for k in ("targets", "partitions", "gpu_types", "classes", "names")}
     bad = [c for c in sc["classes"] if c not in CLASSES]
     if bad:
         raise RskError(f"--class {', '.join(bad)}: one of {', '.join(CLASSES)} (experiment-conventions.md §1)", USAGE)
     if deny:
-        sc["jobs"] = _split(args.jobs)
-        sc["runs"] = _split(args.runs)
+        sc["jobs"] = _jobs_arg(args)
+        sc["runs"] = _arg(args, "runs")
         return sc
     for k in ("max_gpus", "max_cpus", "max_mem_gb"):
         if getattr(args, k) is not None:
@@ -1841,9 +1918,10 @@ def partition_lists(scoped: list) -> tuple[list[str], list[str]]:
 
 def partition_note(parts: list[str], scoped: list, where: str, what: str = "") -> str:
     """R7-2: '' unless a partition of PARTS is not in the SCOPED targets' T_PARTITIONS display lists — then the NOTE
-    that says so. Never a refusal: T_PARTITIONS is display-only (the shipped template: policy.sh is the authority), so
-    a partition the profile does not list may be real; the record is kept as given and matches a plan whose partition
-    is spelled so (a deny that cannot be recorded would be lost, and a grant of an unlisted one covers only that)."""
+    that says so. T_PARTITIONS is display-only (the shipped template: policy.sh is the authority), so a partition the
+    profile does not list may be real: recorded as given once the caller confirmed it (R8-3: --unlisted-partition;
+    check_scope() refuses it otherwise where every scoped Slurm target lists its partitions), it matches a plan whose
+    partition is spelled so."""
     parts = [p for p in dict.fromkeys(parts) if p]
     if not parts:
         return ""
@@ -1861,18 +1939,44 @@ def partition_note(parts: list[str], scoped: list, where: str, what: str = "") -
             + ("" if slurm else f" ({where}: a workstation has no partitions — no launch there names one)"))
 
 
-def check_scope(scope: dict, tl: list, t_what: str = "-T", p_what: str = "--partition") -> list[str]:
+def unlisted_partitions(parts: list[str], scoped: list) -> list[str]:
+    """R8-3: the partitions of PARTS that no SCOPED Slurm target's T_PARTITIONS display list names — [] (no check) when
+    a scoped Slurm target's profile lists none, or no Slurm target is in scope (a workstation has no T_PARTITIONS)."""
+    known, unchecked = partition_lists(scoped)
+    if unchecked or not any(t.kind != "nohup" for t in scoped):
+        return []
+    return [p for p in dict.fromkeys(parts) if p and p not in known]
+
+
+UNLISTED_FLAG = "--unlisted-partition"
+
+
+def check_scope(scope: dict, tl: list, t_what: str = "-T", p_what: str = "--partition", unlisted_ok: bool = False,
+                unlisted_how: str = UNLISTED_FLAG) -> list[str]:
     """R5-9 for a record about to be stored: its targets must be known (exit 2 'unknown target': a deny on a misspelt
-    target would match nothing). Its partitions are never refused (R7-2: T_PARTITIONS is a display list, policy.sh is
-    the authority): one the scoped targets' profiles do not list gets a NOTE (partition_note()). A GPU type has no list
-    anywhere: echoed in a NOTE, never checked. Returns the NOTE lines (P_WHAT: where the partitions were given)."""
+    target would match nothing). R8-3: a partition no scoped target's T_PARTITIONS display list names is exit 2 too
+    (a misspelt one — `dbug` — would make the user's deny never match) unless UNLISTED_OK: the caller confirmed it is
+    a real partition the display list omits (policy.sh, not the profile, decides which exist: --unlisted-partition;
+    import: the record's "unlisted_ok": true — UNLISTED_HOW says which) — then it is recorded with a NOTE
+    (partition_note()). A scoped Slurm target whose profile lists no T_PARTITIONS, or a workstation: no check, the
+    NOTE only. A GPU type has no list anywhere: echoed in a NOTE, never checked. Returns the NOTE lines (P_WHAT: where
+    the partitions were given)."""
     targets = [x for x in scope.get("targets") or [] if x]
     check_targets(targets, t_what, tl)
     notes: list[str] = []
     parts = [p for p in dict.fromkeys(scope.get("partitions") or []) if p]
     if parts:
-        n = partition_note(parts, _scoped(targets, tl), ", ".join(targets) if targets else "the targets the harness knows",
-                           p_what if p_what != "--partition" else "")
+        where = ", ".join(targets) if targets else "the targets the harness knows"
+        scoped = _scoped(targets, tl)
+        bad = unlisted_partitions(parts, scoped)
+        if bad and not unlisted_ok:
+            lists = "; ".join(f"{t.name}: {', '.join(t.partitions)}" for t in scoped if t.kind != "nohup" and t.partitions)
+            raise RskError(f"partition {', '.join(bad)}{f' ({p_what})' if p_what != '--partition' else ''} is not in "
+                           f"the profile's display list (T_PARTITIONS of {lists}) — nothing recorded: check the "
+                           "spelling with the user (a misspelt partition never matches: the deny would not be "
+                           "enforced, the grant would cover nothing); if it is a real partition the display list "
+                           f"omits (policy.sh decides which exist), record it again with {unlisted_how}", USAGE)
+        n = partition_note(parts, scoped, where, p_what if p_what != "--partition" else "")
         if n:
             notes.append(n)
     gts = [g for g in dict.fromkeys(scope.get("gpu_types") or []) if g]
@@ -1882,13 +1986,19 @@ def check_scope(scope: dict, tl: list, t_what: str = "-T", p_what: str = "--part
     return notes
 
 
+def _items(scope: dict, key: str) -> list:
+    """SCOPE[KEY] when it is a list, else [] (R8-7: a hand-damaged record — targets: 5 — is never iterated)."""
+    v = scope.get(key)
+    return v if isinstance(v, list) else []
+
+
 def _stored_targets(rec: dict, tl: list) -> tuple[list[str], list[str]]:
     """(REC's scope targets, the ones the harness does not know) — a deny compares target_key() names (a spelling that
     is not one plain name matches every target: never unknown), a grant / approval the exact name."""
     sc, deny = rec["scope"], rec.get("kind") == "deny"
     names = [t.name for t in tl]
     keys = {target_key(n) for n in names}
-    tg = [x for x in sc.get("targets") or [] if isinstance(x, str) and x]
+    tg = [x for x in _items(sc, "targets") if isinstance(x, str) and x]
     if deny:
         return tg, [x for x in tg if target_key(x) is not None and target_key(x) not in keys]
     return tg, [x for x in tg if x not in names]
@@ -1913,7 +2023,7 @@ def scope_notes(rec: Any, tl: list) -> list[str]:
     if not isinstance(rec, dict) or not isinstance(rec.get("scope"), dict):
         return []
     tg, unknown = _stored_targets(rec, tl)
-    parts = [p for p in rec["scope"].get("partitions") or [] if isinstance(p, str) and p]
+    parts = [p for p in _items(rec["scope"], "partitions") if isinstance(p, str) and p]
     live = [x for x in tg if x not in unknown]
     if not parts or (tg and not live):
         return []
@@ -1998,28 +2108,30 @@ def cmd_grant(args: argparse.Namespace) -> int:
     led = L.Ledger(project_dir(args.dir))
     c = args.grant_command
     if c in ("add", "deny"):
-        acts = _split(args.actions)
-        if c == "deny" and _split(args.jobs) and set(acts or ACTIONS) & LAUNCHES:    # R5-1
-            runs = _job_runs(led, _split(args.jobs))
-            raise RskError(f"rsk grant deny --job {','.join(_split(args.jobs))}: a deny by job id is for cancels only "
+        acts = _arg(args, "actions")            # R8-1: every list argument split on commas, stripped, checked
+        jobs = _jobs_arg(args) if c == "deny" else []
+        if c == "deny" and jobs and set(acts or ACTIONS) & LAUNCHES:    # R5-1
+            runs = _job_runs(led, jobs)
+            raise RskError(f"rsk grant deny --job {','.join(jobs)}: a deny by job id is for cancels only "
                            f"(--action cancel / cancel_own), not {'/'.join(a for a in (acts or ACTIONS) if a in LAUNCHES)}"
                            f": a deny of a run's launches names the run: "
                            + (" ".join(f"--name '{r}'" for r in runs) if runs else "--name '<run>'")
                            + " — nothing recorded", USAGE)
-        scope_args = {k: _split(getattr(args, k, [])) for k in ("targets", "partitions", "gpu_types")}
-        notes = check_scope(scope_args, harness_targets()) if scope_args["targets"] or scope_args["partitions"] else \
-            check_scope({"gpu_types": scope_args["gpu_types"]}, [])
+        scope_args = {k: _arg(args, k) for k in ("targets", "partitions", "gpu_types")}
+        sc = _scope_from(args, c == "deny")     # (every list checked before anything is looked up)
+        notes = check_scope(scope_args, harness_targets(), unlisted_ok=args.unlisted_partition) \
+            if scope_args["targets"] or scope_args["partitions"] else check_scope({"gpu_types": scope_args["gpu_types"]}, [])
         if c == "deny":                         # R7-1: an attempt's job name stands for its run
-            notes += attempt_name_notes(_split(args.names))
+            notes += attempt_name_notes(sc["names"])
         if c == "add":
             if not acts:
                 raise RskError("--action: what the user allowed (launch relaunch resubmit chain cancel_own)", USAGE)
-            rec = new_grant(args.quote, _scope_from(args, False), acts,
+            rec = new_grant(args.quote, sc, acts,
                             max_live=_limit_arg(args.max_live, "--max-live"),
                             max_launches=_limit_arg(args.max_launches, "--max-launches"),
                             expires=None if args.expires.lower() == "none" else args.expires, source=args.source)
         else:
-            rec = new_deny(args.quote, _scope_from(args, True), acts or None,
+            rec = new_deny(args.quote, sc, acts or None,
                            expires=None if (args.expires or "none").lower() == "none" else args.expires,
                            source=args.source)
         with led.locked():
@@ -2040,12 +2152,13 @@ def cmd_grant(args: argparse.Namespace) -> int:
     if c == "import":
         notes: dict[str, list[str]] = {}
 
-        def check(rs: list[dict]) -> None:        # every record's targets (R5-9: all or nothing); partitions: NOTEs (R7-2)
+        def check(rs: list[dict], unlisted: list[bool]) -> None:   # every record's targets (R5-9) and partitions
             tl = harness_targets() if any((r.get("scope") or {}).get(k) for r in rs for k in ("targets", "partitions")) \
-                else []
+                else []                                               # (R8-3) — all or nothing; NOTEs (R7-2)
             for i, r in enumerate(rs):
                 notes[r["id"]] = check_scope(r.get("scope") or {}, tl, f"scope.targets in {args.file}",
-                                             f"scope.partitions of #{i} in {args.file}")
+                                             f"scope.partitions of #{i} in {args.file}", unlisted_ok=unlisted[i],
+                                             unlisted_how=f'"unlisted_ok": true in record #{i}')
                 if r.get("kind") == "deny":
                     notes[r["id"]] += attempt_name_notes((r.get("scope") or {}).get("names") or [])
         recs = import_file(led, Path(args.file), check=check)
@@ -2097,7 +2210,12 @@ def add_parsers(sub) -> None:
                              "what the user allowed: launch relaunch resubmit chain cancel_own") + " (repeatable, a,b)")
         p.add_argument("-T", "--target", dest="targets", action="append", default=[],
                        help="a target the harness knows (exit 2 otherwise)")
-        p.add_argument("--partition", dest="partitions", action="append", default=[])
+        p.add_argument("--partition", dest="partitions", action="append", default=[],
+                       help="a partition (repeatable, a,b): one the target's T_PARTITIONS display list lacks is exit 2 "
+                       "unless " + UNLISTED_FLAG)
+        p.add_argument(UNLISTED_FLAG, dest="unlisted_partition", action="store_true",
+                       help="the --partition is real though the profile's T_PARTITIONS display list omits it (the user "
+                       "confirmed it; policy.sh decides which partitions exist): recorded with a NOTE")
         p.add_argument("--gpu-type", dest="gpu_types", action="append", default=[])
         p.add_argument("--class", dest="classes", action="append", default=[], help=" ".join(CLASSES))
         p.add_argument("--name", dest="names", action="append", default=[], help="run-name glob (repeatable)")

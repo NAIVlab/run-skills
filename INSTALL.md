@@ -153,7 +153,7 @@ Fill `profile.sh` from the probe (every key is commented in the template):
 | `T_TRIGGERS` | the name plus the nicknames the user says for this machine (ask) |
 | `T_CUDA_ARCH` | `compute capability` (workstations); for Slurm, from the GPU model (A100 `8.0`, H100/H200 `9.0`) or empty |
 | `T_CONDA_INIT` | the probe's `conda.sh:` line as `source <path>`; none found → `''` (only `ENV_KIND=conda` projects use it) |
-| `T_DEFAULT_PARTITION`, `T_PARTITIONS`, `T_MAXTIME` | partition lines: `*` marks the site default; `timelimit` column; the user's choice wins; `T_PARTITIONS` is a display list (spaces or commas; `policy.sh` decides which partitions exist — `rsk grant` only NOTEs a `--partition` it lacks) |
+| `T_DEFAULT_PARTITION`, `T_PARTITIONS`, `T_MAXTIME` | partition lines: `*` marks the site default; `timelimit` column; the user's choice wins; `T_PARTITIONS` is a display list (spaces or commas; `policy.sh` decides which partitions exist — `rsk grant` refuses a `--partition` it lacks, exit 2, unless `--unlisted-partition`: list every partition the user may name) |
 | `T_DEFAULT_GPU_TYPE` | `any`, unless the user wants a specific gres type by default |
 | `T_ENV_ROOT`, `T_TMPDIR`, `T_COMPILE_CACHE` | the storage questions below; keep the template values when nothing argues otherwise |
 | `T_SUFFIX`, `T_REMOTE_DIR_REQUIRED` | another registered target mounts the same project filesystem → `T_SUFFIX='-<name>'` (separate venvs); this target shares none → `T_REMOTE_DIR_REQUIRED=1` |

@@ -31,10 +31,11 @@
 # before the claim; else (an expansion) the wrapper checks the first command's expanded words and never starts it (rc 2,
 # ERROR in the log). A launcher that picks GPUs itself — its flags (deepspeed --num_gpus/--include/…, accelerate launch
 # --gpu_ids/--num_processes), its config (accelerate's gpu_ids, read here; deepspeed's /job/hostfile; a config it cannot
-# locate: ENV_HOOK, HF_HOME / ACCELERATE_… named) or a container's (docker/podman --gpus/--device …, apptainer
+# locate: ENV_HOOK, ENV_KIND=conda, HF_HOME / ACCELERATE_… named) or a container's (docker/podman --gpus/--device …, apptainer
 # --cleanenv/--containall) — and a tool that starts the command without this launch's environment or elsewhere (docker exec,
-# compose, kubectl exec, tmux new / send-keys, screen -dm, setpriv --reset-env, sudo without -E, doas, systemd-run, ssh,
-# srun / sbatch) — gets a counted WARNING naming it, what, and the landing (a grant covers it only as `any`).
+# compose, kubectl exec, tmux new / send-keys / split… by any prefix tmux takes, screen -dm, setpriv --reset-env, sudo
+# without -E, doas, systemd-run, ssh, srun / sbatch) — gets a counted WARNING naming it, what, and the landing (a grant
+# covers it only as `any`); a hostfile named by deepspeed -H / --hostfile is read and bound too (launch_cfg, R8-5).
 # Exit: 0 launched (planned), 1 failed (env gate, nvidia-smi, start) or too few free GPUs, 2 usage/data (RUN setting a GPU
 # variable: before the claim, no .rs/attempts/<NONCE>/), 6 NAME still
 # running, a busy -d GPU, or not the --rs-expect plan; 75 NONCE claimed.
@@ -356,13 +357,15 @@ rm -f "$A/env.kv"
 if [ "$CONF_OK" = 0 ]; then EK=""; EN=""; EH=""; EV=""; EU=""
   [ "$PLAN" = 0 ] && [ -z "$EXPECT" ] || die2 "sourcing $PROJ/.ws.conf (after profile.sh) failed — fix it (values with spaces must be double-quoted)"; fi
 rs_cfgwhy() {   # RS_CFGWHY (R7-4): why the conf leaves the config `accelerate launch` reads (without --config_file) unknown, or ''.
-  # env.sh exports HF_HOME=$PROJ/.cache/huggingface, then sources ENV_HOOK last (it may set anything, HF_HOME too); a conf
-  # naming HF_HOME or ACCELERATE_… (outside a comment line, not as an expansion) may move it as well. Fail closed: a conf
-  # that did not source or cannot be read here is unknown.
+  # env.sh exports HF_HOME=$PROJ/.cache/huggingface, then (ENV_KIND=conda, R8-4) runs `conda activate`, which applies the
+  # env's own variables (`conda env config vars set HF_HOME=…`, its etc/conda/activate.d scripts), and sources ENV_HOOK last
+  # (it may set anything, HF_HOME too); a conf naming HF_HOME or ACCELERATE_… (outside a comment line, not as an expansion)
+  # may move it as well. Fail closed: a conf that did not source or cannot be read here is unknown.
   local LC_ALL=C; local c l IFS=$'\n' cr='^[[:space:]]*#' mr='(^|[^[:alnum:]_${])(HF_HOME|ACCELERATE_[[:alnum:]_]*)([^[:alnum:]_]|$)'
   RS_CFGWHY=""
   if [ "$CONF_OK" = 0 ]; then RS_CFGWHY=".ws.conf did not source here"; return 0; fi
   if [ -n "$EH" ]; then RS_CFGWHY="ENV_HOOK '${EH//[[:cntrl:]]/?}' may move it"; return 0; fi
+  if [ "$EK" = conda ]; then RS_CFGWHY="ENV_KIND=conda: conda activate '${EN//[[:cntrl:]]/?}' applies the env's own variables (HF_HOME / ACCELERATE_… among them), which may move it"; return 0; fi
   c=$(head -c 262145 -- "$PROJ/.ws.conf" 2>/dev/null) && [ "${#c}" -le 262144 ] || { RS_CFGWHY=".ws.conf could not be read here"; return 0; }
   set -f
   for l in $c; do [[ $l =~ $cr ]] && continue; [[ $l =~ $mr ]] || continue
@@ -376,14 +379,16 @@ rs_cfgwhy
 #      config's gpu_ids (--config_file FILE, else $HF_HOME/accelerate/default_config.yaml — .json when only that exists —
 #      with env.sh's HF_HOME, $PROJ/.cache/huggingface), read here read-only: a gpu_ids other than all / null / empty, or a
 #      config this cannot read (also a relative --config_file after a cd / pushd / env -C in RUN: read from there), warns;
-#      without --config_file, a RUN naming HF_HOME or ACCELERATE_…, an ENV_HOOK or a conf naming one (RS_CFGWHY) make the
-#      config it reads unknown: that warns too. A container does not get the landing: docker /
+#      without --config_file, a RUN naming HF_HOME or ACCELERATE_…, an ENV_HOOK, ENV_KIND=conda (R8-4: conda activate applies
+#      the env's own variables) or a conf naming one (RS_CFGWHY) make the config it reads unknown: that warns too. A
+#      container does not get the landing: docker /
 #      podman / nerdctl / nvidia-docker with --gpus, --runtime, --device nvidia.com/… or /dev/nvidia…, --privileged or a bare
 #      -e NVIDIA_VISIBLE_DEVICES (nvidia-docker run: always), apptainer / singularity with --cleanenv / -e or --containall / -C
 #      (they drop the landing's variable). And (R7-3) a tool that starts its command without this launch's environment, or
 #      elsewhere: docker / podman / nerdctl exec or start, compose (docker compose, docker-compose, podman-compose) run / up /
 #      exec / start / restart, kubectl exec / run / debug / apply / create, tmux new-session / new-window / split-window /
-#      send-keys / respawn-* / run-shell / if-shell / display-popup / pipe-pane (short names and prefixes too), screen with a
+#      send-keys / respawn-* / run-shell / if-shell / display-popup / pipe-pane (their aliases, the default command-aliases
+#      splitp / split-pane, and — R8-6 — any prefix tmux resolves to one: split, sp, run-, ru, i, pi …), screen with a
 #      short-option cluster holding d D m R or X (-dm, -d -m, -S … -X), setpriv --reset-env (or a prefix from --res), sudo
 #      (unless -E, --preserve-env, or --preserve-env=… naming CUDA_VISIBLE_DEVICES and CUDA_DEVICE_ORDER — the harness's ids
 #      are PCI_BUS_ID-ordered; -i / --login always), doas, systemd-run, ssh, srun / salloc / sbatch. A counted WARNING (on the
@@ -392,10 +397,12 @@ rs_cfgwhy
 #      as argparse abbreviations (--num_g), -H/-i/-e attached or not; accelerate's with - or _ (it takes both, no
 #      abbreviations). A flag an expansion or a script supplies is not seen (a config named by one warns). LAUNCH_CFG (R7-5,
 #      bound as launch_cfg=): <file>:<sha256> of each config / hostfile read here (<file>:unreadable when it could not be),
-#      sorted, comma-joined — a config edited after the card is exit 6 (changed: launch_cfg), whatever its warning says.
+#      sorted, comma-joined — a config edited after the card is exit 6 (changed: launch_cfg), whatever its warning says;
+#      R8-5: each file deepspeed's -H / --hostfile names (-HF, -H=F, --hostfile=F, an argparse prefix --hostf; every one
+#      given) is resolved as --config_file is (relative = $PROJ's, unreadable after a cd in RUN or through an expansion).
 rs_launchers() {   # rs_launchers RUN -> the WARNING lines (stderr); LAUNCH_CFG
   local LC_ALL=C IFS=$' \t\n'; local s t o x v g d y u r l="" n="" w="" f="" p="" k="" cf="" cfs=0 gi=0 hf=0 xs=0 rd="" e="" ev=0
-  local cm=0 so=1 sk=0 pe=0 pc=0 po=0 lg=0 cdw=0 ew=0 nl=$'\n' tb=$'\t'
+  local cm=0 so=1 sk=0 pe=0 pc=0 po=0 lg=0 cdw=0 ew=0 nl=$'\n' tb=$'\t' hfl=""
   local hr='(^|[^[:alnum:]_${])HF_HOME([^[:alnum:]_]|$)' gr='(^|[^[:alnum:]_])["'\'']?gpu_ids["'\'']?[[:space:]]*:[[:space:]]*(.*)$'
   local ar='(^|[^[:alnum:]_${])(ACCELERATE_[[:alnum:]_]*)([^[:alnum:]_]|$)'
   local lr='^[[:space:]]*-([[:space:]]|$)' cr='^[[:space:]]*#'   # (regexes in variables: the same in every bash)
@@ -406,8 +413,8 @@ rs_launchers() {   # rs_launchers RUN -> the WARNING lines (stderr); LAUNCH_CFG
   for t in $s ""; do   # (the last, empty word ends the text)
     n=""; x=""
     case "$t" in cd|pushd|--chdir|--chdir=*) cdw=1 ;; env|*/env) ew=1 ;; -C*) [ "$ew" = 0 ] || cdw=1 ;; esac   # RUN changes directory (env -C)
-    if [ -n "$k" ] && [ -n "$t" ]; then   # the value of the flag just before (accelerate --config_file F, docker --device D)
-      case "$k:$t" in cf:*) cf=$t ;; dev:nvidia.com/*|dev:/dev/nvidia*|dev:*'$'*) x="--device $t" ;; esac; k=""
+    if [ -n "$k" ] && [ -n "$t" ]; then   # the value of the flag just before (accelerate --config_file F, deepspeed -H F, docker --device D)
+      case "$k:$t" in cf:*) cf=$t ;; hf:*) hfl="$hfl v$t" ;; dev:nvidia.com/*|dev:/dev/nvidia*|dev:*'$'*) x="--device $t" ;; esac; k=""
     else case "$t" in
       '') n=- ;;
       deepspeed|*/deepspeed|deepspeed.pt|*/deepspeed.pt|ds|*/ds|deepspeed.launcher.runner|-mdeepspeed.launcher.runner) n=d ;;
@@ -457,6 +464,13 @@ rs_launchers() {   # rs_launchers RUN -> the WARNING lines (stderr); LAUNCH_CFG
         [ -z "$u" ] || { f="$f no --config_file: the config accelerate reads is unknown ($u)"; xs=2; }
       fi
       if [ "$l" = d ] && [ "$hf" = 0 ] && [ -e "$dsh" ]; then f="$f $dsh (present: its default hostfile, read without --hostfile)"; xs=1; rd="$rd$dsh$tb$dsh$nl"; fi
+      if [ "$l" = d ]; then   # R8-5: each hostfile named by -H / --hostfile (its R5-2 WARNING is the flag's), bound as accelerate's
+        [ "$k" != hf ] || hfl="$hfl v"   # --config_file: a dangling flag reads none (bound as '':unreadable)
+        for g in $hfl; do g=${g#v}; d=""
+          case "$g" in ''|*'$'*|'~'[!/]*|'~') ;; '~/'*) d=${HOME:-/nonexistent}/${g#'~/'} ;; /*) d=$g ;; *) [ "$cdw" = 1 ] || d=${PROJ:-.}/$g ;; esac
+          if [ -n "$d" ]; then rd="$rd${d#"${PROJ:-}/"}$tb$d$nl"; else rd="$rd${g:-''}$tb$nl"; fi
+        done
+      fi
       if [ -z "$f" ]; then :
       elif [ "$l" = c ] || [ "$l" = s ]; then
         y="name the GPUs it will use to the user"; [ "$l" = c ] || y="drop those flags (it then keeps these), or $y"
@@ -483,13 +497,13 @@ rs_launchers() {   # rs_launchers RUN -> the WARNING lines (stderr); LAUNCH_CFG
         esac
         echo "WARNING: RUN starts its command through $w$e — $r — so it may use GPUs other than this launch's GPU(s) [$DEV] (any on the box, another user's too): run the command directly (launch.sh detaches it), or name the GPUs it will use to the user" >&2
       fi
-      f=""; w=$t; l=$n; k=""; cf=""; cfs=0; gi=0; hf=0; xs=0; e=""; ev=0; cm=0; so=1; sk=0; pe=0; pc=0; po=0; lg=0
+      f=""; w=$t; l=$n; k=""; cf=""; cfs=0; gi=0; hf=0; hfl=""; xs=0; e=""; ev=0; cm=0; so=1; sk=0; pe=0; pc=0; po=0; lg=0
       case "$n" in o|y|h|l) ev=1 ;; esac   # doas, systemd-run, ssh, srun / salloc / sbatch: always
     elif [ -z "$x" ]; then
       case "$l:$t" in
         d:--?*) x=${t%%=*}; o=${x#--}; case " include exclude num_gpus num_accelerators num_nodes hostfile master_addr" in *" $o"*) ;; *) x="" ;; esac
-          [ -z "$x" ] || case hostfile in "$o"*) hf=1 ;; esac ;;
-        d:-[Hie]*) x=${t:0:2}; [ "$x" != -H ] || hf=1 ;;
+          [ -z "$x" ] || case hostfile in "$o"*) hf=1; case "$t" in *=*) hfl="$hfl v${t#*=}" ;; *) k=hf ;; esac ;; esac ;;   # (R8-5: its file)
+        d:-[Hie]*) x=${t:0:2}; [ "$x" != -H ] || { hf=1; case "$t" in -H) k=hf ;; -H=*) hfl="$hfl v${t#-H=}" ;; *) hfl="$hfl v${t#-H}" ;; esac; } ;;
         a:--gpu_ids|a:--gpu_ids=*|a:--gpu-ids|a:--gpu-ids=*) x=${t%%=*}; gi=1 ;;
         a:--num_processes|a:--num_processes=*|a:--num-processes|a:--num-processes=*) x=${t%%=*} ;;
         a:--config_file|a:--config-file) cfs=1; k=cf ;;
@@ -508,7 +522,12 @@ rs_launchers() {   # rs_launchers RUN -> the WARNING lines (stderr); LAUNCH_CFG
         c:exec|c:start|c:run|c:up|c:restart|m:exec|m:start|m:run|m:up|m:restart)
           v=$t; [ "$l$cm" != c0 ] || case "$t" in run|up|restart) v="" ;; esac; [ "$l$cm" != c1 ] || v="compose $t" ;;
         k:exec|k:run|k:debug|k:apply|k:create) v=$t ;;
-        t:new|t:new-s*|t:new-w*|t:neww|t:send|t:send-k*|t:split-w*|t:splitw|t:respawn*|t:run|t:run-s*|t:if|t:if-s*|t:popup|t:display-p*|t:pipe-p*|t:pipep) v=$t ;;
+        t:?*) v=""   # R8-6: tmux runs a command named by an alias, a default command-alias (splitp, split-pane) or ANY unique prefix of
+          # its name (tests/vgate/envdrop.sh tmux_prefix= / tmux_alias=): a word that is a prefix of a warned command at least as
+          # long as the shortest prefix only warned commands share in tmux's table (new- / resp: ambiguous among them) warns
+          for o in new-session:3 new-window:3 split-window:2 respawn-pane:4 respawn-window:4 run-shell:2 if-shell:1 display-popup:10 pipe-pane:2 send-keys:6; do
+            case "${o%:*}" in "$t"*) [ "${#t}" -lt "${o##*:}" ] || { v=$t; break; } ;; esac; done
+          case "$t" in neww|send|splitw|splitp|split-pane|respawnp|respawnw|popup|pipep) v=$t ;; esac ;;
         r:-[A-Za-z]*) v=""; case "$t" in -*[!A-Za-z]*) ;; *[dDmRX]*) v=$t ;; esac ;;
         p:--res*) v=""; case --reset-env in "$t"*) v=$t ;; esac ;;
         u:*) v=""   # sudo's options as its getopt reads them (+Aa:BbC:c:D:Eeg:Hh::iKklNnPp:R:r:SsT:t:U:u:Vv), up to its command
