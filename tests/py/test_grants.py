@@ -804,9 +804,66 @@ class Round4(unittest.TestCase):
         self.assertIsNotNone(G.deny_match(plan(), ("launch",), st, job=None)[0])
 
 
+class Round5(unittest.TestCase):
+    """The round-5 decisions on grants.py (R5-1 R5-8), each pinned with the round-4 recheck's reproduction."""
+
+    RUN = "exp--train--a"
+
+    def test_r5_1_a_deny_by_job_id_is_for_cancels_only(self):
+        """V4-jobdeny: `rsk grant deny --job 101 --action relaunch` was stored, listed `DENY relaunch: jobs 101`, and
+        matched no launch (a launch has no job id), so a relaunch grant resubmitted job 101's run. Such a record is now
+        invalid — and an invalid deny matches everything (fail closed)."""
+        p = plan(name=f"{self.RUN}--a02")
+        att = {"name": f"{self.RUN}--a01", "target": "fx", "kind": "slurm",
+               "request": {"action": "launch", "plan": "p-1", "bound_hash": p["bound_hash"], "bound": G.bound(p)},
+               "submissions": [{"nonce": "n1", "submit": "submitted", "job": "101", "end": {"state": "PREEMPTED"}}],
+               "result": {"state": "PREEMPTED"}}
+        runs = {self.RUN: {"run": self.RUN, "attempts": {"a01": att}}}
+        g = grant({"targets": ["fx"]}, actions=("relaunch",))
+        self.assertTrue(G.check(state(g, runs=runs), "relaunch", plan=p, run=self.RUN).covered)   # the setup
+        for acts in (["relaunch"], list(G.ACTIONS), ["cancel", "launch"]):
+            with self.assertRaises(RskError) as c:
+                G.new_deny("job 101 is broken: do not resubmit it", {"jobs": ["101"]}, acts)
+            self.assertEqual(c.exception.code, USAGE)
+            self.assertIn("a deny by job id (scope.jobs) is for cancels only", str(c.exception))
+            stored = {"id": "d-20261105-aaaaaa", "kind": "deny", "quote": "job 101 is broken: do not resubmit it",
+                      "created_at": L.now(), "created_via": "cli", "source": "", "scope": {"jobs": ["101"]},
+                      "actions": acts, "limits": {}, "used": [], "revoked": None}
+            self.assertTrue(G.fail_closed(stored), acts)
+            d = G.check(state(g, stored, runs=runs), "relaunch", plan=p, run=self.RUN)
+            self.assertTrue(d.denied, (acts, d.reasons))               # it was covered (exit 0) before
+            self.assertIn("matches everything", " ".join(d.reasons))
+            revoked = {**stored, "revoked": {"at": L.now(), "quote": "recorded wrongly"}}
+            self.assertTrue(G.check(state(g, revoked, runs=runs), "relaunch", plan=p, run=self.RUN).covered)
+        ok = G.new_deny("never cancel job 101", {"jobs": ["101"]}, ["cancel", "cancel_own"])   # cancels: as before
+        self.assertEqual(G.valid(ok), "")
+        self.assertTrue(G.check(state(g, ok, runs=runs), "relaunch", plan=p, run=self.RUN).covered)
+        byname = G.new_deny("job 101 is broken: do not resubmit it", {"names": [self.RUN]}, ["relaunch"])
+        self.assertTrue(G.check(state(g, byname, runs=runs), "relaunch", plan=p, run=self.RUN).denied)
+
+    def test_r5_8_a_deny_compares_normalised_target_names(self):
+        """WATCH-target-spelling-evades-deny: a run-watch row on `fx-slurm/` (the same profile dir, the same deploy)
+        never matched `-T fx-slurm`. A deny now compares grants.target_key names; a spelling that is not one plain
+        name may be any target (it matches)."""
+        deny = G.new_deny("never launch anything on fx-slurm any more", {"targets": ["fx-slurm"]})
+        row = {"kind": "slurm", "name": "a", "warnings": "0"}
+        for t in ("fx-slurm", "fx-slurm/", "fx-slurm/.", "fx-slurm//", "./fx-slurm", "FX-SLURM", "a/b", "..", "-x"):
+            self.assertIsNotNone(G.deny_match({**row, "target": t}, ("launch",), state(deny), job=None)[0], t)
+        for t in ("fx-other", "fx-slurm-2"):
+            self.assertIsNone(G.deny_match({**row, "target": t}, ("launch",), state(deny), job=None)[0], t)
+        self.assertEqual([G.target_key(t) for t in ("fx/", "./FX", "a/b", "", "x y")], ["fx", "fx", None, None, None])
+        g = grant({"targets": ["fx-slurm"]})                           # a grant stays exact: `fx-slurm/` is not it
+        self.assertFalse(G.check(state(g), "launch", plan=plan(target="fx-slurm/")).covered)
+        self.assertTrue(G.check(state(g), "launch", plan=plan(target="fx-slurm")).covered)
+
+
 class Store(ScratchHome):
     def setUp(self) -> None:
         super().setUp()
+        for name, prof in (("fx", "T_KIND=slurm; T_HOST=fxhost\n"), ("ws", "T_KIND=nohup; T_HOST=wshost\n")):
+            d = self.home / "cfg" / "targets" / name             # the fixture targets (RS_USER_DIR = home/cfg)
+            d.mkdir(parents=True)
+            (d / "profile.sh").write_text(prof)
         self.proj = self.home / "proj"
         self.proj.mkdir()
         (self.proj / ".hpc.conf").write_text("REMOTE_DIR=/r\n")
@@ -964,6 +1021,55 @@ class Store(ScratchHome):
         self.assertTrue(G.check(self.led, "launch", plan=plan()).covered)   # works as stated: no limit
         f.write_text(json.dumps([{**good, "id": rec["id"]}]))
         self.assertEqual(run("grant", "import", str(f), "-C", str(self.proj))[0], USAGE)    # id clash
+
+    def test_r5_9_a_target_the_harness_does_not_know_is_refused(self):
+        """DENY-unknown-target-silently-inert: `rsk grant deny -T fx-slrum` was stored and matched nothing, so a grant
+        on fx covered what the user forbade. Every -T of add / deny and every scope target of import must be a target
+        the harness knows: exit 2 'unknown target', nothing recorded."""
+        deny = ("grant", "deny", "-C", str(self.proj), "--quote", "never launch anything on fx again")
+        add = ("grant", "add", "-C", str(self.proj), "--quote", "launch on fx", "--action", "launch", "--max-live", "1",
+               "--max-launches", "1", "--expires", "none")
+        for argv in ((*deny, "-T", "fx-slrum"), (*deny, "-T", "fx,fx-slrum"), (*add, "-T", "fx-slrum"),
+                     (*deny, "-T", "fx/"), (*deny, "-T", "FX")):
+            rc, text = run(*argv)
+            self.assertEqual(rc, USAGE, (argv, text))
+            self.assertIn("unknown target", text)
+            self.assertIn("the harness knows fx, ws", text)
+        self.assertIn("'fx/' is spelled fx here", run(*deny, "-T", "fx/")[1])
+        self.assertEqual(self.led.state().grants, [])                    # nothing recorded
+        self.assertFalse((self.led.dir / "audit.jsonl").exists() and "grant_" in (self.led.dir / "audit.jsonl").read_text())
+        f = self.home / "auth.json"
+        rec = {"kind": "deny", "quote": "never on fx", "source": "a note", "scope": {"targets": ["fx-slrum"]},
+               "actions": ["launch"], "limits": {}}
+        f.write_text(json.dumps([rec]))
+        rc, text = run("grant", "import", str(f), "-C", str(self.proj))
+        self.assertEqual(rc, USAGE, text)
+        self.assertIn("unknown target 'fx-slrum' (scope.targets in", text)
+        self.assertEqual(self.led.state().grants, [])
+        self.assertEqual(run(*deny, "-T", "fx")[0], OK)                 # a known one: as before
+        f.write_text(json.dumps([{**rec, "scope": {"targets": ["ws"]}}]))
+        self.assertEqual(run("grant", "import", str(f), "-C", str(self.proj))[0], OK)
+        self.assertEqual(run(*deny, "--name", "x")[0], OK)              # no target at all: nothing to check
+
+    def test_r5_1_rsk_grant_deny_job_with_a_launch_action_is_a_usage_error(self):
+        """V4-jobdeny: the CLI accepted `--job 101 --action relaunch` (and `--job 101` = every action). Now exit 2
+        naming the run to deny by name; `--job J --action cancel` stays."""
+        self.led.record_attempt(name="exp--train--a--a01", target="fx", kind="slurm", nonce="n1", submit="submitted",
+                                job="101", plan_id="p-1", action="launch")
+        base = ("grant", "deny", "-C", str(self.proj), "--quote", "job 101 is broken: do not resubmit it", "--job", "101")
+        for extra in (("--action", "relaunch"), (), ("--action", "cancel,launch")):
+            rc, text = run(*base, *extra)
+            self.assertEqual(rc, USAGE, (extra, text))
+            self.assertIn("a deny of a run's launches names the run: --name 'exp--train--a'", text)
+        rc, text = run("grant", "deny", "-C", str(self.proj), "--quote", "q", "--job", "999", "--action", "launch")
+        self.assertIn("--name '<run>'", text)                            # a job the ledger does not know
+        self.assertEqual(self.led.state().grants, [])
+        rc, text = run(*base, "--action", "cancel")
+        self.assertEqual(rc, OK, text)
+        self.assertIn("DENY cancel: jobs 101", text)
+        rc, text = run("grant", "deny", "-C", str(self.proj), "--quote", "job 101 is broken: do not resubmit it",
+                       "--name", "exp--train--a", "--action", "relaunch")
+        self.assertEqual(rc, OK, text)
 
 
 if __name__ == "__main__":

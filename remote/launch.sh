@@ -16,13 +16,18 @@
 # landing's busy GPUs (busy_ok=<id>:<uuid>:<user>,…) and the ENV_HOOK file's sha256 — and this call's warnings_id (the
 # distinct WARNING: lines, digit runs masked) is the approved card's (--rs-warnings ID; default: no warning), else the
 # block, `changed: <keys>` (from the approved plan's journal, when here) and ERROR, exit 6, before the wrapper exists.
+# The block's envelope (not bound) has info_prior=<n|unknown>: this project's journal receipts named the run id (NAME minus
+# a trailing --aNN) or <run id>--aNN, i.e. the run's earlier attempts — rsk reads n > 0, or no number, as a relaunch.
 # rs-api=3
 # The run is setsid'd under a wrapper (pid = pgid = <log>.pid) that starts the payload only after the receipt is on disk
 # (.rs/attempts/<NONCE>/gate -> go; anything else = never started), forwards TERM/INT once and ends the log with
 # `[<date>] EXIT rc=N term=0|1 …` + <log>.rc (`rc= term= at=`). RUN is one shell string, parsed once (as before), and
 # never picks the GPUs: leading words (before its command, also after a leading `env`) that set or clear CUDA_VISIBLE_DEVICES,
-# CUDA_DEVICE_ORDER, NVIDIA_/HIP_/ROCR_VISIBLE_DEVICES, or an env option that may (-i, -S, …) = exit 2 before the claim when
-# RUN's text shows it; else (an expansion) the wrapper checks the expanded words and never starts it (rc 2, ERROR in the log).
+# CUDA_DEVICE_ORDER, NVIDIA_/HIP_/ROCR_VISIBLE_DEVICES, or an env option that may (-i, -S, …), and RUN's text assigning or
+# clearing one of them ANYWHERE (a later command, a pipeline element, `bash -c '…'`, a container's --env NAME=…) = exit 2
+# before the claim; else (an expansion) the wrapper checks the first command's expanded words and never starts it (rc 2,
+# ERROR in the log). A launcher that picks GPUs from its own flags (deepspeed --num_gpus/--include/…, accelerate launch
+# --gpu_ids/--num_processes) gets a counted WARNING naming it, the flag and the landing (a grant covers it only as `any`).
 # Exit: 0 launched (planned), 1 failed (env gate, nvidia-smi, start) or too few free GPUs, 2 usage/data (RUN setting a GPU
 # variable: before the claim, no .rs/attempts/<NONCE>/), 6 NAME still
 # running, a busy -d GPU, or not the --rs-expect plan; 75 NONCE claimed.
@@ -119,10 +124,29 @@ rs_runwords() {   # rs_runwords RUN -> RS_W: RUN's first words as env gets them 
   done
   if [ -n "$st" ]; then RS_P=$w; elif [ -z "$q" ] && [ "$in" = 1 ]; then RS_W+=("$w"); fi
 }
+rs_gputext() {   # rs_gputext RUN: 1 and why (stdout) when RUN's TEXT, anywhere — a later command, a pipeline element, a
+  # `bash -c` string, a container's `--env NAME=` — assigns or clears a GPU variable: NAME= / NAME+= after the start, a
+  # blank, ; | & ( ` ' " or =; `-u NAME` / `--unset[= ]NAME` (env, abbreviations too); `unset … NAME`, `export -n NAME`.
+  # Read as written and again with quotes and backslashes removed (`'NAME'=0`, `N\AME=0`). Text only: a value that an
+  # expansion supplies is seen by the wrapper (first command) or not at all — the payload is code.
+  local LC_ALL=C; local s t n='(CUDA_VISIBLE_DEVICES|CUDA_DEVICE_ORDER|NVIDIA_VISIBLE_DEVICES|HIP_VISIBLE_DEVICES|ROCR_VISIBLE_DEVICES)'
+  local nl=$'\n' a u c
+  a='(^|[[:space:];|&(`'\''"=])'"$n"'[+]?='
+  u='(^|[[:space:];|&(`'\''"])(-u|--u|--un|--uns|--unse|--unset)([[:space:]]+|=)?'"$n"'([^[:alnum:]_]|$)'
+  c='(^|[^[:alnum:]_])(unset|export[[:space:]]+-n|declare[[:space:]]+[+]x|typeset[[:space:]]+[+]x)[[:space:]]([^;|&()'"$nl"']*[[:space:]])?'"$n"'([^[:alnum:]_]|$)'
+  for s in "$1" "$(printf %s "$1" | tr -d "\\\\'\"")"; do
+    if [[ $s =~ $a ]]; then t=${BASH_REMATCH[0]}; t=${t#"${BASH_REMATCH[1]}"}
+      echo "sets ${BASH_REMATCH[2]} in its text ('$t' — anywhere in RUN, not only before its command)"; return 1; fi
+    if [[ $s =~ $u ]]; then echo "clears ${BASH_REMATCH[4]} in its text ('${BASH_REMATCH[2]}${BASH_REMATCH[3]}${BASH_REMATCH[4]}': env -u)"; return 1; fi
+    if [[ $s =~ $c ]]; then echo "clears ${BASH_REMATCH[4]} in its text ('${BASH_REMATCH[2]} … ${BASH_REMATCH[4]}')"; return 1; fi
+  done
+  return 0
+}
 if [ -z "$uerr" ]; then   # before the claim: nothing is created for a RUN refused here
   rs_runwords "$RUN_CMD"; set -- ${RS_W[@]+"${RS_W[@]}"}
   case "$RS_P" in -*) ;; *=*) set -- ${1+"$@"} "$RS_P" ;; esac   # a word that starts NAME=…: an assignment of NAME, whatever follows
-  why=$(rs_gpuenv ${1+"$@"}) || { echo "ERROR: RUN $why — the GPUs are launch.sh's choice (-d IDS / -n N: checked for other users' processes, bound in the plan), not RUN's; nothing launched" >&2; exit 2; }
+  why=$(rs_gpuenv ${1+"$@"}) && why=$(rs_gputext "$RUN_CMD") \
+    || { echo "ERROR: RUN $why — the GPUs are launch.sh's choice (-d IDS / -n N: checked for other users' processes, bound in the plan), not RUN's; nothing launched" >&2; exit 2; }
 fi
 
 # ---- the claim: mkdir of the attempt dir (never -p for the leaf); a caller's NONCE that exists = it ran already ----
@@ -273,6 +297,40 @@ elif [ -n "$b" ]; then
     | LC_ALL=C sort -t: -k1,1n -k3,3 -u | paste -sd, -) && [ -n "$BUSYOK" ] || BUSYOK=unknown
 fi
 
+# ---- launchers that pick the GPUs from their own flags (R5-2): deepspeed's runner ignores CUDA_VISIBLE_DEVICES once
+#      --include/--exclude/--num_gpus/--num_nodes is given (or a hostfile: -H) and numbers the GPUs itself; accelerate launch
+#      sets CUDA_VISIBLE_DEVICES from --gpu_ids. A counted WARNING (on the card; no grant covers it unless its kind is `any`),
+#      one per launcher in RUN's text (quotes and backslashes removed, separators split words): every word after it counts —
+#      the script's own too (fail closed); deepspeed's long flags also as argparse abbreviations (--num_g), -H/-i/-e attached
+#      or not; accelerate's with - or _ (it takes both, no abbreviations). A flag an expansion or a script supplies is not seen.
+rs_launchers() {   # rs_launchers RUN -> the WARNING lines (stderr)
+  local LC_ALL=C; local s t o x l="" n="" w="" f="" p=""
+  s=$(printf %s "$1" | tr -d "\\\\'\"" | tr ';|&()<>`' '        ') || return 0
+  set -f
+  for t in $s ""; do   # (the last, empty word ends the text)
+    n=""; case "$t" in
+      '') n=- ;;
+      deepspeed|*/deepspeed|deepspeed.pt|*/deepspeed.pt|ds|*/ds|deepspeed.launcher.runner|-mdeepspeed.launcher.runner) n=d ;;
+      accelerate-launch|*/accelerate-launch|accelerate.commands.launch|-maccelerate.commands.launch) n=a ;;
+      launch) case "$p" in accelerate|*/accelerate) n=a; t="$p launch" ;; esac ;;
+    esac
+    if [ -n "$n" ]; then   # a launcher starts (or the text ends): the previous one's flags, if any
+      [ -z "$f" ] || echo "WARNING: RUN runs $w with$f — such a launcher may ignore CUDA_VISIBLE_DEVICES and pick GPUs itself (any on the box, another user's too), not only this launch's GPU(s) [$DEV]: drop those flags (it then uses these), or name the GPUs it will use to the user" >&2
+      f=""; w=$t; l=$n
+    else x=""
+      case "$l:$t" in
+        d:--?*) x=${t%%=*}; o=${x#--}; case " include exclude num_gpus num_accelerators num_nodes hostfile master_addr" in *" $o"*) ;; *) x="" ;; esac ;;
+        d:-[Hie]*) x=${t:0:2} ;;
+        a:--gpu_ids|a:--gpu_ids=*|a:--gpu-ids|a:--gpu-ids=*|a:--num_processes|a:--num_processes=*|a:--num-processes|a:--num-processes=*) x=${t%%=*} ;;
+      esac
+      [ -z "$x" ] || case "$f " in *" $x "*) ;; *) f="$f $x" ;; esac
+    fi
+    p=$t
+  done
+  set +f
+}
+rs_launchers "$RUN_CMD"
+
 # ---- plan / --rs-expect: ONE bound list + hash for both; env_kind/env_name/ENV_HOOK/VENV_DIR/UV_SYNC_ARGS as env.sh
 #      resolves them (profile, then the conf; <TAG>_ENV_NAME / <TAG>_VENV_DIR first), read in a child bash without rc
 #      files and handed back as data, never eval'd; the hook file is bound by its sha256 -------------------------------
@@ -303,9 +361,10 @@ rs_plan() {   # rs_plan check|print: `check` (--rs-expect) returns when the hash
   if [ "$1" = check ]; then   # both modes, before the payload is echoed) match; else the block, changed:, ERROR, exit 6
     [ "$h" != "$EXPECT" ] || [ "$W_ID" != "$RS_WARN" ] || { echo "plan: bound_hash=$h = --rs-expect (the approved plan); its $W_N warning(s) = the approved card's (warnings_id)"; return 0; }
     stage expect; ch=$(rs_changed "$b" "$h"); fi
-  printf '@@plan v1\napi=3\n%s\ninfo_gpus=%s\ninfo_uuids=%s\ninfo_busy=%s\ninfo_run_gpu=checked\nwarnings=%s\nwarnings_avail=0\nwarnings_id=%s\nbound_hash=%s\n@@end\n' \
-    "$b" "$DEV" "$UUIDS" "$BUSY" "$W_N" "$W_ID" "$h"   # warnings_avail=0: a nohup box has no availability -y gate (too few free = exit 1);
-  # info_run_gpu=checked: this launch.sh refuses a RUN whose leading words set or clear a GPU variable (an older api=3 one lacks the line)
+  printf '@@plan v1\napi=3\n%s\ninfo_gpus=%s\ninfo_uuids=%s\ninfo_busy=%s\ninfo_run_gpu=checked\ninfo_prior=%s\nwarnings=%s\nwarnings_avail=0\nwarnings_id=%s\nbound_hash=%s\n@@end\n' \
+    "$b" "$DEV" "$UUIDS" "$BUSY" "$PRIOR" "$W_N" "$W_ID" "$h"   # warnings_avail=0: a nohup box has no availability -y gate (too few free = exit 1);
+  # info_run_gpu=checked: this launch.sh refuses a RUN that sets or clears a GPU variable (an older api=3 one lacks the line);
+  # info_prior: the run's earlier attempts in this project's journal (rs_prior; an older launch.sh lacks the line)
   [ "$1" = print ] || { VERDICT=refused; [ -z "$ch" ] || echo "$ch" >&2
     if [ "$h" != "$EXPECT" ]; then echo "ERROR: the resolved submission differs from the approved plan (bound_hash $h, --rs-expect $EXPECT) — nothing launched; plan it again" >&2
     else echo "ERROR: the resolved submission differs from the approved plan: its $W_N warning(s) are not the approved card's (warnings_id) — nothing launched; plan it again" >&2; fi
@@ -325,7 +384,22 @@ rs_envcheck() {   # D10, plan mode: the env gate's preconditions, READ-ONLY and 
     none) ;;
     *) echo "ERROR: invalid ENV_KIND='$EK' (uv|conda|none) — env.sh would refuse it at the launch; nothing planned" >&2; exit 1 ;;
   esac; }
+rs_prior() {   # PRIOR (envelope info_prior, R5-4): this project's journal receipts named the run id (NAME minus a trailing --aNN,
+  # as rsk's ledger reads it) or <run id>--aNN — the run's earlier attempts, whoever launched them (rsk, run-watch, run-launch);
+  # 'unknown' when a receipt cannot be read (rsk then treats the plan as a relaunch: fail closed). Plain bash reads, no fork
+  # per receipt; nothing deletes attempts, so a receipt stays the evidence.
+  local rid=$NAME r l n s c=0
+  [[ $NAME =~ ^(.+)--a[0123456789][0123456789]+$ ]] && rid=${BASH_REMATCH[1]}
+  for r in "$PROJ"/.rs/attempts/*/receipt; do
+    [ -e "$r" ] || [ -L "$r" ] || continue
+    n=""; { while IFS= read -r l || [ -n "$l" ]; do case "$l" in name=*) n=${l#name=}; break ;; esac; done < "$r"; } 2>/dev/null \
+      || { PRIOR=unknown; return 0; }
+    case "$n" in "$rid") ;; "$rid--a"*) s=${n#"$rid--a"}; case "$s" in ''|?|*[!0123456789]*) continue ;; esac ;; *) continue ;; esac
+    c=$((c + 1))
+  done
+  PRIOR=$c; }
 if [ "$PLAN" = 1 ] || [ -n "$EXPECT" ]; then
+  rs_prior
   BASH_ENV= PROJ="$PROJ" TARGET="$TN" "$BASH" --noprofile --norc -c 'unset ENV_KIND ENV_NAME ENV_HOOK VENV_DIR UV_SYNC_ARGS "$3" "$4"
     . "$1" >&2 && . "$2" >&2 || exit 1
     unset -f printf builtin; unalias -a

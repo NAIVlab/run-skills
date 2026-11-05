@@ -24,7 +24,10 @@ submit — every step recorded in the project's ledger (ledger.py) and checked a
    refusal (policy 3, duplicate 6, usage 2, too few free GPUs 8, a nohup env that would fail the gate 1) is the exit
    code, with the target's lines (a nohup plan creates nothing outside .rs/).
 3. The plan and its card are stored (plans/<id>.json, never rewritten). Its action is derived, never a flag: a run that
-   already has attempts that may have run (any target; not this plan's own) → relaunch, a chain=1 block → chain, else
+   already has attempts that may have run (any target; not this plan's own) in the ledger, or in the target's journal
+   (the block's envelope info_prior > 0: receipts named <run> / <run>--aNN, Slurm also live jobs of this WorkDir —
+   run-watch's runs never enter the ledger), or whose block does not say (no readable info_prior: fail closed) →
+   relaunch, a chain=1 block → chain, else
    launch — every one that applies is checked (a deny of any matches; a record must allow all). grants.check()
    decides: a deny → exit 3 with its quote; a record that covers the plan → submit now; else the card and `needs
    user: approval — plan <id>` → exit 4. A standing grant never covers a workstation plan that lands on a GPU in use
@@ -51,7 +54,9 @@ submit — every step recorded in the project's ledger (ledger.py) and checked a
    `[<t>] started PID … ; log … ; pid file …` line, its fields taken from the end — a look-alike line a payload printed
    proves nothing); proof that nothing was sent = not submitted: the remote verdict refused/failed with no receipt,
    submit.sh's exit with no attempt dir (it claims one before anything else), launch.sh's exit with no attempt dir in
-   the journal read back (the same claim), run-launch failing before its launch ssh; then the use is given back and,
+   the journal read back (the same claim), run-launch failing before its launch ssh, a Slurm submit's ssh exit 255 with
+   no answer and ssh's own words that the session never opened (cancel.not_reached, R5-6: exit 5 "not reached —
+   nothing sent"); then the use is given back and,
    for the plan's first segment, its claim released — `rsk launch --plan <id>` retries it under the same approval
    (--rs-expect still guards drift). ssh 255, a timeout, an exit the journal does not explain (nohup: it is always
    read before deciding) or no receipt stays SUBMIT_UNKNOWN — `rsk status` reconciles it from the remote journal;
@@ -77,6 +82,7 @@ from pathlib import Path
 
 from remote_run import grants, harness, observe, paths
 from remote_run import ledger as L
+from remote_run.cancel import not_reached
 from remote_run.errors import (CONFLICT, FAILED, NEEDS_USER, OK, PLACEMENT, REFUSED, UNKNOWN, USAGE, RskError)
 
 API = "api=3"                    # the protocol this rsk speaks (the deployed submit.sh / launch.sh: `# rs-api=3`)
@@ -613,6 +619,13 @@ def render_card(rec: dict) -> str:
     if rec.get("relaunch_of"):
         head += f"   next attempt of {rec['relaunch_of']}"
     o.append(head)
+    prior = info_prior(b)
+    if prior is None:
+        o.append("  prior      unknown — the deploy does not count the run's earlier attempts (rsk sync): taken as a "
+                 "relaunch (fail closed)")
+    elif prior:
+        o.append(f"  prior      {prior} earlier attempt(s) of {rec['run']} on {rec['target']} (its journal / live "
+                 "jobs, also ones the ledger never saw: run-watch's) — a relaunch")
     if kind == "slurm":
         rows = [("name", _dec(b.get("name", ""))), ("partition", _dec(b.get("partition", ""))),
                 ("gres", _dec(b.get("gres", ""))), ("cpus", _dec(b.get("cpus", ""))), ("mem", _dec(b.get("mem", ""))),
@@ -722,12 +735,26 @@ def make_plan(led: L.Ledger, src: Path, proj: Path, place: harness.Place, req: R
 
 
 # ================================================================================================ decisions
+def info_prior(block: dict) -> int | None:
+    """R5-4: the plan block's envelope `info_prior=<n>` — the receipts in the target's .rs/attempts journal whose name is
+    the plan's run id or <run id>--aNN (Slurm: + live squeue rows of this WorkDir with such a name), i.e. attempts the
+    ledger may not know (run-watch's, another checkout's). None: missing (a deploy older than R5-4) or unreadable."""
+    if "info_prior" not in block:
+        return None
+    v = _dec(block.get("info_prior"))
+    return int(v) if re.fullmatch(r"[0-9]{1,9}", v) else None
+
+
 def plan_actions(runs: dict, rec: dict) -> tuple[str, ...]:
     """The actions a plan IS (D5), never a flag's say: relaunch when its run already has attempts that may have run
-    (any target; not this plan's own: a chain's segments, a retry of it), chain when its block says chain=1 (an
-    SBATCH_EXTRA singleton too), else launch. The first is the one shown and recorded; every one is checked."""
+    (any target; not this plan's own: a chain's segments, a retry of it) in the ledger OR in the target's journal (the
+    block's info_prior > 0: a run run-watch launched never enters the ledger) OR when the block cannot say (info_prior
+    missing or unreadable: fail closed), chain when its block says chain=1 (an SBATCH_EXTRA singleton too), else
+    launch. The first is the one shown and recorded; every one is checked."""
     acts = []
-    if rec.get("relaunch_of") or grants.prior_attempts(runs, rec["run"], rec["id"]):
+    prior = info_prior(rec.get("block") or {})
+    if (rec.get("relaunch_of") or grants.prior_attempts(runs, rec["run"], rec["id"]) or prior is None
+            or prior > 0):
         acts.append("relaunch")
     if str((rec.get("block") or {}).get("chain", "")) == "1" or rec.get("chain"):
         acts.append("chain")
@@ -938,6 +965,10 @@ def settle(led: L.Ledger, place: harness.Place, rec: dict, run: str, aid: str, n
             led.audit("submit_result", run=run, attempt=aid, nonce=nonce, to="submitted", job=job)
             out(f"submitted: {run} {aid} job {job} on {place.target} (nonce {nonce}, under {rid})")
             return OK
+        gone = not_reached(reply.rc, reply.out, reply.err)
+        if gone:                     # R5-6's proof, for a submit: ssh's own words that the session never opened
+            return refused(UNKNOWN, f"{place.target} not reached — nothing sent: {gone[:200]} (ssh exit 255 before "
+                                    "any answer)")
         if reply.rc is None or reply.rc == 255:
             out(unknown.replace("no receipt in the reply", f"ssh exit {reply.rc}" if reply.rc else reply.why))
             return UNKNOWN

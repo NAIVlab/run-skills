@@ -31,8 +31,15 @@ body ran —, a signal) count as "may have been sent": exit 5, the use kept; an 
 status sees the end; nohup: CANCELLED with its rc) and an audit line. A ledgered run that already ended — Slurm: ended
 in squeue; nohup: its pid gone, reused by another process (start differs), or the box rebooted (boot_id differs) — is
 exit 0 "nothing to cancel … ended", its end recorded in the ledger now (REBOOT for a changed boot_id).
+Not reached (R5-6): ssh's own exit 255 with no answer at all and its stderr saying the session never opened
+(`ssh: connect to host … port …: Connection refused | Connection timed out | No route to host`, `ssh: Could not resolve
+hostname`, `Permission denied (…)`, `Host key verification failed.`) → exit 5 "not reached — nothing sent", a cancel_own
+use given back (an approval's never). A non-zero scancel (R5-5) is exit 5, the use kept, the ledger CANCELLING? (not
+confirmed: a timed-out request may have been applied) — unless scancel's own line for that id says it is invalid or
+already completing / completed: then exit 0 "nothing to cancel", the use given back, the ledger COMPLETING.
 Exit: 0 cancelled (or already ended) · 2 usage · 3 denied / not this user's · 4 needs the user · 5 the target could
-not be read · 6 the identity does not match (name, WorkDir, receipt) · 1 scancel / kill failed.
+not be read, not reached, or a scancel whose outcome is unknown · 6 the identity does not match (name, WorkDir,
+receipt) · 1 kill failed (processes left in the group).
 """
 
 from __future__ import annotations
@@ -50,6 +57,37 @@ from remote_run.errors import CONFLICT, FAILED, NEEDS_USER, OK, REFUSED, UNKNOWN
 
 JOB_RE = re.compile(r"[0-9]+(?:_[0-9]+)?")
 PID_RE = re.compile(r"[1-9][0-9]{0,9}")
+# R5-6: ssh's own words for a session that never opened (OpenSSH: "ssh: connect to host %s port %s: <strerror>",
+# "ssh: Could not resolve hostname %.100s: %s", "%s@%s: Permission denied (%s).", "Host key verification failed.") —
+# nothing reached the target. Anything else (a timeout, a reset, a 255 after the session was up) may have been sent.
+NOT_REACHED = re.compile(r"^(?:ssh: connect to host \S+ port \S+: (?:Connection refused|Connection timed out|No route to host)"
+                         r"|ssh: Could not resolve hostname \S+: .*"
+                         r"|(?:\S+@\S+: )?Permission denied \([^()]*\)\.?"
+                         r"|Host key verification failed\.)[ \t\r]*$", re.M)
+# R5-5: scancel's words that prove its non-zero exit cancelled nothing for that id: the id is unknown to slurmctld, or
+# the job was ending already (Slurm: "Kill job error on job id <id>: Invalid job id specified" / "… Job/step already
+# completing or completed"); any other non-zero exit may have been applied (a timed-out RPC) — unknown
+MOOT = re.compile(r"invalid job id|already completing or completed", re.I)
+_ID_IN = re.compile(r"\bjob id ([0-9]+(?:_[0-9]+)?)\b", re.I)
+
+
+def scancel_moot(text: str, job: str) -> str:
+    """The line of scancel's output that proves there was nothing for it to cancel for JOB (the line names that id and
+    says it is invalid or already completing / completed); '' otherwise."""
+    for ln in text.splitlines():
+        m = _ID_IN.search(ln)
+        if m and m.group(1) == job and MOOT.search(ln):
+            return ln.strip()
+    return ""
+
+
+def not_reached(rc: int | None, out: str, err: str) -> str:
+    """R5-6: ssh's own exit 255 with nothing on stdout (no @@start) and its stderr saying the session never opened →
+    that line (nothing was sent); '' otherwise."""
+    if rc != 255 or out.strip():
+        return ""
+    m = NOT_REACHED.search(err or "")
+    return m.group(0).strip() if m else ""
 
 SLURM_SH = r'''rs_cancel() {   # rs_cancel JOB WANT_NAME ... : identity of each, then scancel of exactly those that passed
   echo @@start; U=${USER:-$(id -un)}; echo "@@user $U"
@@ -72,7 +110,9 @@ SLURM_SH = r'''rs_cancel() {   # rs_cancel JOB WANT_NAME ... : identity of each,
     echo "@@c $j ok state=$js name=$jn"; ok="$ok $j"
   done
   [ -n "$ok" ] || { echo "@@scancel none"; echo @@end; return 0; }
-  scancel $ok; echo "@@scancel rc=$? ids=${ok# }"; echo @@end
+  e=$(scancel $ok 2>&1); rc=$?   # its words decide a non-zero exit: only "invalid id" / "already completing" prove it moot
+  [ -z "$e" ] || printf '%s\n' "$e" | head -c 4096 | sed 's/^/@@scerr /'
+  echo "@@scancel rc=$rc ids=${ok# }"; echo @@end
 }'''
 
 NOHUP_SH = r'''rs_kill() {   # rs_kill PID NONCE START BOOT ... : identity of each (receipt, /proc, owner, group), then TERM, grace, KILL
@@ -270,6 +310,8 @@ def parse(text: str) -> tuple[dict, dict[str, str], dict[str, str]]:
         if w == "c":
             j, _, v = rest.partition(" ")
             verdict.setdefault(j, v)
+        elif w == "scerr":                     # scancel's own output (every line)
+            facts["scerr"] = facts.get("scerr", "") + rest + "\n"
         elif w in ("left", "killed", "term", "r"):
             j, _, v = rest.partition(" ")
             extra[f"{w}:{j}"] = v
@@ -330,6 +372,15 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     except OSError as exc:
         text, rc, err = "", None, f"ssh: {exc}"
     facts, verdict, extra = parse(text)
+    gone = not_reached(rc, text, err)
+    if gone:                                   # R5-6: the session never opened — nothing reached the target
+        for i in items:
+            refund(led, cover[i.job], i.job, "not reached: nothing sent")
+        led.audit("cancel", target=place.target, jobs=[i.job for i in items], outcome="not reached", why=gone[:200],
+                  sent="no")
+        raise RskError(f"[{place.target}] not reached — nothing sent: {gone[:200]} (ssh exit 255 before any answer; a "
+                       "cancel_own use is given back, a cancel approval stays used: the user's words were for that "
+                       "one cancel)", UNKNOWN)
     if "end" not in facts or "fail" in facts:
         why = facts.get("fail") or (f"ssh exited {rc}: {err.strip()[:200]}" if rc else err or "the answer was cut off")
         cut = timed_out or (rc is not None and not 0 <= rc < 255)   # not the remote's own status: output may be lost
@@ -354,10 +405,29 @@ def cmd_cancel(args: argparse.Namespace) -> int:
         if v.startswith("ok"):
             if place.kind == "slurm":
                 sc = observe._kv(facts.get("scancel", ""))
-                if sc.get("rc") != "0":
-                    refund(led, cover[i.job], i.job, f"scancel rc={sc.get('rc', '?')}")
-                    out(f"FAILED: {what}: scancel exit {sc.get('rc', '?')} — not cancelled")
-                    worst = worst or FAILED
+                if sc.get("rc") != "0":                     # R5-5: no refund without proof that it cancelled nothing
+                    src = sc.get("rc", "?")
+                    moot = scancel_moot(facts.get("scerr", ""), i.job)
+                    if moot:
+                        refund(led, cover[i.job], i.job, f"scancel: {moot[:150]}")
+                        if i.run:
+                            led.observe(i.run, i.attempt, i.job, "COMPLETING", "rsk cancel",
+                                        detail=f"scancel exit {src}: {moot[:200]}")
+                        out(f"nothing to cancel: {what} — scancel exit {src}: {moot[:200]} (it was ending or gone "
+                            "already)" + (f"; ledger: {i.run} {i.attempt} ending (rsk status shows how)" if i.run else ""))
+                        led.audit("cancel", run=i.run, attempt=i.attempt, target=place.target, job=i.job, record=rid,
+                                  outcome=f"nothing to cancel: {moot}"[:200])
+                        continue
+                    said = [ln for ln in (facts.get("scerr") or "").splitlines() if ln.strip()]
+                    if i.run:
+                        led.observe(i.run, i.attempt, i.job, "CANCELLING?", "rsk cancel",
+                                    detail=f"scancel exit {src}, not confirmed" + (f": {said[-1][:160]}" if said else ""))
+                    out(f"UNKNOWN: {what}: scancel exit {src}" + (f" ({said[-1][:200]})" if said else "")
+                        + " — it may have been applied (a timed-out request can be): rsk status shows whether it ends; "
+                        "the use is kept")
+                    led.audit("cancel", run=i.run, attempt=i.attempt, target=place.target, job=i.job, record=rid,
+                              outcome=f"unknown: scancel exit {src}"[:200])
+                    worst = worst or UNKNOWN
                     continue
                 if i.run:
                     led.observe(i.run, i.attempt, i.job, "CANCELLING", "rsk cancel (scancel rc=0)")

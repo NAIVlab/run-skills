@@ -218,6 +218,23 @@ class Denies(ScratchHome):
         G.add(self.led, G.new_deny("never vip on the box", {"targets": ["ws-box"], "partitions": ["vip"]}))
         self.assertEqual(Wt.deny_hit(self.led, self.proj, ["w.tsv", "--act"], {"ws-box": "nohup"}), "")  # no -p there
 
+    def test_r5_8_a_row_target_spelled_otherwise_is_compared_as_its_name(self):
+        """WATCH-target-spelling-evades-deny: a row on `fx-slurm/` (rs_target_dir finds the same profile, the deploy dir
+        is the same) passed a `-T fx-slurm` deny — rsk compared the raw string. Now a normalised name; a spelling that
+        is not one plain name may be any target."""
+        G.add(self.led, G.new_deny("never launch anything on fx-slurm any more", {"targets": ["fx-slurm"]}))
+        for t in ("fx-slurm/", "fx-slurm/.", "fx-slurm//", "./fx-slurm", "FX-SLURM", "x/../fx-slurm"):
+            (self.proj / "s.tsv").write_text(f"#@ run-watch v1\n#@ allow launch\na {t} - -p gpu -g 1 -- python a.py\n")
+            why = Wt.deny_hit(self.led, self.proj, ["s.tsv", "--act"], self.kinds)
+            self.assertIn(f"row a on {t} (launch)", why, t)
+            self.assertIn("never launch anything on fx-slurm any more", why)
+            self.assertIn(f"the row's target {t!r} is not a target name as spelled", why)
+        self.assertEqual(Wt.kind_of(self.kinds, "fx-slurm/"), "slurm")              # chain is checked as for fx-slurm
+        self.assertEqual(Wt.kind_of(self.kinds, "a/b"), "")
+        self.assertEqual(Wt.kind_of({"ab": "slurm", "AB": "nohup"}, "Ab"), "")       # ambiguous: unknown
+        (self.proj / "s.tsv").write_text("#@ run-watch v1\n#@ allow launch\na fx-other - -p gpu -g 1 -- python a.py\n")
+        self.assertEqual(Wt.deny_hit(self.led, self.proj, ["s.tsv", "--act"], {**self.kinds, "fx-other": "slurm"}), "")
+
     def test_r4_1_a_deny_of_a_plan_matches_every_row_in_its_scope(self):
         """N2-run-hash-deny-never-matches-watch-rows: a row has no bound hash — a deny of plans matches it."""
         G.add(self.led, G.new_deny("never run this exact configuration", {"runs": ["a" * 64]}))

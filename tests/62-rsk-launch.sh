@@ -9,7 +9,8 @@
 # rsk status; an old deploy (needs: sync); the local duplicate; relaunch; cancel (identity: name, WorkDir, user);
 # nohup: busy GPU never grant-covered, approved card -> --gpu-busy-ok, cancel TERM/KILL; the watch lease. The P3 review
 # findings (H1 H2 H3 M1 M3 M4 M5 M6 M7 L2 L3 L4 L5), the round-3 decisions (D1 D3 D5 D6 D8 D9 D10; C-stale-API,
-# F-unknown, grants#1/3/4, H1-owner/msg, G-space) and the round-4 ones (R4-1 R4-2 R4-4 R4-6 R4-8 R4-15), each end to end.
+# F-unknown, grants#1/3/4, H1-owner/msg, G-space), the round-4 ones (R4-1 R4-2 R4-4 R4-6 R4-8 R4-15) and the round-5 ones
+# (R5-1 R5-4 R5-5 R5-6 R5-8 R5-9), each end to end.
 # Run by selftest.sh with RS_HOME set:  bash tests/62-rsk-launch.sh
 set -u
 . "$RS_HOME/tests/lib.sh"
@@ -28,8 +29,11 @@ cat > "$T/bin/ssh" <<EOS
 #!/usr/bin/env bash
 # executing ssh stub: -o options dropped, the host logged, the command run here (cd \$H, HOME=\$H) as the remote would;
 # \`bash -s\` takes its body on stdin. \$T/ssh.drop: the next submit (--rs-expect) runs, then its reply is lost (255).
+# \$T/ssh.noconnect: ssh's own refusal, nothing run (the session never opened).
 while [ \$# -gt 0 ]; do case "\$1" in -o) shift 2 ;; -*) shift ;; *) break ;; esac; done
-echo "\$1" >> "$T/ssh-host.log"; shift; cmd="\$*"
+echo "\$1" >> "$T/ssh-host.log"
+[ ! -f "$T/ssh.noconnect" ] || { echo "ssh: connect to host \$1 port 22: Connection refused" >&2; exit 255; }
+shift; cmd="\$*"
 if [ "\$cmd" = "bash -s" ]; then body=\$(cat); printf '%s\n' "\$body" >> "$T/ssh-body.log"
   if [ -f "$T/ssh.drop" ] && printf '%s' "\$body" | grep -q -- '--rs-expect'; then
     rm -f "$T/ssh.drop"; ( cd "$H" && HOME="$H" bash -c "\$body" ) >/dev/null 2>&1; exit 255; fi
@@ -67,10 +71,12 @@ awk -F'|' -v fmt="\$f" -v u="\$u" -v j=",\$j," 'BEGIN { n = split(fmt, f, ",") }
     v = k == "JobID" ? \$1 : k == "JobName" ? \$3 : k == "User" ? \$2 : k == "State" ? \$4 : k == "WorkDir" ? \$5 : k == "ExitCode" ? "0:0" : "Unknown"
     s = s (i > 1 ? "|" : "") v }; print s }' "$T/jobs"
 EOS
+# \$T/scancel.err: the cancel is applied, then scancel prints that file and exits 1 (a timed-out reply to an applied RPC)
 cat > "$T/bin/scancel" <<EOS
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$T/scancel.log"
 for j in "\$@"; do awk -F'|' -v OFS='|' -v j="\$j" '\$1 == j { \$4 = "CANCELLED" } 1' "$T/jobs" > "$T/jobs.x" && mv "$T/jobs.x" "$T/jobs"; done
+[ ! -f "$T/scancel.err" ] || { cat "$T/scancel.err" >&2; exit 1; }
 EOS
 cat > "$T/bin/nvidia-smi" <<EOS
 #!/usr/bin/env bash
@@ -434,6 +440,55 @@ nosub "...nothing submitted"
 : > "$T/scancel.log"; O=$(rsk cancel --job 101 -T fx-slurm --approve "cancel job 101"); RC=$?
 [ "$RC" = 6 ] && has "$O" 'grants unreadable' "R4-15/N7: rsk cancel -> exit 6" || bad "R4-15 cancel (rc=$RC)"
 [ ! -s "$T/scancel.log" ] && ok "...scancel never called" || bad "...scancel called"; CWD=$P
+
+echo "-- round 5 R5-4: a run run-watch launched (never in the ledger) is a relaunch for rsk launch; R5-1 R5-8 R5-9 --"
+R=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\n' "$R" > "$R/.hpc.conf"; CWD=$R
+rsk grant add --quote "run the a* experiments on fx-slurm" -T fx-slurm --name 'a*' --action launch --max-live 4 --max-launches 10 --expires none >/dev/null
+printf '#@ run-watch v1\n#@ allow launch\na fx-slurm - -p gpu -g 1 -t 1:00:00 -- python train.py\n' > "$R/t.tsv"
+O=$(rsk watch t.tsv --approve "run a under the watch"); RC=$?
+: > "$T/sbatch.log"; O=$(rsk watch t.tsv --once --act --max-active 1); RC=$?
+JA=$(printf '%s\n' "$O" | sed -n 's/.*LAUNCH name=a target=fx-slurm job=\([0-9][0-9]*\).*/\1/p' | head -n 1)
+[ -n "$JA" ] && [ "$(grep -c . "$T/sbatch.log")" = 1 ] && [ -z "$(ls "$(pyl 'print(L.Ledger(sys.argv[2]).dir)' "$R")/runs" 2>/dev/null)" ] \
+  && ok "R5-4 setup: run-watch launched a (job $JA); the ledger has no run" || { bad "R5-4 setup (rc=$RC, job '$JA')"; printf '%s\n' "$O" | tail -6 | sed 's/^/    | /'; }
+jobstate "$JA" FAILED
+O=$(rsk grant deny --quote "job $JA is broken: do not resubmit it" --job "$JA" --action relaunch); RC=$?
+[ "$RC" = 2 ] && has "$O" "a deny of a run's launches names the run: --name" "R5-1: a deny by job id with a launch action -> exit 2 (it would match no launch)" || bad "R5-1 (rc=$RC)"
+hasnt "$(rsk grant list)" "job $JA is broken" "...nothing recorded"
+O=$(rsk grant deny --quote "never launch anything on fx-slrum" -T fx-slrum); RC=$?
+[ "$RC" = 2 ] && has "$O" "unknown target 'fx-slrum'" "R5-9: a deny naming an unknown target -> exit 2 (it would match nothing)" || bad "R5-9 (rc=$RC)"
+hasnt "$(rsk grant list)" 'fx-slrum' "...nothing recorded"
+rsk grant deny --quote "do not relaunch a, it is broken" --action relaunch --name a >/dev/null
+: > "$T/sbatch.log"; O=$(rsk launch -T fx-slurm -n a -p gpu -g 1 -t 1:00:00 -- python train.py); RC=$?
+[ "$RC" = 3 ] && has "$O" 'do not relaunch a, it is broken' "R5-4: rsk launch -n a after run-watch's a is a relaunch: the deny stops it (exit 3)" || { bad "R5-4 deny (rc=$RC)"; printf '%s\n' "$O" | tail -4 | sed 's/^/    | /'; }
+has "$O" '— relaunch on fx-slurm' "...the card says relaunch"; nosub "...nothing submitted"
+has "$O" '^  prior      1 earlier attempt(s) of a on fx-slurm' "...because the target's journal holds a's receipt (info_prior=1)"
+: > "$T/sbatch.log"; O=$(rsk launch -T fx-slurm -n a2 -p gpu -g 1 -t 1:00:00 -- python train.py); RC=$?
+[ "$RC" = 0 ] && has "$O" '— launch on fx-slurm' "R5-4: a run the target never saw (info_prior=0) is a launch: the grant covers it" || { bad "R5-4 fresh (rc=$RC)"; printf '%s\n' "$O" | grep -E 'prior|covered|relaunch' | sed 's/^/    | /'; }
+printf '#@ run-watch v1\n#@ allow launch\nb fx-slurm/ - -p gpu -g 1 -t 1:00:00 -- python b.py\n' > "$R/s.tsv"
+rsk grant deny --quote "never launch b on fx-slurm" -T fx-slurm --name b >/dev/null; cp "$R/s.tsv" "$T/s.before"
+O=$(rsk watch s.tsv --approve "run b"); RC=$?
+[ "$RC" = 3 ] && cmp -s "$R/s.tsv" "$T/s.before" && has "$O" 'never launch b on fx-slurm' "R5-8: a row on 'fx-slurm/' meets the -T fx-slurm deny (exit 3, no '#@ ok')" || bad "R5-8 (rc=$RC)"
+
+echo "-- round 5 R5-5: a failing scancel is unknown (the use kept); R5-6: a session that never opened sent nothing (the use back) --"
+rsk grant add --quote "you may stop your own a runs" -T fx-slurm --name 'a*' --action cancel_own --max-live none --max-launches 1 --expires none >/dev/null
+J2=$(pyl 'a = L.Ledger(sys.argv[2]).read_run("a2").data["attempts"]["a01"]; print(a["submissions"][-1]["job"])' "$R")
+touch "$T/ssh.noconnect"; : > "$T/scancel.log"; O=$(rsk cancel a2); RC=$?; rm -f "$T/ssh.noconnect"
+[ "$RC" = 5 ] && has "$O" 'not reached — nothing sent' "R5-6: ssh 'Connection refused' -> exit 5, not reached" || bad "R5-6 (rc=$RC)"
+has "$(rsk grant list)" 'uses 0/1' "...the cancel_own use is given back"; [ ! -s "$T/scancel.log" ] && ok "...nothing ran there" || bad "...scancel ran"
+printf 'scancel: error: Kill job error on job id %s: Socket timed out on send/recv operation\n' "$J2" > "$T/scancel.err"
+O=$(rsk cancel a2); RC=$?; rm -f "$T/scancel.err"
+[ "$RC" = 5 ] && has "$O" "^UNKNOWN: job $J2 (a2 a01): scancel exit 1" "R5-5: scancel exit 1 (the cancel was applied) -> exit 5, unknown" || { bad "R5-5 (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
+hasnt "$O" 'not cancelled' "...never 'not cancelled'"; has "$(rsk grant list)" 'uses 1/1' "...the use is kept"
+has "$(att a2 a01)" '^CANCELLING? submitted' "...the ledger: CANCELLING? (not confirmed)"
+O=$(rsk launch -T fx-slurm -n c -p gpu -g 1 -t 1:00:00 -- python c.py); PC=$(pid_of "$O")   # R5-6's proof for a submit (integration)
+touch "$T/ssh.noconnect"; : > "$T/sbatch.log"; O=$(rsk launch --plan "$PC" --approve "run c"); RC=$?; rm -f "$T/ssh.noconnect"
+[ "$RC" = 5 ] && has "$O" 'not reached — nothing sent: ssh: connect to host fx port 22: Connection refused' "R5-6 for rsk launch: an approved submit whose session never opened -> exit 5, not reached" \
+  || { bad "R5-6 submit (rc=$RC, plan '$PC')"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
+has "$O" "plan $PC is free again" "...the plan is free again"; nosub "...nothing submitted"
+has "$(att c a01)" '^NOT_SUBMITTED not_submitted' "...the ledger: NOT_SUBMITTED (not SUBMIT_UNKNOWN: nothing blocks the run)"
+O=$(rsk launch --plan "$PC"); RC=$?
+[ "$RC" = 0 ] && [ "$(grep -c . "$T/sbatch.log")" = 1 ] && ok "...the host back: rsk launch --plan submits it under the same approval" || bad "R5-6 submit retry (rc=$RC)"
+CWD=$P
 
 echo "-- watch: the lease (one watcher per project) --"
 sleep 60 & LP=$!

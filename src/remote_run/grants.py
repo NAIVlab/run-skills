@@ -64,7 +64,11 @@ The kinds:
             run-watch row — a deny of plans (bound hashes), names, classes, partitions or GPU types then matches).
             A deny of `launch` also stops relaunch / resubmit / chain; its names globs match the name or its run id
             (the name minus --aNN); its classes match the class the name carries, the --class label or any class the
-            run was recorded with (an attempt recorded without one: any class).
+            run was recorded with (an attempt recorded without one: any class). Its targets are compared as
+            target_key() names (`fx/`, `fx/.`, `FX` are fx; a spelling that is not one plain name matches every
+            target deny). scope.jobs is for cancels only: a deny with jobs and any launch action is invalid
+            (`rsk grant deny --job` refuses it, exit 2; a stored one matches everything) — a run's launches are
+            denied by name. `rsk grant add|deny|import` refuse a target the harness does not know (exit 2).
   A grants.json that cannot be read at all (corrupt, no good .prev) holds denies that cannot be ruled out: check()
   raises RskError(CONFLICT) (unreadable()) and deny_match() matches everything — never "no deny".
   The class of a plan is the one its name carries (<exp>--<class>--…); --class only labels a name without one. The
@@ -107,6 +111,7 @@ import math
 import re
 import secrets
 import shlex
+import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -152,6 +157,17 @@ EXTRA_FLAGS = ("requeue", "no-requeue")   # no value
 # the next word)
 EXTRA_ALLOW = (" ".join(f"--{o}" for o in EXTRA_VALUE_LONG) + " " + " ".join(f"-{c}" for c in EXTRA_VALUE_SHORT)
                + " --dependency=singleton -d singleton --requeue --no-requeue --nice --nice=N")
+TARGET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")   # a plain target name (a dir under a targets root)
+
+
+def target_key(t: object) -> str | None:
+    """The name a deny compares (R5-8): path decorations dropped ('x/', 'x/.', './x', 'x//' find the same profile dir),
+    case folded (a case-insensitive filesystem finds it too); None when that is not ONE plain target name — such a
+    spelling may be any target (a deny then matches it: fail closed)."""
+    parts = [p for p in str(t or "").strip().split("/") if p not in ("", ".")]
+    if len(parts) != 1 or not TARGET_NAME.fullmatch(parts[0]):
+        return None
+    return parts[0].casefold()
 
 
 # ================================================================================================ the plan block
@@ -723,6 +739,10 @@ def validate(rec: Any) -> dict:
             if k in scope:
                 errs.append(f"a deny takes targets/partitions/gpu_types/classes/names/runs/jobs, not {k} (resource "
                             "caps are a grant's scope, or the target's policy.local.sh)")
+        if scope.get("jobs") and set(acts) & LAUNCHES:      # R5-1: a launch has no job id to compare: it never matched
+            errs.append(f"a deny by job id (scope.jobs) is for cancels only (cancel, cancel_own), not "
+                        f"{'/'.join(a for a in acts if a in LAUNCHES)}: a deny of a run's launches names the run "
+                        "(scope.names, --name '<run>') — revoke this one with the user's words and record it again")
         for k in sorted(set(limits) - {"expires"}):
             errs.append(f"a deny's limits take only expires, not {k}")
     for k in ("max_live", "max_launches"):
@@ -962,9 +982,10 @@ def recount(led: L.Ledger) -> str:
                    "rsk status" if cleared else ""))
 
 
-def import_file(led: L.Ledger, path: Path) -> list[dict]:
+def import_file(led: L.Ledger, path: Path, check: Any = None) -> list[dict]:
     """A JSON list of records the user's existing authorisations were written as (memory notes, a conf comment).
-    Every user-facing field must be in the file; only id / created_at / used / revoked may be left for rsk."""
+    Every user-facing field must be in the file; only id / created_at / used / revoked may be left for rsk. CHECK(records)
+    runs on the validated records before anything is stored (rsk grant import: every scope target must be known)."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -988,6 +1009,8 @@ def import_file(led: L.Ledger, path: Path) -> list[dict]:
             errs.append(f"#{i}: {exc}")
     if errs:
         raise RskError(f"{path}: nothing imported — " + " | ".join(errs), USAGE)
+    if check is not None:
+        check(out)
     with led.locked():
         doc, got = load(led)
         ids = {r.get("id") for r in doc["records"]}
@@ -1054,7 +1077,13 @@ def _scope_misses(scope: dict, f: Facts, deny: bool) -> list[str]:
         if have not in want:
             miss.append(f"{label} {have or '-'} not in {', '.join(want)}")
 
-    lst("targets", f.target or None, "target")
+    want_tg = scope.get("targets") or []
+    if want_tg and deny:           # R5-8: normalised names; a spelling that is not one plain name may be any target
+        have, keys = target_key(f.target), {target_key(x) for x in want_tg}
+        if f.target and have is not None and None not in keys and have not in keys:
+            miss.append(f"target {f.target} not in {', '.join(want_tg)}")
+    else:
+        lst("targets", f.target or None, "target")
     lst("partitions", f.partition, "partition", na=f.kind == "nohup")
     want_t = [x.lower() for x in scope.get("gpu_types") or []]
     if want_t:
@@ -1284,8 +1313,9 @@ def _ident_text(ident: str) -> str:
 def _infra_miss(prev: tuple[str, dict] | None) -> list[str]:
     """[] when the run's previous attempt ended with positive evidence of an infrastructure end (INFRA_END)."""
     if not prev:
-        return ["the run has no earlier attempt that ran (a relaunch grant resumes an infrastructure end): the user "
-                "decides"]
+        return ["the ledger has no earlier attempt of the run that ran (a relaunch grant resumes an infrastructure end "
+                "it recorded; one only the target's journal shows — run-watch's, another checkout's — is the user's "
+                "call): the user decides"]
     aid, att = prev
     st = str((att.get("result") or {}).get("state") or "")
     if st in INFRA_END:
@@ -1357,8 +1387,8 @@ def _misses(r: dict, plan: dict, f: Facts, action: str, needed: tuple[str, ...],
                         "scope — no standing grant covers a plan with policy flags (an approval of this card does)")
         if {"relaunch", "resubmit"} & set(needed):
             if not orig or not (orig.get("bound") or orig.get("bound_hash")):
-                miss.append(f"its previous attempt{' ' + prev[0] if prev else ''} has no recorded plan (adopted?): the "
-                            "user decides")
+                miss.append(f"its previous attempt {prev[0]} has no recorded plan (adopted?): the user decides" if prev
+                            else "no previous attempt in the ledger to repeat: the user decides")
             else:
                 diff = same_config(orig, plan)
                 if diff:
@@ -1670,12 +1700,59 @@ def _scope_from(args: argparse.Namespace, deny: bool) -> dict:
     return sc
 
 
+def known_targets() -> list[str]:
+    """Every target the harness knows (lib/common.sh's rs_targets: overlay, packs, shipped — also one whose profile
+    does not load). A listing that fails is a usage error: no -T can be checked then."""
+    from remote_run import harness, paths
+    try:
+        return [t.name for t in harness.targets(paths.harness_src())]
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RskError(f"cannot list the harness's targets ({exc}): no target can be checked — nothing recorded",
+                       USAGE) from exc
+
+
+def check_targets(names: list[str], what: str) -> None:
+    """R5-9: every target a record names must be one the harness knows (a misspelt one would make a deny match
+    nothing): exit 2 'unknown target', nothing recorded."""
+    names = [n for n in dict.fromkeys(names) if n]
+    if not names:
+        return
+    known = known_targets()
+    bad = [n for n in names if n not in known]
+    if not bad:
+        return
+    near = {n: [k for k in known if target_key(k) is not None and target_key(k) == target_key(n)] for n in bad}
+    hint = "; ".join(f"{n!r} is spelled {', '.join(near[n])} here" for n in bad if near[n])
+    raise RskError(f"unknown target {', '.join(repr(n) for n in bad)} ({what}): the harness knows "
+                   f"{', '.join(known) or 'none'}{' — ' + hint if hint else ''} — nothing recorded", USAGE)
+
+
+def _job_runs(led: L.Ledger, jobs: list[str]) -> list[str]:
+    """The ledger runs whose submissions carry one of JOBS (a Slurm id or a nohup pid): what a deny of their launches
+    names."""
+    out = []
+    for run, got in sorted(led.runs().items()):
+        for att in ((got.data or {}).get("attempts") or {}).values():
+            for s in att.get("submissions") or []:
+                if str(s.get("job") or "") in jobs or str((s.get("proc") or {}).get("pid", "")) in jobs:
+                    out.append(str((got.data or {}).get("run") or run))
+    return list(dict.fromkeys(out))
+
+
 def cmd_grant(args: argparse.Namespace) -> int:
     from remote_run.status import project_dir   # status imports this module
     led = L.Ledger(project_dir(args.dir))
     c = args.grant_command
     if c in ("add", "deny"):
         acts = _split(args.actions)
+        if c == "deny" and _split(args.jobs) and set(acts or ACTIONS) & LAUNCHES:    # R5-1
+            runs = _job_runs(led, _split(args.jobs))
+            raise RskError(f"rsk grant deny --job {','.join(_split(args.jobs))}: a deny by job id is for cancels only "
+                           f"(--action cancel / cancel_own), not {'/'.join(a for a in (acts or ACTIONS) if a in LAUNCHES)}"
+                           f": a deny of a run's launches names the run: "
+                           + (" ".join(f"--name '{r}'" for r in runs) if runs else "--name '<run>'")
+                           + " — nothing recorded", USAGE)
+        check_targets(_split(args.targets), "-T")
         if c == "add":
             if not acts:
                 raise RskError("--action: what the user allowed (launch relaunch resubmit chain cancel_own)", USAGE)
@@ -1701,7 +1778,8 @@ def cmd_grant(args: argparse.Namespace) -> int:
         print(f"{r['id']} revoked: {describe(r)}")
         return OK
     if c == "import":
-        recs = import_file(led, Path(args.file))
+        recs = import_file(led, Path(args.file), check=lambda rs: check_targets(
+            [t for r in rs for t in (r.get("scope") or {}).get("targets") or []], f"scope.targets in {args.file}"))
         st = led.state()
         for r in recs:
             print(f"{r['id']}  {r['kind']}  imported from {r['source']}  covers: {describe(r)}  ({balance(r, st)})")
@@ -1737,7 +1815,8 @@ def add_parsers(sub) -> None:
         p.add_argument("--action", dest="actions", action="append", default=[],
                        help=("what it forbids (default: everything)" if deny else
                              "what the user allowed: launch relaunch resubmit chain cancel_own") + " (repeatable, a,b)")
-        p.add_argument("-T", "--target", dest="targets", action="append", default=[])
+        p.add_argument("-T", "--target", dest="targets", action="append", default=[],
+                       help="a target the harness knows (exit 2 otherwise)")
         p.add_argument("--partition", dest="partitions", action="append", default=[])
         p.add_argument("--gpu-type", dest="gpu_types", action="append", default=[])
         p.add_argument("--class", dest="classes", action="append", default=[], help=" ".join(CLASSES))
@@ -1760,7 +1839,8 @@ def add_parsers(sub) -> None:
     a.add_argument("--expires", required=True, metavar="YYYY-MM-DD|none")
     d = gs.add_parser("deny", help="the user forbade it: a matching deny always wins")
     scope(d, True)
-    d.add_argument("--job", dest="jobs", action="append", default=[])
+    d.add_argument("--job", dest="jobs", action="append", default=[],
+                   help="a job id / pid — for cancels only (--action cancel, cancel_own); a run's launches: --name RUN")
     d.add_argument("--run", dest="runs", action="append", default=[], help="a plan's bound hash")
     d.add_argument("--expires", default="none", metavar="YYYY-MM-DD|none")
     ls = gs.add_parser("list", help="every record with what it covers and its balance")

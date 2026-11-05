@@ -204,8 +204,9 @@ These are part of the skill's instructions and are enforced by the harness where
 - Check your existing authorisation before every submit, launch or cancel; ask only outside it. Cancel only after
   an identity check; never someone else's job or process.
 - On a workstation the harness picks the GPUs (`-d` / `-n`, never one another job uses unasked): a run command whose
-  leading words set `CUDA_VISIBLE_DEVICES` (or a sibling variable) is refused. What the payload does once it starts is
-  its own code — no harness can check that.
+  text sets or clears `CUDA_VISIBLE_DEVICES` (or a sibling variable) anywhere is refused, and a launcher given its own
+  GPU flags (`deepspeed --num_gpus`, `accelerate launch --gpu_ids`) is a warning on the plan you approve. What the
+  payload does once it starts is its own code — no harness can check that.
 - Partition and QOS are `submit.sh`'s decision — no raw `sbatch`/`srun`, no `--partition` smuggled in via
   `SBATCH_EXTRA`. A policy refusal is final; `-y` acknowledges a plan's warnings (availability, occupancy, cost), and
   rsk sends it only when the approved card showed warnings or the covering grant's kind covers the plan's warnings
