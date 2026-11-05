@@ -248,7 +248,7 @@ approve() {
     for ((i = 0; i < NR; i++)); do [ "${R_BLK[i]}" != "$b" ] || echo "  ${R_NORM[i]}"; done
   done
   [ "$n" -gt 0 ] || { echo "nothing to approve: every block's '#@ ok' matches"; exit 0; }
-  echo "under: $([ "${A_LINE[0]}" = allow: ] && echo "no '#@ allow' line (no launch, every budget 0)" || echo "#@ ${A_LINE[0]#allow:}")"
+  echo "under: $([ "${A_LINE[0]}" = allow: ] && echo "no '#@ allow' line (no launch, every budget 0)" || echo "${A_LINE[0]#allow:}")"   # A_LINE = allow:<the line's words>, '#@' included
   echo "with: .hpc.conf sha256[:12]=$CONF_SUM (editing it makes these blocks stale; the submit ssh checks the deployed copy)"
   tmp="$f.approve.$$"
   OKP="#@ ok $(date +%Y-%m-%d) sum=" OKW=" conf=$CONF_SUM \"$APPROVE\"" awk -v rep="$rep" -v ins="$ins" '
