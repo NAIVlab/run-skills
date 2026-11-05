@@ -1017,6 +1017,64 @@ class Round8(unittest.TestCase):
         self.assertEqual(G.valid(ap), "")
 
 
+def nplan(plan_id: str = "p-box", **kv: str | None) -> dict:
+    """A workstation plan as remote/launch.sh prints it (bound kind= … env_name=; envelope warnings, warnings_avail,
+    warnings_gpu, warnings_id; a key given as None is left out: an older launch.sh's block)."""
+    base: dict[str, str | None] = {
+        "kind": "nohup", "target": "ws", "name": "d1", "gpus_req": "n=1", "exclude": "", "nice": "", "launch_cfg": "",
+        "busy_ok": "", "payload": "deepspeed\\ --num_gpus\\ 4\\ train.py", "env_kind": "none", "env_hook": "''",
+        "venv_dir": "''", "uv_sync_args": "''", "env_name": "''", "warnings": "1", "warnings_avail": "0",
+        "warnings_gpu": "1", "warnings_id": "e" * 64}
+    base.update(kv)
+    bound = [f"{k}={base[k]}" for k in ("kind", "target", *G.NOHUP_BOUND)]
+    h = hashlib.sha256(("\n".join(bound) + "\n").encode()).hexdigest()
+    env = "".join(f"{k}={base[k]}\n" for k in ("warnings_avail", "warnings_gpu", "warnings_id", "warnings")
+                  if base[k] is not None)
+    return {**G.parse_plan("@@plan v1\napi=3\n" + "".join(ln + "\n" for ln in bound) + "info_launchers=checked\n" + env
+                           + f"bound_hash={h}\n@@end\n"), "plan_id": plan_id}
+
+
+class Round9(unittest.TestCase):
+    """NF8-any-grant-box-launchers: launch.sh counts its launcher / container / env-dropping WARNINGs apart
+    (warnings_gpu=N); no standing grant covers a workstation plan with one — whatever its allow_warnings kind — and a
+    block without the count (an older launch.sh) is unknown, so uncovered too. An approval of the card still is."""
+
+    def test_nf8_no_grant_covers_a_box_plan_with_launcher_warnings_whatever_its_kind(self):
+        """box-any.sh: a '<= 1 GPU' ws grant with --allow-warnings any covered `deepspeed --num_gpus 4 …` (four GPUs),
+        `docker run --gpus all …` (any GPU, another user's too) and `ssh otherbox …` — §U: more resources and a GPU
+        another user uses are the user's call."""
+        p = nplan()
+        self.assertEqual((G.facts(p).warnings, G.facts(p).warnings_gpu), (1, 1))
+        for aw in ("any", True, "availability", None):
+            g = grant({"targets": ["ws"], "max_gpus": 1, **({"allow_warnings": aw} if aw is not None else {})})
+            d = G.check(state(g), "launch", plan=p)
+            self.assertFalse(d.covered, aw)
+            self.assertIn("1 of its warning(s) a launcher / container / env-dropping tool's", " ".join(d.reasons))
+            self.assertIn("no standing grant covers that, whatever its --allow-warnings", " ".join(d.reasons))
+        ap = approval("yes, deepspeed on four GPUs is fine", [p], allow_warnings=True)   # the user saw the card
+        self.assertTrue(G.check(state(ap), "launch", plan=p).covered)
+        g = grant({"targets": ["ws"], "allow_warnings": "any"}, actions=("launch", "relaunch"))
+        self.assertIn("never a workstation's launcher / container warnings", G.describe(g))
+
+    def test_nf8_warnings_gpu_zero_is_the_grants_call_and_missing_is_unknown(self):
+        g = grant({"targets": ["ws"], "allow_warnings": "any"})
+        self.assertTrue(G.check(state(g), "launch", plan=nplan(warnings="0", warnings_gpu="0",
+                                                               payload="python\\ t.py")).covered)
+        self.assertTrue(G.check(state(g), "launch", plan=nplan(warnings_gpu="0")).covered)   # another kind: as before
+        self.assertFalse(G.check(state(grant({"targets": ["ws"]})), "launch", plan=nplan(warnings_gpu="0")).covered)
+        for w in ("0", "1"):                                       # an older launch.sh: no warnings_gpu= at all
+            old = nplan(warnings=w, warnings_gpu=None)
+            self.assertIsNone(G.facts(old).warnings_gpu)
+            d = G.check(state(g), "launch", plan=old)
+            self.assertFalse(d.covered, w)
+            self.assertIn("no warnings_gpu=: a launch.sh older than this rsk — rsk sync", " ".join(d.reasons))
+            self.assertTrue(G.check(state(approval("go", [old], allow_warnings=w == "1")), "launch", plan=old).covered)
+        self.assertTrue(G.check(state(grant({"targets": ["fx"]})), "launch", plan=plan()).covered)   # Slurm: unchanged
+        with self.assertRaises(RskError) as c:
+            nplan(warnings_gpu="x")
+        self.assertIn("warnings_gpu='x' is not a count", str(c.exception))
+
+
 class Store(ScratchHome):
     def setUp(self) -> None:
         super().setUp()

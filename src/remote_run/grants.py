@@ -36,14 +36,20 @@ The kinds:
             each was asked for (Slurm: target, job id, run name, WorkDir; nohup: target, pid, start, boot_id), expiring
             CANCEL_TTL_S (1 h) after it was given and used up by the first cancel of that job that passed
             authorisation, whatever its outcome (never given back) — the caller still verifies the job's identity
-            (name, WorkDir, user / pid+start+boot_id) on the target before it acts.
+            (name, WorkDir, user / pid+start+boot_id) on the target before it acts. Its quote is the user's words; when
+            they answer the agent's own question (`rsk cancel --asked`), its source is that question, `asked: "…"`
+            (asked_source(): bookkeeping, the agent's text — never proof).
   grant     a standing permission (a predicate): launches in scope, within max_live / max_launches / expires.
             `cancel_own` lets the agent stop ITS OWN runs in scope (ledger attempts it launched, never adopted ones)
             at its own discretion — without it, stopping a run is the user's call; each such cancel counts against
             max_launches (shown as "uses" / "cancels"). A plan with warnings > 0 (a -y gate: charged partition,
             availability, occupancy) is covered only with scope.allow_warnings: "availability" covers a plan whose
             only warnings are the harness's own availability gate (warnings == warnings_avail), "any" every -y gate
-            (policy gates too, e.g. a charged partition — only when the user's words say so). More resources than
+            (policy gates too, e.g. a charged partition — only when the user's words say so) — but never a
+            workstation plan's launcher / container / env-dropping warnings (launch.sh counts them apart as
+            warnings_gpu; a block without it — an older launch.sh — counts as unknown): such a run may use GPUs
+            beyond the landing and max_gpus, another user's too, so only the user's approval of that card covers it
+            (gpu_warn_miss(), NF8), whatever the grant's kind. More resources than
             max_gpus / max_cpus / max_mem_gb / max_time_s is not covered (a time of 0 / UNLIMITED is unlimited; max_time_s
             holds for every time limit sbatch could read: the bound time and each --time / -t of extra — a site
             policy's, which comes after the harness's and wins, included), nor
@@ -249,6 +255,8 @@ def parse_plan(text: str) -> dict[str, str]:
         raise PlanError(f"warnings={out['warnings']!r} is not a count")
     if "warnings_avail" in out and not out["warnings_avail"].isdigit():
         raise PlanError(f"warnings_avail={out['warnings_avail']!r} is not a count")
+    if "warnings_gpu" in out and not out["warnings_gpu"].isdigit():
+        raise PlanError(f"warnings_gpu={out['warnings_gpu']!r} is not a count")
     if "warnings_id" in out and not HEX64.fullmatch(out["warnings_id"]):
         raise PlanError("warnings_id is not 64 lowercase hex digits")
     keys = [ln.partition("=")[0] for ln in body]
@@ -362,6 +370,8 @@ class Facts:
     plan_id: str = ""
     warnings: int | None = None        # the de-duplicated WARNING: lines (-y gates) the plan printed
     warnings_avail: int | None = None  # how many of them the harness's own availability gate printed
+    warnings_gpu: int | None = None    # nohup: how many of them launch.sh's launcher / container / env-dropping checks
+                                       # printed (None: the block does not say — an older launch.sh: unknown)
     extra_res: tuple[str, ...] = field(default=())  # conf_extra words outside EXTRA_ALLOW: no standing grant covers it
     conf_extra: bool = False           # the block names the conf's SBATCH_EXTRA words (an older deploy's does not)
     flags: tuple[str, ...] = field(default=())   # slurm: the policy flags submit.sh handed to the policy (bound flags=)
@@ -545,7 +555,7 @@ def facts(plan: dict) -> Facts:
     kind, name = str(plan.get("kind", "")), get("name") or ""
     label = str(plan.get("class") or "") or None
     cls = name_class(name) or label
-    w, wa = str(plan.get("warnings", "")), str(plan.get("warnings_avail", ""))
+    w, wa, wg = (str(plan.get(k, "")) for k in ("warnings", "warnings_avail", "warnings_gpu"))
     raw = [str(c or "") for c in plan.get("classes_recorded") or []]     # the run's attempts, oldest first ('' = none)
     recorded = [c for c in raw if c]
     if raw and not raw[0]:          # its first attempt carried no class: the run has none (a later label never sets it)
@@ -554,7 +564,8 @@ def facts(plan: dict) -> Facts:
                   cls=cls, classes=tuple(dict.fromkeys(c for c in (name_class(name), label, *recorded) if c)),
                   class_unknown="" in raw,
                   bound_hash=str(plan.get("bound_hash", "")), plan_id=str(plan.get("plan_id", "")),
-                  warnings=int(w) if w.isdigit() else None, warnings_avail=int(wa) if wa.isdigit() else None)
+                  warnings=int(w) if w.isdigit() else None, warnings_avail=int(wa) if wa.isdigit() else None,
+                  warnings_gpu=int(wg) if wg.isdigit() else None)
     if kind == "nohup":
         req = get("gpus_req") or ""
         gpus = None
@@ -860,13 +871,22 @@ def cancel_ident(kind: str, target: str, job: str, *who: str) -> str:
     return json.dumps([kind, target, str(job), *(str(w) for w in who)], ensure_ascii=False, separators=(",", ":"))
 
 
+def asked_source(asked: str) -> str:
+    """The `source` of a cancel approval given as the answer to the agent's own question (`rsk cancel --asked`): that
+    question, verbatim — bookkeeping, never proof (the agent writes it)."""
+    return f'asked: "{asked}"'
+
+
 def new_cancel_approval(quote: str, target: str, jobs: list[str], *, idents: list[str], via: str = "cli",
-                        source: str = "", ttl_s: int = CANCEL_TTL_S) -> dict:
+                        source: str = "", ttl_s: int = CANCEL_TTL_S, asked: str = "") -> dict:
     """An explicit user request to cancel these jobs: covers `cancel` of exactly them, each bound to the identity it
     was asked for (IDENTS: cancel_ident(), one per job), for TTL_S (1 h); each job once, never given back (the caller
-    still verifies the identity on the target before it acts)."""
+    still verifies the identity on the target before it acts). ASKED: the agent's question the QUOTE answers (rsk
+    cancel --asked), kept as the record's source (asked_source())."""
     if len(idents) != len(jobs):
         raise RskError("new_cancel_approval: one identity per job", USAGE)
+    if asked:
+        source = asked_source(asked)
     return _record("approval", quote, {"jobs": [str(j) for j in jobs], "idents": list(idents),
                                        "targets": [target] if target else []},
                    ["cancel"], {"max_launches": 1, "max_live": None, "expires": _in(ttl_s)}, via, source)
@@ -1128,8 +1148,24 @@ def _warn_miss(scope: dict, f: Facts) -> str:
         a = f.warnings_avail if f.warnings_avail is not None else "unknown"
         return (f"the plan has {n} warning(s), {a} of them the availability gate's — the scope allows only the "
                 "availability gate's (a policy gate: charged partition, occupancy … needs the user)")
+    if f.kind == "nohup":
+        return (f"the plan has {n} warning(s) (a workstation's: a busy GPU, a launcher / container / env-dropping tool) "
+                "— needs the user unless the scope allows warnings")
     return (f"the plan has {n} warning(s) (a -y gate: charged partition, availability, occupancy) — needs the user "
             "unless the scope allows warnings")
+
+
+def gpu_warn_miss(f: Facts) -> str:
+    """NF8-any-grant-box-launchers: why no standing grant covers a workstation plan whose launch.sh counted launcher /
+    container / env-dropping warnings (warnings_gpu > 0) — such a run may use GPUs beyond the landing and --max-gpus,
+    another user's too (§U: more resources and a GPU another user uses are the user's call): only the user's approval
+    of the card covers it, whatever allow_warnings says; a block without warnings_gpu (an older launch.sh) is unknown."""
+    if f.warnings_gpu is None:
+        return ("the plan does not say how many of its warnings are launcher / container ones (no warnings_gpu=: a "
+                "launch.sh older than this rsk — rsk sync) — no standing grant covers it: the user decides")
+    return (f"{f.warnings_gpu} of its warning(s) a launcher / container / env-dropping tool's — it may use GPUs beyond "
+            "the landing and --max-gpus, another user's too: no standing grant covers that, whatever its "
+            "--allow-warnings (only the user's approval of this card)")
 
 
 def _scope_misses(scope: dict, f: Facts, deny: bool) -> list[str]:
@@ -1470,6 +1506,8 @@ def _misses(r: dict, plan: dict, f: Facts, action: str, needed: tuple[str, ...],
         if f.extra_res:
             miss.append(f"SBATCH_EXTRA word(s) no standing grant covers ({', '.join(f.extra_res)}): the user decides "
                         "(an approval of this card covers them)")
+        if f.kind == "nohup" and f.warnings_gpu != 0:      # NF8: whatever the scope's allow_warnings kind
+            miss.append(gpu_warn_miss(f))
         if f.kind == "slurm" and not f.flags_known:
             miss.append("the plan does not name its policy flags (no flags=: a deploy older than this rsk) — the user "
                         "decides")
@@ -1633,7 +1671,8 @@ def describe(rec: dict) -> str:
         also = (" (it names a run: every launch of it too — rsk cannot see every earlier attempt)"
                 if run_deny(rec) and not LAUNCHES <= set(acts) else "")
         return f"DENY {'every action' if set(acts) == set(ACTIONS) else ', '.join(acts)}{also}: {where}"
-    extra = {"any": "plans with warnings too (every -y gate, policy gates included)",
+    extra = {"any": "plans with warnings too (every -y gate, policy gates included; never a workstation's launcher / "
+                    "container warnings — only an approval of that card)",
              "availability": "plans whose only warnings are the availability gate's (-y)"}.get(
         warn_kind(sc.get("allow_warnings")), "no plan with warnings")
     if "cancel_own" in acts:
@@ -2231,7 +2270,9 @@ def add_parsers(sub) -> None:
     a.add_argument("--allow-warnings", default=None, choices=WARN_KINDS, metavar="availability|any",
                    help="also plans with warnings, only when the user's words say so: availability = only the "
                    "harness's own availability gate (\"queue it even if the cluster is busy\"); any = every -y gate, "
-                   "policy gates too (a charged partition …)")
+                   "policy gates too (a charged partition …) — never a workstation plan's launcher / container / "
+                   "env-dropping warnings (warnings_gpu: such a run may use more GPUs than --max-gpus, another user's "
+                   "too): only the user's approval of that card covers those")
     a.add_argument("--max-live", required=True, metavar="N|none")
     a.add_argument("--max-launches", required=True, metavar="N|none")
     a.add_argument("--expires", required=True, metavar="YYYY-MM-DD|none")

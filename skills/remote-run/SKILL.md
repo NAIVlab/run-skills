@@ -44,7 +44,7 @@ rsk exec -T <t> -- <cmd> [args]                   # ONE bounded read in the remo
                                                   #   ps df ls stat, head/tail -c N <relative path>, …; no pipes, no $VAR (write values out)
 rsk watch <table> [--act] [--once] [--for S]      # many jobs or long waits: run-watch under the project's lease (procedure §5); --act: every row checked against the denies
 rsk watch <table> --approve "<the user's words>"  # their OK of the shown rows + `#@ allow` (Slurm); --act / --approve go through rsk watch only
-rsk cancel <run> [--job <id|pid>] [--approve "<the user's words>"]   # identity check on the target, then scancel / TERM → KILL
+rsk cancel <run> [--job <id|pid>] [--approve "<their words>" [--asked "<your question>"]]   # identity check, then scancel / TERM → KILL
 rsk pull -T <t> [-n] <path>...                    # copy results back (run-pull; -n = count + size first)
 rsk grant add|deny|list|revoke …                  # the user's standing words (§3); rsk adopt: ledger a run rsk did not start
 rsk doctor                                        # offline check of this install (skill, packs, targets, grants, ssh aliases); rsk update: when the user asks
@@ -95,14 +95,17 @@ approvals, grants, denies); act when it covers the action, ask only when it does
 - Ask first: a charged partition, more resources or a wider scope than authorised. A plan with warnings is never
   grant-covered unless their words allowed it (`--allow-warnings availability` = only the harness's availability gate,
   `any` = every -y gate, a charged partition's too — only when their words say so); nor is a card with policy flags,
-  `NO GRANT` (an `SBATCH_EXTRA` word outside the grant allowlist) or `--same-name-ok`. `--max-time` caps every time limit.
+  `NO GRANT` (an `SBATCH_EXTRA` word outside the grant allowlist; a box's launcher / container WARNING, whatever the
+  kind: it may use more GPUs, another user's) or `--same-name-ok`. `--max-time` caps every time limit.
 - "Cancel job 123" → `rsk cancel --job 123 -T <t> --approve "<their words>"`: cancelled once its identity checks out
   (Slurm: name, WorkDir, user; box: pid, start time, boot id); the approval is bound to it, lasts 1 h and is used up by
-  its first cancel, whatever came of it. Their words must name what is cancelled, as a whole word — the job id / pid or
-  the run's id or name (`rsk cancel <run>`: the run, or every job id) — else exit 4 `needs user: the words do not name
-  …`, nothing recorded: ask which one they mean ("cancel it" names nothing). Your own judgment that a run should stop
-  → ask, unless the user authorised that kind of decision (`cancel_own`; it covers only runs rsk launched for this
-  project; its cancels count against `--max-launches`).
+  its first cancel, whatever came of it. Their words must name what is cancelled, as a whole word — the job id / pid
+  (or a range holding it: `102-104`) or the run's id or name (`rsk cancel <run>`: the run, or every job id) — or, when
+  they answer your question ("sw1 diverged — cancel it?" → "yes"), `--asked "<that question>"` may name it (recorded with
+  their words; never ask again) — else exit 4 `needs user: the words do not name …`, nothing recorded: ask which one
+  they mean ("cancel it" names nothing). Your own judgment that a run should stop → ask, unless the user authorised
+  that kind of decision (`cancel_own`; it covers only runs rsk launched for this project; its cancels count against
+  `--max-launches`).
 - Never someone else's job or process, whatever was approved. Only the user's words at the time, never a grant: a GPU
   another job uses (their words name it: `-d <ids> --gpu-busy-ok`), a `--…-user-asked` policy gate, `rsk sync -D` and
   `rsk bootstrap --job` (both run only with `--approve "<their words>"`).
@@ -123,8 +126,8 @@ restore `grants.json`, or move it and its `.prev` aside and `rsk grant recount`:
   `gpu_ids`, `/job/hostfile`; no `--config_file` while `ENV_HOOK`, `ENV_KIND=conda`, `HF_HOME` or `ACCELERATE_…` may
   move it), a container runtime picking GPUs (`docker run --gpus`…, `apptainer --cleanenv`…) and a tool starting the
   command without this launch's environment or elsewhere (`docker exec`, `tmux new`, `sudo` without `-E`, `ssh`,
-  `srun`…) — let it use the landing (run the command directly), or name its GPUs to the user. Cancel only after the
-  identity check (`rsk cancel`).
+  `srun`…) — let it use the landing (run the command directly), or name its GPUs to the user (only their approval of
+  that card covers it, never a grant). Cancel only after the identity check (`rsk cancel`).
 - Slurm: partition and QOS are `submit.sh`'s decision — no raw `sbatch`/`srun`/`salloc`, no `scontrol update`, no
   `--partition` inside `SBATCH_EXTRA`. A policy refusal (exit 3) is final; `-y` also confirms policy warnings
   (availability, occupancy, SU cost): rsk sends it only when the approved card showed warnings or the covering grant's

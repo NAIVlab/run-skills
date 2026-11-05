@@ -32,7 +32,9 @@ submit — every step recorded in the project's ledger (ledger.py) and checked a
    run and lists relaunch or resubmit matches every launch of it, launch included, R6-1: grants.run_deny). grants.check()
    decides: a deny → exit 3 with its quote; a record that covers the plan → submit now; else the card and `needs
    user: approval — plan <id>` → exit 4. A standing grant never covers a workstation plan that lands on a GPU in use
-   (only the user's words naming it), a --<x>-user-asked policy flag, --same-name-ok, a plan with warnings its
+   (only the user's words naming it) or whose launch.sh counted launcher / container / env-dropping warnings
+   (warnings_gpu > 0, or no warnings_gpu: an older launch.sh — whatever the grant's allow_warnings kind: the card's
+   NO GRANT line), a --<x>-user-asked policy flag, --same-name-ok, a plan with warnings its
    allow_warnings kind does not cover, a conf SBATCH_EXTRA word outside grants.EXTRA_ALLOW (the card names it), a
    Slurm plan with policy flags (bound as flags=; the card lists them), or a relaunch whose latest attempt that ran did
    not end with an infrastructure end (PREEMPTED NODE_FAIL BOOT_FAIL REBOOT) or whose configuration it does not repeat.
@@ -662,17 +664,22 @@ def render_card(rec: dict) -> str:
         o.append("  same name  --same-name-ok: a live run of this name may share its logs/ckpts")
     if rec.get("chain"):
         o.append(f"  segments   {rec['chain']} (each waits for the one before: --dependency=singleton)")
-    wa = str(b.get("warnings_avail", ""))
+    wa, wg = str(b.get("warnings_avail", "")), str(b.get("warnings_gpu", ""))
+    gpu = f"; {wg or 'unknown'} a launcher / container one's" if kind == "nohup" else ""
     o.append(f"  warnings   {rec['warnings']}" + ("  (no -y gate)" if not rec["warnings"] else
-                                                  f"  ({wa or '?'} of them the availability gate's)"))
+                                                  f"  ({wa or '?'} of them the availability gate's{gpu})"))
     shown = rec.get("lines") or []
     o += [f"    {ln}" for ln in shown]
+    if kind == "nohup" and wg != "0":   # NF8: never a standing grant's call, whatever its --allow-warnings
+        what = (f"{wg} launcher / container / env-dropping warning(s)" if wg else
+                "launcher / container warnings not counted (no warnings_gpu=: an older launch.sh — rsk sync)")
+        o.append(f"  NO GRANT   {what} — such a run may use GPUs beyond its landing, another user's too: only the "
+                 "user's approval of this card")
     if kind == "slurm":
         o.append(f"  available  {_dec(b.get('info_avail', '')) or '-'}")
         dc, dd = _dec(b.get("info_source_commit", "none")), _dec(b.get("info_source_dirty", "none"))
         lc, ld = rec["local"]["commit"], rec["local"]["dirty"]
-        same = "same commit" if dc == lc and dc != "none" else "DIFFERENT code than this checkout's HEAD"
-        o.append(f"  source     deployed {dc[:12]} dirty={dd} · local HEAD {lc[:12]} dirty={ld} — {same}")
+        o.append(f"  source     deployed {dc[:12]} dirty={dd} · local HEAD {lc[:12]} dirty={ld} — {source_cmp(dc, lc)}")
         o.append("  files      " + " · ".join(f"{k.replace('_', '.')} {str(b.get(f'info_{k}_sha256', '?'))[:12]}"
                                            for k in ("conf", "profile", "policy", "policy_local")))
     else:
@@ -686,6 +693,18 @@ def render_card(rec: dict) -> str:
         o.append(f"  reference  {r}")
     o.append(f"  bound_hash {rec['bound_hash']}")
     return "\n".join(o)
+
+
+NO_COMMIT = ("", "none", "-", "?")   # run-sync stamps commit=none outside a git checkout / before its first commit;
+                                    # submit.sh prints none without a stamp; local_source() says none without a HEAD
+
+
+def source_cmp(deployed: str, local: str) -> str:
+    """The card's source verdict (NF8-card-source-unknown): two real commits compare (`same commit` / `DIFFERENT code
+    than this checkout's HEAD`); when either is unknown there is nothing to compare — never "DIFFERENT"."""
+    if deployed.strip() in NO_COMMIT or local.strip() in NO_COMMIT:
+        return "unknown (not a git checkout, no commit yet, or no sync stamp) — cannot compare"
+    return "same commit" if deployed == local else "DIFFERENT code than this checkout's HEAD"
 
 
 def _hook(v: object) -> str:

@@ -43,9 +43,9 @@ guard rails built in, and gives the agent a short, per-site reference instead of
   agent asks only outside that — a charged partition, more resources, a wider scope, its own idea that a run should
   stop. Your words are recorded verbatim (`rsk grant`), and a "never" of yours also stops `rsk watch --act` ("never
   relaunch a" stops every launch of a in its scope: rsk cannot see every earlier attempt); "cancel job 123" must name
-  the job (its id, or the run's name), and is bound to that job, for an hour, once; a cancel first checks the job is
-  this project's and yours, and someone else's job is never touched. The record keeps you from being asked twice; it is
-  bookkeeping, not proof that you agreed, and it cannot make an agent comply — it constrains what goes through `rsk`.
+  the job (its id, or the run's name; or answer the agent's question naming it), bound to that job, for an hour, once;
+  a cancel checks the job is this project's and yours; another user's is never touched. The record keeps you from being
+  asked twice; it is bookkeeping, not proof that you agreed, and it cannot make an agent comply (only `rsk` is bound).
 - **Cheap, honest monitoring.** One deployed script, `status.sh`, returns a ~2 KB digest of a run: scheduler or PID
   state, restarts, exit footer, error/OOM/NaN hint counts, the wandb URL and the last lines — all from byte-bounded
   reads. The agent reviews often while a run is young or odd and backs off while it is healthy.
@@ -210,7 +210,7 @@ These are part of the skill's instructions and are enforced by the harness where
   --gpu_ids`) is a warning on the plan you approve, and so are a launcher config's GPU ids (or a config it cannot
   locate), a container started with GPUs of its own (`docker run --gpus`, `apptainer --cleanenv`) and a tool that starts
   the command elsewhere or without the launch's environment (`docker exec`, `tmux new`, `sudo` without `-E`, `ssh`,
-  `srun`). What the payload does once it starts is its own code — no harness can check that.
+  `srun`) — no standing grant covers these. What the payload does once it starts is its own code — no harness can check that.
 - Partition and QOS are `submit.sh`'s decision — no raw `sbatch`/`srun`, no `--partition` smuggled in via
   `SBATCH_EXTRA`. A policy refusal is final; `-y` acknowledges a plan's warnings (availability, occupancy, cost), and
   rsk sends it only when the approved card showed warnings or the covering grant's kind covers the plan's warnings

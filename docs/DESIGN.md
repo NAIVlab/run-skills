@@ -279,8 +279,14 @@ own flags are the other way past the landing: deepspeed's runner, given `--inclu
 from `--gpu_ids` (their source; `tests/vgate/launchers.sh` reads it back from an installed copy). They are ordinary
 commands, so `launch.sh` does not refuse them: their GPU flags (deepspeed's also as argparse prefixes, `-H`,
 `--master_addr`, `--num_accelerators`; accelerate's `--num_processes` too, both spellings) print a counted WARNING naming
-the launcher, the flags and the landing — on the card, so only the user's approval of it, or a grant of kind `any`, covers
-it. Their configs, and container runtimes, are the same way past the landing. accelerate takes `gpu_ids` from its config
+the launcher, the flags and the landing — on the card, so only the user's approval of it covers it: launch.sh counts
+these WARNINGs apart as well (`warnings_gpu=N` in the block's envelope), and rsk lets no standing grant cover a plan
+with `warnings_gpu` > 0, whatever its `allow_warnings` kind — `any` included (NF8: a "≤ 1 GPU" grant of kind `any` had
+covered `deepspeed --num_gpus 4`, `docker run --gpus all` and `ssh otherbox …`; such a run may use more GPUs than its
+scope, another user's too, which the user's policy leaves to them) — nor a block without the key (an older launch.sh:
+unknown, so uncovered; `rsk sync`); the card shows `NO GRANT   N launcher / container / env-dropping warning(s)`
+(`grants.gpu_warn_miss`, `tests/62` and `test_grants.Round9`). Their configs, and container runtimes, are the same way
+past the landing. accelerate takes `gpu_ids` from its config
 when `--gpu_ids` is absent (`acc_cfg_gpu_ids=`), so launch.sh reads that config, read-only — `--config_file` (relative to
 the project dir), else `$PROJ/.cache/huggingface/accelerate/default_config.yaml`, where env.sh's `HF_HOME` puts it
 (`.json` when only that is a file: `acc_cfg_default=`, `acc_cfg_json_only=`) — and warns on a `gpu_ids` other than `all` /
@@ -295,7 +301,11 @@ stub accelerate reading its config lands on another user's GPU). So `accelerate 
 vars`, its `activate.d` scripts —, which may set `HF_HOME` or `ACCELERATE_…`: `tests/61` 'R8-4', the reason
 `ENV_KIND=conda: conda activate '<env>' applies the env's own variables (HF_HOME / ACCELERATE_… among them), which may
 move it`), when the conf names `HF_HOME` or `ACCELERATE_…` outside a comment line and not as an expansion, when RUN
-names `ACCELERATE_…`, or when the conf did not source or could not be read — fail closed; the project's own default
+names `ACCELERATE_…`, when the conf did not source or could not be read, or when the project's `.wandb_env` — the
+user's wandb key file, which env.sh sources after exporting `HF_HOME` — names `HF_HOME` or `ACCELERATE_…` the same way
+or cannot be read here (read-only, never printed: the reason names only `HF_HOME` or `an ACCELERATE_… variable`;
+`tests/61` 'NF7': a `.wandb_env` pointing `HF_HOME` at a shared cache lands a stub accelerate on another user's GPU) —
+fail closed; the project's own default
 config is still read and bound beside it. To know the hook, launch.sh now reads the conf (profile, then `.ws.conf`, in a
 child bash without rc files, the caller's channel and the launch lock closed) in every mode, before this check; a plain
 launch whose conf does not source goes on to env.sh's gate. deepspeed's runner reads `/job/hostfile` when no
@@ -315,8 +325,9 @@ the landing at all: docker, podman and nerdctl pass no host environment in (only
 GPUs its runtime picks — `nvidia-docker run` always —, while apptainer / singularity pass the environment in unless
 `--cleanenv` / `--containall` (`containers.sh`). Each is a counted WARNING (`… a container started so does not get this
 launch's CUDA_VISIBLE_DEVICES and may see GPUs its runtime picks …`), so a GPU container run is covered only by the
-user's approval of its card or a grant of kind `any`. A tool that starts the command elsewhere, or without this launch's
-environment, is the last way past the landing, and gets the same counted WARNING (`RUN starts its command through
+user's approval of its card (`warnings_gpu`: never a grant). A tool that starts the command elsewhere, or without this
+launch's environment, is the last way past the landing, and gets the same counted WARNING (`RUN starts its command
+through
 <tool …> — <reason> — so it may use GPUs other than this launch's GPU(s) […]: run the command directly (launch.sh
 detaches it), or name the GPUs it will use to the user`): a container's `exec` / `start` (its GPUs were set when it was
 created; `containers.sh` `<rt>_exec_env=`), compose `run` / `up` / `exec` / `start` / `restart`, `kubectl
@@ -388,8 +399,10 @@ not cover. A plan with warnings (a `-y` gate) is covered only by a grant whose `
 `availability` covers a plan whose only warnings are the harness's own availability gate (`warnings == warnings_avail`:
 the cluster is busy, queue anyway), `any` covers every `-y` gate, a policy's charged-partition warning included — and is
 recorded only when the user's words say so (`rsk grant add --allow-warnings availability|any`, a bare flag is a usage
-error; an older record's `true` reads as `any`). rsk sends `-y` only when the
-approved card showed warnings or the covering grant's kind covers the plan's warnings, and the target checks they are
+error; an older record's `true` reads as `any`). No kind covers a workstation plan's launcher / container / env-dropping
+WARNINGs (`warnings_gpu` > 0, or no `warnings_gpu=` at all): only the user's approval of that card does. rsk sends `-y`
+only when the approved card showed warnings or the covering grant's kind covers the plan's warnings, and the target
+checks they are
 the same warnings (`warnings_id`). A request above a cap is not covered; `max_time` holds for every time limit sbatch
 could read — the bound time and each `--time` / `-t` among the extra words, a site policy's included (it comes after
 the harness's and wins) — and a limit of 0 or `UNLIMITED` is unlimited, so it never fits. A Slurm plan is coverable only
@@ -487,11 +500,19 @@ or a `relaunch` grant (after an infrastructure end, above). "Cancel job 123": th
 what is cancelled, as a whole word (R8-2, `cancel.named` / `cancel.unnamed`): for `--job J` the job id J (the pid on a
 workstation) or the run's id or job name; for `rsk cancel RUN` the run id or name, or every job id it cancels — a token
 inside a longer one does not count (`101` in `1101` or `101_2`, `sw1` in `sw10`, `exp--sw1` or `sw1-b`), trailing
-punctuation does (`job 101.`). Otherwise exit 4 `needs user: the words do not name <J|RUN> — "…" names none of: …;
-nothing recorded or cancelled`, with no approval and no ssh: "cancel job 101, it diverged" once approved and cancelled
-job 102, since the identity check only proves a job is this user's and this project's. This is a token check against
-good-faith slips, not proof of consent — an agent can still write words naming any job (the honest limit of every
-record); a `cancel_own` grant is unchanged. `--approve` then records a cancel approval naming that job and bound to the
+punctuation does (`job 101.`); a numeric range names every id in it (`102-104`, `102 to 104`, `102…104`, `102..104`,
+`102~104`; both ends whole tokens, low end first: `cancel.ranges`, NF8 — "cancel jobs 102-104" had refused 102 and 104
+too). Words that answer the agent's own question name what the question names: `--asked "<the question, verbatim>"`
+(NF8: "sw1 (job 101) diverged — cancel it?" answered "yes" was exit 4, and the agent asked again — the second
+confirmation the user's policy rules out: an authorisation already given stays valid); the approval keeps both — its
+quote the words, its `source` `asked: "<question>"` — and so do the audit's `cancel` lines (`asked`). Otherwise exit 4
+`needs user: the words do not name <J|RUN> — "…" names none of: …; nothing recorded or cancelled` (`"…" (answering "…")
+names none of` with a question), with no approval and no ssh: "cancel job 101, it diverged" once approved and cancelled
+job 102, since the identity check only proves a job is this user's and this project's, and a yes to "cancel sw1?" passed
+for sw2 is refused the same way. This is a token check against good-faith slips, not proof of consent — an agent can
+still write words naming any job, and the asked text is its own (it can write any question; rsk does not read whether
+the answer was a yes): the honest limit of every record. Group words ("the whole sw sweep") name no run; a `cancel_own`
+grant is unchanged. `--approve` then records a cancel approval naming that job and bound to the
 identity it was given for (Slurm: target, job id, run name, WorkDir; workstation:
 target, pid, start, boot id); it expires after an hour and is used up by the first cancel that passed authorisation,
 whatever came of it (an approval is never refunded — "cancel 123" said yesterday does not cancel a new job 123), and
@@ -568,11 +589,10 @@ arbitrary payload code reaches is listed here rather than chased further):
   all: `tests/vgate/containers.sh` prints `docker_default_runtime=`);
 - a GPU value or launcher flags that only an expansion or a script supplies (the wrapper re-checks only the first
   command's expanded leading words, for the GPU variables), and launcher settings in files rsk does not read: docker
-  `--env-file`, compose files, deepspeed's `.deepspeed_env`, a `.wandb_env` that sets `HF_HOME` (env.sh sources it after
-  exporting `HF_HOME`; launch.sh reads the conf and `ENV_KIND`, not that file);
+  `--env-file`, compose files, deepspeed's `.deepspeed_env`;
 - the launcher, config, container and tool checks read RUN's text, so they can fire on a word that is only an argument
   (`rsync -e ssh`, an `exec` inside `docker run … sh -c`) — fail closed, the card shows why — and they are warnings: the
-  user's approval of the card, or a grant of kind `any`, lets such a run through;
+  user's approval of the card lets such a run through (never a grant: `warnings_gpu`);
 - a standing launch grant still covers the first launch, on another target, of a run whose earlier attempts rsk cannot
   see (run-watch's on another target, a history from before the journal or only in sacct) unless a deny names that run:
   the cross-target rule is the deny's, not the grant's;

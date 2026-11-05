@@ -11,7 +11,8 @@
 # findings (H1 H2 H3 M1 M3 M4 M5 M6 M7 L2 L3 L4 L5), the round-3 decisions (D1 D3 D5 D6 D8 D9 D10; C-stale-API,
 # F-unknown, grants#1/3/4, H1-owner/msg, G-space), the round-4 ones (R4-1 R4-2 R4-4 R4-6 R4-8 R4-15) and the round-5 ones
 # (R5-1 R5-4 R5-5 R5-8 R5-9), the round-6 ones (R6-1 R6-4 R6-5 R6-7 R6-8 R6-9), the round-7 ones (R7-1 R7-2 R7-5 R7-6
-# R7-7) and the round-8 ones (R8-1 R8-2 R8-3), each end to end.
+# R7-7), the round-8 ones (R8-1 R8-2 R8-3) and NF8 (cancel --asked and ranges, a box's launcher WARNINGs never grant-covered,
+# the card's unknown source), each end to end.
 # Run by selftest.sh with RS_HOME set:  bash tests/62-rsk-launch.sh
 set -u
 . "$RS_HOME/tests/lib.sh"
@@ -117,6 +118,8 @@ has "$O" '^  partition  gpu$' "card: partition (decoded)"; has "$O" '^  gres    
 has "$O" '^  payload    python train.py --lr 1e-3$' "card: payload words"; has "$O" '^  warnings   0' "card: warnings 0"
 has "$O" '^  reference  .*fx-slurm/reference.md' "card: the reference path"; has "$O" '^  bound_hash [0-9a-f]\{64\}$' "card: bound_hash"
 has "$O" '^  source     deployed none' "card: source commit (deployed vs local HEAD)"
+has "$O" '^  source     deployed none dirty=none · local HEAD none dirty=- — unknown (not a git checkout, no commit yet, or no sync stamp) — cannot compare$' \
+  "NF8-card-source-unknown: no stamp, no git checkout: the source line says unknown, never DIFFERENT code"; hasnt "$O" 'DIFFERENT code' "...nowhere on the card"
 has "$O" 'no approval or grant recorded' "card: why nothing covers it"
 hasnt "$O" '--approve' "no ready-to-run --approve line"
 PN=$(grep -h -o -- '--rs-attempt rsk-[^ ]*' "$T/ssh-body.log" | tail -n 1 | cut -d' ' -f2)
@@ -671,6 +674,24 @@ O=$(rsk cancel sw2 --approve "cancel job $S2."); RC=$?
 [ "$RC" = 0 ] && has "$(cat "$T/scancel.log")" "^$S2\$" "R8-2: words naming job $S2 -> cancelled" || bad "R8-2 named job (rc=$RC)"
 : > "$T/scancel.log"; O=$(rsk cancel --job "$S1" -T fx-slurm --approve "stop sw1, it diverged"); RC=$?
 [ "$RC" = 0 ] && has "$(cat "$T/scancel.log")" "^$S1\$" "R8-2: --job $S1 with words naming its run sw1 -> cancelled" || bad "R8-2 named run (rc=$RC)"
+echo "-- NF8: a yes to the agent's own question (--asked) names what the question names; a numeric range names the ids in it --"
+O=$(rsk launch -T fx-slurm -n sw3 -p gpu -g 1 -t 1:00:00 -- python t.py); S3=$(jid "$O")
+O=$(rsk launch -T fx-slurm -n sw4 -p gpu -g 1 -t 1:00:00 -- python t.py); S4=$(jid "$O")
+O=$(rsk launch -T fx-slurm -n sw5 -p gpu -g 1 -t 1:00:00 -- python t.py); S5=$(jid "$O")
+Q="sw3 (job $S3) diverged — cancel it?"; : > "$T/scancel.log"
+O=$(rsk cancel sw3 --approve "yes"); RC=$?
+[ "$RC" = 4 ] && has "$O" 'pass that question with --asked' "NF8: a bare yes names nothing -> exit 4, and rsk says how to pass the question it answers" || bad "NF8 bare yes (rc=$RC)"
+O=$(rsk cancel sw4 --asked "$Q" --approve "yes"); RC=$?
+[ "$RC" = 4 ] && has "$O" "^needs user: the words do not name sw4 — \"yes\" (answering \"$Q\") names none of: job $S4" "NF8: a yes to a question about sw3, passed for sw4 -> exit 4 (the slip R8-2 guards against)" || bad "NF8 asked other (rc=$RC)"
+[ ! -s "$T/scancel.log" ] && ok "...scancel never called" || bad "...scancel called"
+O=$(rsk cancel sw3 --asked "$Q" --approve "yes"); RC=$?
+[ "$RC" = 0 ] && [ "$(cat "$T/scancel.log")" = "$S3" ] && has "$O" "(answering \"$Q\")" "NF8: --asked naming sw3 + the user's yes -> job $S3 cancelled once, no second question" || { bad "NF8 asked (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
+has "$(rsk grant list)" "approval  via cli (asked: \"$Q\")" "...the approval keeps the question (its source) beside the words"
+has "$(cat "$T"/state/projects/*/audit.jsonl)" "\"asked\": \"$Q\".*\"event\": \"cancel\"" "...and so does the audit's cancel line"
+: > "$T/scancel.log"
+for r in sw4 sw5; do O=$(rsk cancel "$r" --approve "cancel jobs $S4-$S5"); RC=$?
+  [ "$RC" = 0 ] || { bad "NF8: rsk cancel $r --approve 'cancel jobs $S4-$S5' (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }; done
+[ "$(tr '\n' ' ' < "$T/scancel.log")" = "$S4 $S5 " ] && ok "NF8: 'cancel jobs $S4-$S5' names both ids in the range -> both cancelled" || bad "NF8 range ($(cat "$T/scancel.log"))"
 CWD=$P
 
 echo "-- watch: the lease (one watcher per project) --"
@@ -704,6 +725,11 @@ has "$(pyl 'print(json.dumps(L.Ledger(sys.argv[2]).read_run("busy1").data["attem
 O=$(rsk launch -T ws-box -d 2 -N free1 --nice 5 -- sleep 30); RC=$?
 [ "$RC" = 0 ] && has "$O" '^covered by g-' "a free GPU: covered by the grant, launched" || bad "free GPU launch (rc=$RC)"
 has "$O" '^  nice       5$' "...--nice reaches the plan (bound)"
+O=$(rsk launch -T ws-box -d 3 -N ds1 -- deepspeed --num_gpus 4 train.py); RC=$?; PD=$(pid_of "$O")
+[ "$RC" = 4 ] && has "$O" "no standing grant covers that, whatever its --allow-warnings" "NF8: a launcher WARNING (deepspeed --num_gpus 4) -> exit 4 under the box's --allow-warnings any grant" || { bad "NF8 box any (rc=$RC)"; printf '%s\n' "$O" | tail -4 | sed 's/^/    | /'; }
+has "$O" '^  NO GRANT   1 launcher / container / env-dropping warning(s)' "...the card says NO GRANT"; ! ls "$W"/logs/ds1-* >/dev/null 2>&1 && ok "...nothing launched" || bad "...nothing launched"
+O=$(rsk launch --plan "$PD" --approve "yes, deepspeed may take four GPUs"); RC=$?
+[ "$RC" = 0 ] && has "$O" '^launched: ds1 a01 pid [0-9]* on GPU(s) 3 of ws-box' "...the user's approval of that card launches it" || { bad "NF8 approved card (rc=$RC)"; printf '%s\n' "$O" | tail -4 | sed 's/^/    | /'; }
 
 echo "-- nohup cancel: receipt + /proc start + boot_id, TERM to the group, KILL after the grace --"
 O=$(rsk cancel busy1 --approve "stop busy1" --grace 5); RC=$?
