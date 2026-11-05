@@ -207,9 +207,10 @@ These are part of the skill's instructions and are enforced by the harness where
 - On a workstation the harness picks the GPUs (`-d` / `-n`, never one another job uses unasked): a run command whose
   text sets or clears `CUDA_VISIBLE_DEVICES` (or a sibling variable) anywhere is refused, as is one that empties the
   environment (`env -i`, `exec -c`); a launcher given its own GPU flags (`deepspeed --num_gpus`, `accelerate launch
-  --gpu_ids`) is a warning on the plan you approve, and so are a launcher config's GPU ids and a container started with
-  GPUs of its own (`docker run --gpus`, `apptainer --cleanenv`). What the payload does once it starts is its own code —
-  no harness can check that.
+  --gpu_ids`) is a warning on the plan you approve, and so are a launcher config's GPU ids (or a config it cannot
+  locate), a container started with GPUs of its own (`docker run --gpus`, `apptainer --cleanenv`) and a tool that starts
+  the command elsewhere or without the launch's environment (`docker exec`, `tmux new`, `sudo` without `-E`, `ssh`,
+  `srun`). What the payload does once it starts is its own code — no harness can check that.
 - Partition and QOS are `submit.sh`'s decision — no raw `sbatch`/`srun`, no `--partition` smuggled in via
   `SBATCH_EXTRA`. A policy refusal is final; `-y` acknowledges a plan's warnings (availability, occupancy, cost), and
   rsk sends it only when the approved card showed warnings or the covering grant's kind covers the plan's warnings
@@ -243,7 +244,7 @@ Update: `rsk update` (alias `upgrade`) upgrades rsk through uv, fast-forwards cl
 `rsk setup`. `--check` only reports, `--to <tag|commit>` installs that version (to roll back; a later `rsk update` stays
 on it, `rsk update --to main` follows main again; a version from before `remote-run` brings back `hpc-run` / `ws-run`
 and leaves `~/.agents/skills/remote-run` and its `~/.claude/skills` link for you to remove). `rsk doctor` checks the
-install offline and flags a recorded permission or "never" naming a target or partition the harness does not know. A
+install offline and flags a recorded permission or "never" naming a target the harness does not know. A
 change to `remote/` reaches a project at its next sync.
 
 Uninstall: `uv tool uninstall remote-run`; remove `~/.agents/run-skills`, `~/.agents/skills/remote-run`, the symlinks

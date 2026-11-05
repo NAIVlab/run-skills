@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # tests/vgate/containers.sh — the container facts behind launch.sh's container WARNING (R6-2) and its APPTAINERENV_ /
-# SINGULARITYENV_ refusal, read on a box from its INSTALLED docker / podman / apptainer / singularity, only with the user's OK:
+# SINGULARITYENV_ refusal, and the `exec` fact behind its R7-3 WARNING (docker / podman exec), read on a box from its INSTALLED
+# docker / podman / apptainer / singularity, only with the user's OK:
 #   ssh <alias> 'bash -s <docker-image|-> <apptainer-image|->' < tests/vgate/containers.sh
 # Each check starts a throwaway container that runs `printenv CUDA_VISIBLE_DEVICES` with the caller's set to 5 — no --gpus,
 # --nv, --runtime or --device: no GPU is asked for; '-' (or no image) skips a kind's container checks. One line per runtime
 # (or `<rt>=absent`); NOT in selftest (tests/88-vgate.sh runs it on stubs). `unset` = not set inside the container.
 #   docker / podman: <rt>_version= <rt>_gpus_flag=<yes: `run --help` lists --gpus> <rt>_env=<inside> (want unset: the
 #     host environment is not passed in, only -e/--env) <rt>_env_e=<with -e CUDA_VISIBLE_DEVICES> (want 5: a bare -e passes
-#     the caller's value) [docker_default_runtime=<docker info's DefaultRuntime> (nvidia: an image's own NVIDIA_VISIBLE_DEVICES
-#     then hands it GPUs with no flag at all — a residual launch.sh cannot see)]
+#     the caller's value) <rt>_exec_env=<`exec` into a throwaway detached container (`run -d … sleep 120`, removed after)>
+#     (want unset: exec passes no host environment in either — R7-3) [docker_default_runtime=<docker info's DefaultRuntime>
+#     (nvidia: an image's own NVIDIA_VISIBLE_DEVICES then hands it GPUs with no flag at all — a residual launch.sh cannot see)]
 #   apptainer / singularity: <rt>_version= <rt>_env=<inside> (want 5: the host environment is passed in) <rt>_cleanenv=<with
 #     --cleanenv> (want unset) <rt>_containall=<with --containall> (want unset) <rt>_prefix=<APPTAINERENV_ / SINGULARITYENV_
 #     CUDA_VISIBLE_DEVICES=7, with --cleanenv> (want 7: the prefix sets it inside — why launch.sh refuses it like an assignment)
@@ -24,6 +26,10 @@ for rt in docker podman; do
   o="${rt}_version=$("$rt" --version 2>/dev/null | head -n 1 | tr ' ' '_') ${rt}_gpus_flag=$("$rt" run --help 2>/dev/null | grep -q -e '--gpus' && echo yes || echo no)"
   if [ "$DI" != - ]; then
     o="$o ${rt}_env=$(pe "$rt" run --rm "$DI") (want unset) ${rt}_env_e=$(pe "$rt" run --rm -e CUDA_VISIBLE_DEVICES "$DI") (want 5)"
+    c=rs-vgate-exec-$$   # (R7-3) a detached container of the image, then `exec` into it with the caller's variable set
+    if CUDA_VISIBLE_DEVICES=5 timeout 600 "$rt" run -d --rm --name "$c" "$DI" sleep 120 >/dev/null 2>&1 </dev/null; then
+      o="$o ${rt}_exec_env=$(pe "$rt" exec "$c") (want unset)"; "$rt" rm -f "$c" >/dev/null 2>&1 </dev/null
+    else o="$o ${rt}_exec_env=fail(run -d)"; fi
   else o="$o ${rt}_env=skipped (no image)"; fi
   [ "$rt" != docker ] || o="$o docker_default_runtime=$(docker info --format '{{.DefaultRuntime}}' 2>/dev/null || echo unknown)"
   echo "$o"

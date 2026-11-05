@@ -4,6 +4,7 @@ never a second one here."""
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -64,7 +65,14 @@ class Target:
     xfer_host: str = ""
     dir: str = ""
     error: str = ""
-    partitions: tuple[str, ...] | None = None   # the profile's T_PARTITIONS; None = it lists none (or does not load)
+    partitions: tuple[str, ...] | None = None   # the profile's T_PARTITIONS (a display list: policy.sh is the authority),
+                                                # split on commas and whitespace; None = it lists none (or does not load)
+
+
+def split_partitions(text: str) -> tuple[str, ...] | None:
+    """T_PARTITIONS as a tuple: commas and whitespace both separate (run-avail hands `sinfo -p` a comma list, so a pack
+    may write 'gpu,preempt'); None when it lists none."""
+    return tuple(dict.fromkeys(p for p in re.split(r"[\s,]+", text) if p)) or None
 
 
 def env(src: Path) -> dict[str, str]:
@@ -85,7 +93,7 @@ def targets(src: Path) -> list[Target]:
     for line in done.stdout.splitlines():
         f = line.split("\t")
         if f[0] == "ok" and len(f) == 7:
-            found.append(Target(f[1], f[2], f[3], f[4], f[5], partitions=tuple(f[6].split()) or None))
+            found.append(Target(f[1], f[2], f[3], f[4], f[5], partitions=split_partitions(f[6])))
         elif f[0] == "err" and len(f) >= 3:
             found.append(Target(f[1], error=f[2].strip()))
     return found

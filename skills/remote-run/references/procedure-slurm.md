@@ -133,19 +133,30 @@ Denies: `rsk grant deny --job` is for cancels only (`--action cancel` / `cancel_
 run's launches are denied with `--name '<run>'`). `-T` of `rsk grant add|deny` and every scope target of `rsk grant
 import` must be a target the harness knows, spelled as INDEX lists it (else exit 2 `unknown target`, nothing recorded).
 A deny compares targets as normalised names (`fx/`, `./fx`, `FX` are `fx`); a spelling that is not one plain name
-matches every target deny (fail closed). `--partition` (import: `scope.partitions`) is checked against the scoped
-targets' `T_PARTITIONS` (every target the harness knows, without `-T`): when every scoped Slurm target lists them, one
-none lists is exit 2 `unknown partition 'P' (--partition): <targets> list <a, b> (T_PARTITIONS) — nothing recorded` (a
-workstation-only scope: `none (a workstation has no partitions)`); a scoped Slurm target without `T_PARTITIONS` leaves it
-unchecked (`NOTE: partition P is not checked on <t> …: the record matches only a plan whose partition is spelled exactly
-so`). A GPU type has no list anywhere: never checked, only echoed (`NOTE: GPU type X is not checked … — compare it with
-the target's reference`). `rsk grant list` flags every active record whose targets (or partitions, where every scoped
-Slurm target lists them) the harness does not know — `WARNING: <id> (<kind>): target X is not one the harness knows
-(<known>) — never matches[ there] (the user's deny is not enforced there | it covers nothing there) — fix or revoke: rsk
-grant revoke <id> --quote "<the user's words>", then record it again with a scope the harness knows` (`partition P is
-not one <t> lists (T_PARTITIONS: …)`; `--json`: `scope_problems`) — and `rsk doctor` does so for every project's ledger
-(`== grants ==`): tell the user. A deny that names a run (a `--name` glob matching the plan's name or run id) and lists
-`relaunch` or `resubmit` stops EVERY launch of that run, launch and chain included, on any target in its scope: the
+matches every target deny (fail closed). A `--partition` (import: `scope.partitions`) is never refused: `T_PARTITIONS`
+is the profile's display list (split on commas and whitespace: `gpu,preempt` is two) and `policy.sh` (`t_partition`)
+decides which partitions exist, so one the scoped targets' lists (every target the harness knows, without `-T`) do not
+name is recorded as given, with `NOTE: partition P is not in the profile's display list (T_PARTITIONS of <t>: a, b;
+<u>: none) — recorded as given: policy.sh, not the profile, decides which partitions exist; the record matches only a
+plan whose partition is spelled exactly so` (a workstation-only scope adds ` (<t>: a workstation has no partitions — no
+launch there names one)`; import puts `(scope.partitions of #i in FILE)` after P): check the spelling with the user. A
+GPU type has no list anywhere: never checked, only echoed (`NOTE: GPU type X is not checked … — compare it with the
+target's reference`). `rsk grant list`, `rsk status` (its grants block is grant list's) and `rsk doctor`, for every
+project's ledger (`== grants ==`), flag every active record naming a TARGET the harness does not know — `WARNING: <id>
+(<kind>): target X is not one the harness knows (<known>) — never matches[ there] (the user's deny is not enforced there
+| it covers nothing there) — fix or revoke: rsk grant revoke <id> --quote "<the user's words>", then record it again
+with a scope the harness knows` (`--json`: `scope_problems`); a stored partition its targets' lists do not name gets the
+NOTE above in grant list and status (`--json`: `scope_notes`), never `never matches`: tell the user. A deny's `--name`
+written as an attempt's job name — `<run>--aNN`, two or more digits, as squeue, sacct and the log show it — or as a glob
+over attempt names (`x--a*`, `x--a0?`, `x--a[0-9][0-9]`: an `--a` suffix of digits, `*`, `?` or `[…]` that can match two
+or more digits) stands for the whole run: an attempt is launched once, so it matches every attempt of that run (launch,
+relaunch, chain, cancel) and `rsk watch` rows of it, and it is that run the deny names below. It is recorded as given,
+with `NOTE: name <run>--a02 is an attempt's name (--aNN): the deny stands for run <run> — every attempt of it, the next
+one included (an attempt is launched once)` (a glob: `NOTE: name x--a* matches attempts' names (--aNN): the deny stands
+for run x — …`), and `rsk grant list` describes it as `names <run>--a02 (= run <run>: every attempt of it)`; `x--a?`,
+`x--a[0-9]`, `x--a[!0-9]*` and `--a*` match no attempt's suffix and keep their plain meaning. A deny that names a run (a
+`--name` glob matching the plan's name or run id) and lists `relaunch` or `resubmit` stops EVERY launch of that run,
+launch and chain included, on any target in its scope: the
 refusal adds `— a deny of relaunching a run stops every launch of it, on any target in its scope: rsk cannot see every
 earlier attempt (another target, run-watch, an older harness, another checkout)`, `rsk grant list` shows `DENY relaunch
 (it names a run: every launch of it too — …)`, and a launch grant recorded right after it gets a `FLAG`. A deny naming
@@ -288,7 +299,15 @@ Without rsk: the job's line in `ssh <host> 'squeue -h -u $USER --states=all -O "
 `-n`, no `*-user-asked`, no shell quoting; `rsk watch <table> …` runs it under the project's lease). The target column is
 a target name exactly as INDEX (`rs_targets`) lists it — letters, digits, `. _ -`: `x/`, `./x`, `x//` or any other
 spelling, even one the filesystem still resolves, is exit 2 (`not a target name this harness lists`, or the row's own
-error): nothing written by `--approve`, nothing run — rsk's deny check compares names. Each round: one
+error): nothing written by `--approve`, nothing run — rsk's deny check compares names. A table is plain text (LF line
+ends; tabs and UTF-8 text are fine): one holding a NUL byte or any control character other than tab — a CR too, so a
+CRLF table, which run-watch used to accept by stripping the CR, is refused now: save tables with LF line ends — is exit 2
+in `rsk watch` (every mode, before the lease) and in run-watch alike, in the same words: `<table>: line N holds 0xHH, a
+NUL byte or a control character other than tab — a run-watch table is plain text (LF line ends); rsk and run-watch both
+refuse it`; nothing is written by `--approve` and nothing runs. Both read a table the same way (lines end at LF only,
+words split at space / tab only); run-watch checks it at every read and `rsk watch --act` at each lease refresh, so such
+a byte written into a table while a watch runs ends that watch (exit 2). The user's words in `rsk watch <table> --approve "…"` may not hold a double quote, a newline or a
+control character other than tab (exit 2, nothing written); UTF-8 text such as Chinese is fine. Each round: one
 read-only ssh per target, one dated event per change (LAUNCH REQUEUE RESUBMIT RETRY DONE STALL WARN ATTENTION CANCEL …).
 Without `--act` it never submits. To let it act, show the user the rows plus `#@ allow launch preempt=N errors=N timeout=N [fail-stop]` (no default: absent = 0; paid partitions:
 the cost of first submits plus N resubmits); only after their explicit OK run `rsk watch <table> --approve "<their

@@ -38,7 +38,8 @@ def block(kind="slurm", target="fx", name="exp--train--a--scratch--s0--a01", war
                 ("info_source_commit", "none"), ("info_source_dirty", "none"), ("info_prior", kw.get("prior", "0"))]
     else:
         bound = [("kind", "nohup"), ("target", target), ("name", name), ("gpus_req", kw.get("gpus_req", "n=1")),
-                 ("exclude", ""), ("nice", ""), ("busy_ok", kw.get("busy_ok", "")), ("payload", payload.replace(" ", "\\ ")),
+                 ("exclude", ""), ("nice", ""), ("launch_cfg", kw.get("launch_cfg", "")),
+                 ("busy_ok", kw.get("busy_ok", "")), ("payload", payload.replace(" ", "\\ ")),
                  ("env_kind", "none"), ("env_hook", "''"), ("venv_dir", "''"), ("uv_sync_args", "''"), ("env_name", "''")]
         info = [("info_gpus", kw.get("info_gpus", "1")), ("info_uuids", "GPU-x"), ("info_busy", kw.get("busy", "")),
                 ("info_run_gpu", "checked"), ("info_prior", kw.get("prior", "0")), ("info_launchers", "checked")]
@@ -1020,6 +1021,86 @@ class Round6(Fixture):
                "block": {k: "" for k in G.NEEDED["nohup"] if k != "info_launchers"}}
         self.assertIn("lacks info_launchers", X.plan_state(self.led, rec))
 
+
+class Round7(Fixture):
+    """R7-5 (N6-launcher-cfg-drift): the launcher config / hostfile files launch.sh's checks read are bound
+    (`launch_cfg=<path>:<sha256>[,…]`, before busy_ok): shown on the card, a change since the card refused (exit 6)
+    and named; a block without the key needs a sync."""
+
+    H1, H2 = "1" * 64, "2" * 64
+
+    def test_r7_5_the_launcher_config_is_bound_shown_and_a_change_is_named(self):
+        """accel-drift: the card said `gpu_ids: 0 in ddp.yaml`; ddp.yaml then said `gpu_ids: 1` (root's busy GPU) and
+        the approved launch went out — the WARNING text is digit-masked in warnings_id and the file was not bound.
+        Now the file's sha256 is bound: the target's --rs-expect refuses the new bytes (exit 6), and rsk names it."""
+        self.answers = [self.plan_reply(kind="nohup", target="ws", name="ad", launch_cfg=f"ddp.yaml:{self.H1}",
+                                        warnings=1)]
+        rc, text = self.cli("launch", "-T", "ws", "-N", "ad", "--", "accelerate", "launch", "--config_file",
+                            "ddp.yaml", "t.py")
+        self.assertEqual(rc, NEEDS_USER, text)
+        self.assertIn(f"  launch cfg ddp.yaml (sha256 {self.H1[:12]})", text)
+        card = text.splitlines()
+        self.assertLess(card.index(next(x for x in card if x.startswith("  launch cfg"))),
+                        card.index(next(x for x in card if x.startswith("  busy ok"))))   # bound order: before busy_ok
+        pid = self.plan_id(text)
+        now = block(kind="nohup", target="ws", name="ad", launch_cfg=f"ddp.yaml:{self.H2}", warnings=1)
+        self.answers = [X.Reply(6, now + "changed: launch_cfg\n",
+                                "ERROR: the resolved submission differs from the approved plan")]
+        rc, text = self.cli("launch", "--plan", pid, "--approve", "ok, accelerate on GPU 0 is fine")
+        self.assertEqual(rc, CONFLICT, text)
+        self.assertIn(f"launch_cfg: ddp.yaml (sha256 {self.H1[:12]}) → ddp.yaml (sha256 {self.H2[:12]})", text)
+        self.assertEqual(L.attempt_state(self.led.read_run("ad").data["attempts"]["a01"]), "NOT_SUBMITTED")
+        self.assertEqual(X._cfgs(f"'a b.yaml:{self.H1},/job/hostfile:unreadable'"),
+                         f"a b.yaml (sha256 {self.H1[:12]}) · /job/hostfile (UNREADABLE on the box: what the launcher "
+                         "reads there is unknown)")
+        self.assertEqual(X._cfgs(""), "")
+
+    def test_r7_5_a_block_without_launch_cfg_needs_a_sync(self):
+        G.add(self.led, G.new_grant("anything on ws", {"targets": ["ws"]}, ["launch"], max_live=None,
+                                    max_launches=None, expires=None))
+        self.answers = [X.Reply(0, block(kind="nohup", target="ws", name="r", drop=("launch_cfg",)), "")]
+        rc, text = self.cli("launch", "-T", "ws", "-N", "r", "--", "accelerate", "launch", "t.py")
+        self.assertEqual(rc, CONFLICT, text)
+        self.assertIn("needs: sync", text)
+        self.assertIn("lacks launch_cfg", text)
+        self.assertEqual(len(self.calls), 1)                          # the plan only: nothing launched
+        self.assertIn("launch_cfg", G.NEEDED["nohup"])
+        self.assertEqual(G.NOHUP_BOUND[G.NOHUP_BOUND.index("launch_cfg") + 1], "busy_ok")
+        rec = {"id": "p-old", "kind": "nohup", "created_at": L.now(), "target": "ws", "name": "r",
+               "block": {k: "" for k in G.NEEDED["nohup"] if k != "launch_cfg"}}
+        self.assertIn("lacks launch_cfg", X.plan_state(self.led, rec))
+
+    def test_r7_5_the_ledger_records_launch_cfg_so_a_relaunch_repeats_it(self):
+        """Integration of R7-5 with the ledger: an attempt's request.bound keeps only ledger.BOUND_KEYS, which lacked
+        launch_cfg — so the relaunch of a run whose launcher read a config compared '' with the plan's `<path>:<sha256>`
+        and every grant-covered relaunch after a reboot was "not the configuration" (needs the user). The key is now
+        recorded: the same config relaunches under the grant, an edited one is a new configuration (the user
+        decides)."""
+        self.assertLessEqual(set(G.SLURM_BOUND) | set(G.NOHUP_BOUND), L.BOUND_KEYS)     # every bound key is recorded
+        G.add(self.led, G.new_grant("run and resume accelerate jobs on ws", {"targets": ["ws"],
+                                                                            "allow_warnings": "any"},
+                                    ["launch", "relaunch"], max_live=None, max_launches=None, expires=None))
+        cfg = f"ddp.yaml:{self.H1}"
+        started = lambda nonce, words: X.Reply(0, "[ws] started PID 4242 on GPU(s) 1 ; log /h/projects/proj/logs/"   # noqa: E731
+                                                  "ad-20261104-120000.log ; pid file /h/x.pid\n", "")
+        self.answers = [self.plan_reply(kind="nohup", target="ws", name="ad", launch_cfg=cfg, warnings=1), started]
+        rc, text = self.cli("launch", "-T", "ws", "-N", "ad", "--", "accelerate", "launch", "--config_file",
+                            "ddp.yaml", "t.py")
+        self.assertEqual(rc, OK, text)
+        a01 = self.led.read_run("ad").data["attempts"]["a01"]
+        self.assertEqual(a01["request"]["bound"].get("launch_cfg"), cfg)
+        self.led.observe("ad", "a01", "logs/ad-20261104-120000.log", "REBOOT", "boot_id",
+                         end={"state": "REBOOT", "rc": "", "evidence": "boot_id"})
+        self.answers = [self.plan_reply(kind="nohup", target="ws", name="ad--a02", launch_cfg=f"ddp.yaml:{self.H2}",
+                                        warnings=1)]
+        rc, text = self.cli("launch", "--relaunch", "ad")
+        self.assertEqual(rc, NEEDS_USER, text)                     # the config changed since a01: the user decides
+        self.assertIn("not the configuration of a01", text)
+        self.assertIn("launch_cfg", text)
+        self.answers = [self.plan_reply(kind="nohup", target="ws", name="ad--a02", launch_cfg=cfg, warnings=1), started]
+        rc, text = self.cli("launch", "--relaunch", "ad")
+        self.assertEqual(rc, OK, text)                             # the same config: covered as the grant says
+        self.assertNotIn("not the configuration", text)
 
 class Nohup(Fixture):
     def started(self, pid: str = "4242"):

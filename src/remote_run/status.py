@@ -15,8 +15,9 @@ It also reads the local ledger (ledger.py) and records what it saw there — nev
   SUBMIT_UNKNOWN (sticky: never resubmitted blind) and becomes a `needs user:` line;
 - nohup end states from <log>.rc (REBOOT when the pid is gone with no .rc and the box's boot_id is not the receipt's),
   the watch lease and a run-watch lock holder (alive here, on another host, or stale), every active grant with its
-  balance, and `needs user:` lines. A needs-user line names the decision, never a ready-to-run --approve command (the
-  user's words come first). A ledger that cannot be written (read-only state dir, a full disk) is a warning: the
+  balance (and, as rsk grant list shows them, the WARNING for a record naming a target the harness does not know and
+  the NOTE for a partition its profile's T_PARTITIONS display list does not name: R7-6), and `needs user:` lines. A
+  needs-user line names the decision, never a ready-to-run --approve command (the user's words come first). A ledger that cannot be written (read-only state dir, a full disk) is a warning: the
   view is still printed, nothing recorded.
 logs: the deployed bounded digest (remote/status.sh) for one job id or log path — the one monitoring read.
 """
@@ -411,6 +412,11 @@ def cmd_status(args: argparse.Namespace) -> int:
     targets = {p.target for p in places}
     v = view(led, st, obs, args.days, targets)
     keys = {p.target: known_keys(st, p.target)[0] for p in places}
+    try:                     # R7-6: the same flags as rsk grant list (a stored record naming a target nobody has, R6-9)
+        tl: list | None = grants.harness_targets()
+        tl_note = ""
+    except RskError as exc:
+        tl, tl_note = None, f"  NOTE: unknown targets not checked: {exc}"
     if args.json:
         print(json.dumps({
             "project": str(proj), "ledger": str(led.dir),
@@ -421,8 +427,11 @@ def cmd_status(args: argparse.Namespace) -> int:
                                   for j in o.jobs],
                          "attempts_listed": o.attempts_ok} for o in obs],
             "runs": [{"run": r, "attempt": a, "state": L.attempt_state(att), **att} for r, a, att in v["runs"]],
-            "unledgered": v["unledgered"], "grants": [{**g, "covers": grants.describe(g), "balance": grants.balance(g, st)}
-                                                      for g in st.grants if isinstance(g, dict) and not g.get("revoked")],
+            "unledgered": v["unledgered"], "grants": [
+                {**g, "covers": grants.describe(g), "balance": grants.balance(g, st),
+                 "scope_problems": grants.scope_problems(g, tl)[0] if tl is not None else None,
+                 "scope_notes": grants.scope_notes(g, tl) if tl is not None else None}
+                for g in st.grants if isinstance(g, dict) and not g.get("revoked")],
             "budgets_unknown": st.budgets_unknown, "lease": v["lease"], "lease_state": v["lease_state"],
             "watch_lock": v["watch_lock"],
             "needs_user": v["needs"], "notes": notes}, indent=1, ensure_ascii=False))
@@ -450,7 +459,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     else:
         print("  no ledger runs on " + ", ".join(sorted(targets)) + f" (live or ended in {args.days}d)")
     print("== grants ==")
-    print("\n".join(grants.lines(st)) or "  none recorded — every launch and cancel needs the user's approval")
+    print("\n".join(grants.lines(st, known=tl)) or "  none recorded — every launch and cancel needs the user's approval")
+    if tl_note:
+        print(tl_note)
     print(_lease_line(v))
     for n in v["needs"]:
         print(f"needs user: {n}")

@@ -776,8 +776,9 @@ class Ledger:
                            grants_unreadable=g.why if g.source == "corrupt" else lost)
 
 
-BOUND_KEYS = frozenset("partition gres cpus mem time account name extra payload env_kind env_name wandb_mode chain "
-                       "gpus_req exclude nice busy_ok env_hook venv_dir uv_sync_args conf_extra flags".split())
+# every key of grants.SLURM_BOUND / NOHUP_BOUND: request.bound is what a relaunch is compared with (grants.same_config)
+BOUND_KEYS = frozenset("partition gres cpus mem time account name extra payload env_kind env_name wandb_mode chain gpus_req "
+                       "exclude nice launch_cfg busy_ok env_hook venv_dir uv_sync_args conf_extra flags".split())
 
 
 def next_attempt(atts: dict) -> str:

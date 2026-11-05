@@ -36,10 +36,10 @@ every key; [`../AGENTS.md`](../AGENTS.md) documents the `policy.sh` API (`t_part
   single-quoted, only `$HOME` / `$USER` expand (on the remote). Choose the storage policy deliberately:
   `T_ENV_ROOT` (where venvs and uv caches live — move them off a filesystem that is slow on small files),
   `T_TMPDIR` (`project` or the job's `inherit`ed `$TMPDIR`), `T_COMPILE_CACHE`, and `T_SUFFIX` when two targets
-  share a filesystem but not an OS or GPU architecture. `T_PARTITIONS` lists every partition the policy accepts:
-  `rsk grant add|deny|import --partition` is checked against it (when every scoped Slurm target lists them, a partition
-  none lists is exit 2 `unknown partition`), and `rsk grant list` / `rsk doctor` flag a stored record naming a partition the
-  list lacks — a list shorter than the policy would refuse a user's deny of a real partition.
+  share a filesystem but not an OS or GPU architecture. `T_PARTITIONS` is a display list (error messages, `run-avail`'s
+  `sinfo -p`; spaces or commas separate): `policy.sh`'s `t_partition` decides which partitions exist. `rsk grant
+  add|deny|import --partition` never refuses one the list lacks — it records it as given with a NOTE, which `rsk grant
+  list` / `rsk status` repeat — so list the partitions your users name, spelled as the policy takes them.
 - **`T_DESC` and `T_TRIGGERS`** decide routing. `T_TRIGGERS` words are prepended to the installed skill
   description verbatim (some agents match skills lexically), so list the names people actually say: the target
   name, the site's nickname, notable partition or GPU names.

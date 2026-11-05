@@ -58,7 +58,8 @@ hardcode the check count.
    — each line names its target: status/jobs carry over only on the same target, unknown submits and (every round)
    every fail-stop from any state file naming the row (a table keeps all of them; `--release` clears only its trigger's);
    a stop that holds the table later in the watch withdraws an unused `--release` (`reason=release-withdrawn`);
-   row targets: exact `rs_targets` names, else exit 2; acts only with `--act` on `#@ ok`-approved rows within `#@ allow`; one per
+   row targets: exact `rs_targets` names, else exit 2; a table holding a NUL or a control character other than tab (CR too)
+   is exit 2, as rsk refuses it (R7-7); acts only with `--act` on `#@ ok`-approved rows within `#@ allow`; one per
    project, lock → exit 6; `--act` / `--approve` without `RS_VIA_RSK` while rsk is installed → `use: rsk watch …`, exit 2;
    exit 7 in every mode once `RS_WATCH_PARENT` (rsk watch's pid) is gone or no longer its parent; `tests/47-watch.sh`).
    Prologue: `RS_HOME=$(cd "$(dirname "$0")/.." && pwd)`; `TARGET` (aliases `CLUSTER`/`STATION`) → `rs_load_target`.
@@ -144,11 +145,12 @@ checks the env gate read-only — the venv's python executable, a conda env that
 file, a valid `ENV_KIND`: else exit 1, no card — and creates nothing outside `.rs/`) and prints ONE `@@plan v1` … `@@end`
 block: `api= kind= target=`, the bound fields (`rs_bound`, one function; also `env_hook=<path>:<sha256>`, `venv_dir`,
 `uv_sync_args`; slurm `conf_extra` = the conf's own SBATCH_EXTRA words, then `flags` = `T_FLAGS` (the policy flags, a `%q`
-list), right before `chain`, the last; nohup `busy_ok=<id>:<uuid>:<user>,…` sorted by id, or `unknown`), `info_*` (envelope;
-nohup `info_run_gpu=checked` and, after `info_prior`, `info_launchers=checked` (the config / container WARNINGs and the
-`env -i` / `exec -c` / `APPTAINERENV_` refusals: an older card lacks them, and a grant would cover it), which rsk requires —
-a block without either, or a slurm one without `flags=`, is `needs: sync`, a stored nohup plan without it fails `--plan`;
-`info_prior=<n|unknown>`, slurm after `info_source_dirty`, nohup after `info_run_gpu`: `rs_prior`, the run's earlier attempts
+list), right before `chain`, the last; nohup `launch_cfg=<path>:<sha256>,…` — every launcher config / hostfile
+`rs_launchers` read, sorted, `<path>:unreadable`, empty when none — then `busy_ok=<id>:<uuid>:<user>,…` sorted by id, or
+`unknown`), `info_*` (envelope; nohup `info_run_gpu=checked` and, after `info_prior`, `info_launchers=checked` (the
+config / container WARNINGs and the `env -i` / `exec -c` / `APPTAINERENV_` refusals: an older card lacks them, and a grant
+would cover it), which rsk requires — a block without either, or `launch_cfg=`, or a slurm one without `flags=`, is
+`needs: sync`, a stored nohup plan without them fails `--plan`; `info_prior=<n|unknown>`, slurm after `info_source_dirty`, nohup after `info_run_gpu`: `rs_prior`, the run's earlier attempts
 = journal receipts named the run id or `<run id>--aNN`, slurm + this WorkDir's squeue rows no receipt names, `unknown` when
 squeue failed or a receipt is unreadable — rsk derives `relaunch` from n > 0 or no number, never `needs: sync`),
 `warnings=` (the distinct `WARNING:` lines in out+err, not `WARNING (lint)`), `warnings_avail=` (the availability gate's
@@ -174,13 +176,19 @@ CUDA_DEVICE_ORDER NVIDIA_/HIP_/ROCR_VISIBLE_DEVICES`, or an `env` option but `-v
 emptying the whole environment: `env -i`/`-vi`/`-0i`/`-`/`-- -`/`--i…`, after a wrapper, env's other options or inside
 `-S`, and bash's `exec -c` where a command starts — never `exec -ac`, `exec -a -c` or a subcommand's `exec -c`: `tests/61`
 R6-6 and 'round-6 integration', `tests/vgate/local.sh` `env_anywhere=`) are exit 2 before the claim; seen only once
-expanded (first command), the wrapper refuses to start the payload (rc 2). `rs_launchers`: deepspeed / accelerate launch
-(and their aliases) with their own GPU flags; accelerate's config `gpu_ids` (read-only: `--config_file`, else the default
-config under `$PROJ/.cache/huggingface`; unreadable, > 64 KiB or a RUN naming `HF_HOME` warns too); deepspeed with
-`/job/hostfile` and no `--hostfile`; container runtimes (docker / podman `--gpus --runtime --device nvidia… --privileged`,
-a bare `-e NVIDIA_VISIBLE_DEVICES`, `nvidia-docker run`; apptainer / singularity `--cleanenv --containall`) → a counted
-`WARNING:` naming launcher, what and landing (grant kind `any` only; spellings: `tests/61` 'R5-2'; facts:
-`tests/vgate/launchers.sh` + `containers.sh`, plumbing `tests/88`). What the payload's own code does is beyond any check. P7: run-launch without `RS_VIA_RSK`
+expanded (first command), the wrapper refuses to start the payload (rc 2). The conf is read (profile, then `.ws.conf`,
+child `bash --noprofile --norc`, fds 3/4/9 closed) in every mode before `rs_launchers` (a plan / `--rs-expect` refuses one
+that does not source, exit 2). `rs_launchers`: deepspeed / accelerate launch (and their aliases) with their own GPU
+flags; accelerate's config `gpu_ids` (read-only: `--config_file`, else the default config under `$PROJ/.cache/huggingface`;
+unreadable, > 64 KiB, relative after a `cd`, or a RUN naming `HF_HOME` warns too; no `--config_file` beside an
+`ENV_HOOK` or a conf / RUN naming `HF_HOME` / `ACCELERATE_…`: `the config accelerate reads is unknown`); deepspeed with
+`/job/hostfile` and no `--hostfile`; container runtimes (docker / podman / nerdctl `--gpus --runtime --device nvidia…
+--privileged`, a bare `-e NVIDIA_VISIBLE_DEVICES`, `nvidia-docker run`; apptainer / singularity `--cleanenv
+--containall`); a tool that starts the command without this launch's environment or elsewhere (container `exec`, compose,
+`kubectl exec`, tmux, `screen -dm`, `setpriv --reset-env`, `sudo` without `-E`, `doas`, `systemd-run`, `ssh`, `srun`) → a
+counted `WARNING:` naming it, what and landing (grant kind `any` only; spellings: `tests/61` 'R5-2' / 'R7-3'; facts:
+`tests/vgate/launchers.sh` + `containers.sh` + `envdrop.sh`, plumbing `tests/88`); the configs / hostfile it read are
+bound (`launch_cfg`). What the payload's own code does is beyond any check. P7: run-launch without `RS_VIA_RSK`
 while rsk is installed (on PATH or `$(uv tool dir --bin)/rsk`) prints `use: rsk launch …` and exits 2 (else it launches,
 with a NOTE; a Slurm target points at `rsk launch`) — a nudge, not a guard; `tests/lib.sh` exports `RS_VIA_RSK`.
 
@@ -196,18 +204,21 @@ start, boot_id), for 1 h, used up by its first cancel that passed authorisation,
 nothing), `grant` (a standing predicate: scope + actions + `max_live` / `max_launches` / `expires`, all three stated, `none`
 = the user set none; `resubmit` is refused in a new one; `allow_warnings` = `availability` (warnings == warnings_avail) |
 `any`, a stored `true` = `any`; `cancel_own` cancels count against `max_launches`, refunded only when the answer proves
-nothing was signalled), `deny` (always wins; one of `launch` stops relaunch/chain too; its name globs also match the run id;
+nothing was signalled), `deny` (always wins; one of `launch` stops relaunch/chain too; its name globs also match the run id,
+and a glob ending in an attempt's `--aNN` (2+ digits) or in a glob that can match one (`x--a*`) stands for its run —
+every attempt, cancels and `rsk watch` rows included (`grants.run_glob(s)`, R7-1; a NOTE at `rsk grant deny|import`);
 a fact it scopes that is unknown matches: a cancel of a job without a plan, an `rsk watch` row — no bound hash, its GPU type
 and partition never certain —, a run with an attempt recorded without a class; targets compared as `grants.target_key`
 names — `fx/`, `./fx`, `FX` are fx, a spelling that is not one plain name matches every target deny; `scope.jobs` only
 with cancel actions, else invalid; `rsk grant add|deny|import` refuse a target `rs_targets` does not list, exit 2
-`unknown target`, and a partition none of the scoped Slurm targets' `T_PARTITIONS` lists when all list them, `unknown
-partition` (else a NOTE; a GPU type: a NOTE only; `grants.check_scope`); `rsk grant list` (`--json` `scope_problems`) and
-`rsk doctor` (`== grants ==`, every ledger, exit code unchanged) flag an active record naming an unknown target / partition
-(`grants.scope_problems`: `never matches`); a deny naming a run (`scope.names`) with `relaunch`/`resubmit` matches every
-launch-type action of it, launch included, on any target in its scope (`grants.run_deny`; a launch grant right after it:
-FLAG). A deny `validate()` rejects, an id `d-…` or
-a missing / damaged `kind` is a deny matching everything until fixed or revoked (a non-object: until removed by hand); any
+`unknown target`, never a partition (`T_PARTITIONS` is a display list, `harness.split_partitions`: commas and whitespace,
+`policy.sh` decides; one the scoped targets' lists lack gets a NOTE, `grants.partition_note`; a GPU type: a NOTE only;
+`grants.check_scope`); `rsk grant list`, `rsk status` (R7-6) and `rsk doctor` (`== grants ==`, every ledger, exit code
+unchanged) flag an active record naming an unknown TARGET (`grants.scope_problems`, `--json` `scope_problems`: `never
+matches`), list / status NOTE an unlisted partition (`grants.scope_notes`, `--json` `scope_notes`); a deny naming a run
+(`scope.names`) with `relaunch`/`resubmit` matches every launch-type action of it, launch included, on any target in its
+scope (`grants.run_deny`; a launch grant right after it: FLAG). A deny `validate()` rejects, an id `d-…` or a missing /
+damaged `kind` is a deny matching everything until fixed or revoked (a non-object: until removed by hand); any
 other invalid record covers nothing; an unreadable `grants.json` (no good `.prev`) is exit 6 `grants unreadable` for launch,
 cancel and watch `--act`/`--approve`, and while it is recovered or missing every deny in `audit.jsonl` still counts
 (`rsk grant recount` restores those denies and the revocations; a lost grant or approval needs the user's words again). The action
@@ -230,7 +241,7 @@ covers only live ledger attempts rsk launched; no `@@start` from an ssh that did
 non-zero scancel is exit 5 `CANCELLING?`, use kept, its own line quoted (`cancel.scancel_line`: the one naming that job id,
 else one naming none), unless scancel's own line for that id says `Invalid job id` / `already completing or completed` (`scancel_moot`:
 exit 0, `COMPLETING`, use back; the words: `tests/vgate/slurm-remote.sh` `scancel_ended=` / `scancel_invalid=`). run-watch keeps its own approvals (`#@ ok`, bash) — `rsk watch` adds the lease, checks every row against the
-denies for every action run-watch could take (`--act` / `--approve`; a deny scoped by job ids only for a table whose `#@ allow` has `fail-stop`; and at each lease refresh: TERM, exit 3), sets
+denies for every action run-watch could take (`--act` / `--approve`; a deny scoped by job ids only for a table whose `#@ allow` has `fail-stop`; and at each lease refresh: TERM, exit 3), refuses a table that is not plain text (a NUL or a control character but tab, CR included: exit 2 in every mode, before the lease, in run-watch's words; R7-7), sets
 `RS_VIA_RSK=1 RS_WATCH_PARENT=<its pid>`, and refuses (6) beside an orphaned run-watch lock. A record is bookkeeping, not
 proof of consent: an agent can write any quote; rsk constrains only what goes through it.
 

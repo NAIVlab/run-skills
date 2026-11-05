@@ -435,6 +435,33 @@ class Ledgered(Base):
         self.assertRegex(text, r"needs user: grant g-\S+ \(cli\): created \d+s after deny d-")
 
 
+    def test_r7_6_status_flags_a_stored_record_naming_a_target_the_harness_does_not_know(self):
+        """NF6-status-no-stale-flag: R6-9's WARNING appeared in `rsk grant list` and `rsk doctor` but not in `rsk
+        status`, the read the skill tells agents to run first — an agent never saw that the user's deny was not
+        enforced. status's grants block now carries the same WARNING (and R7-2's NOTE for an unlisted partition)."""
+        typo = G.add(self.led, G.new_deny("never launch anything on fx-slurm again", {"targets": ["fx-slrum"]}))
+        part = G.add(self.led, G.new_deny("never the debug partition", {"targets": ["fx-slurm"],
+                                                                        "partitions": ["debug"]}))
+        self.target("fx-listed", "T_KIND=slurm; T_HOST=fxhost; T_PARTITIONS='gpu,paid'\n")
+        listed = G.add(self.led, G.new_deny("never debug on fx-listed", {"targets": ["fx-listed"],
+                                                                        "partitions": ["debug"]}))
+        rc, text = run("status", "-C", str(self.proj), "-T", "fx-slurm")
+        self.assertEqual(rc, OK, text)
+        grants_block = text.split("== grants ==", 1)[1]
+        self.assertIn(f"WARNING: {typo['id']} (deny): target fx-slrum is not one the harness knows", grants_block)
+        self.assertIn("never matches (the user's deny is not enforced there) — fix or revoke", grants_block)
+        self.assertNotIn(f"WARNING: {part['id']}", grants_block)            # fx-slurm lists none: nothing to say
+        self.assertIn("NOTE: partition debug is not in the profile's display list (T_PARTITIONS of fx-listed: gpu, "
+                      "paid)", grants_block)
+        self.assertNotIn(f"WARNING: {listed['id']}", grants_block)          # R7-2: a partition is never "never matches"
+        doc = json.loads(run("status", "-C", str(self.proj), "-T", "fx-slurm", "--json")[1])
+        probs = {g["id"]: g["scope_problems"] for g in doc["grants"]}
+        self.assertTrue(probs[typo["id"]])
+        self.assertEqual(probs[listed["id"]], [])
+        notes = {g["id"]: g["scope_notes"] for g in doc["grants"]}       # --json says what the text says (as grant
+        self.assertIn("is not in the profile's display list", notes[listed["id"]][0])   # list --json does)
+        self.assertEqual(notes[typo["id"]], [])
+
 @unittest.skipUnless(sys.platform.startswith("linux"), "the nohup probe uses GNU stat and procps (the targets' Linux)")
 class LedgeredNohup(Base):
     def test_rc_ends_a_ledger_run(self):

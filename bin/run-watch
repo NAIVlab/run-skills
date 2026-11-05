@@ -31,7 +31,8 @@
 # (run-watch sends --rs-attempt itself). Numbers (flags, `#@ allow`, after=, --adopt ids) are base 10: 0060 is 60.
 # `#@ ok … conf=` binds an approval to .hpc.conf (sha256[:12]; the submit ssh checks the deployed copy too); an older line
 # without conf= stays valid; a line or table header this copy cannot read is refused, naming a newer run-watch as the likely
-# writer. --adopt takes a job only if its name, user and WorkDir are the row's. One watcher per project (lock).
+# writer; so is a table holding a NUL byte or a control character other than tab (CR too), as rsk refuses it (R7-7). --adopt
+# takes a job only if its name, user and WorkDir are the row's. One watcher per project (lock).
 #   run-watch TABLE... [--act] [--once] [--every S] [--for S] [--stall-after S] [--max-active N] [--release NAME] [--adopt NAME=JOBID]
 #   run-watch TABLE --approve "the user's words"   # writes `#@ ok` over every unapproved or stale block, nothing else
 # Driven by rsk (`rsk watch`: RS_VIA_RSK=1, RS_WATCH_PARENT=<its pid>): --act or --approve called directly while rsk is
@@ -151,13 +152,16 @@ ok_unreadable() {   # ok_unreadable WHERE LINE: a '#@ ok' line this copy cannot 
   fi
   die "$at: malformed '#@ ok' line — run-watch writes them (--approve); one edited by hand is refused: delete that line, then --approve with the user's words"
 }
+tbl_ctl() {   # tbl_ctl < FILE: "LINE 0xHH", its first NUL byte or control character other than tab ('' = none; R7-7: refused by rsk too)
+  od -An -v -tu1 | awk '{ for (i = 1; i <= NF && f == ""; i++) if ($i == 10) n++; else if ($i < 32 && $i != 9 || $i == 127) f = sprintf("%d 0x%02x", n + 1, $i) } END { if (f != "") print f }'; }
 parse_table() {   # parse_table TI FILE
   local ti=$1 f=$2 n=0 l w v x hdr=0 body=0 r ok_re='^#@ ok [0-9]{4}-[0-9]{2}-[0-9]{2} sum=([0-9]+)( conf=([0-9a-f]{12}|none))? "[^"]*"$'
-  [ -f "$f" ] || die "no table '$f'"
+  [ -f "$f" ] || die "no table '$f'"; x=$(tbl_ctl < "$f") || die "$f: cannot read it"
+  [ -z "$x" ] || die "$f: line ${x% *} holds ${x#* }, a NUL byte or a control character other than tab — a run-watch table is plain text (LF line ends); rsk and run-watch both refuse it"
   A_LINE[ti]="allow:"; A_LAUNCH[ti]=0; A_PRE[ti]=0; A_ERR[ti]=0; A_TO[ti]=0; A_RE[ti]=""; A_AFTER[ti]=15; A_FS[ti]=0
   new_block "$ti" 0 "" ""
   while IFS= read -r l || [ -n "$l" ]; do
-    n=$((n + 1)); l=${l%$'\r'}
+    n=$((n + 1))   # (a CR is refused above: a CRLF table too)
     if [ "$hdr" = 0 ]; then case "$l" in '') continue ;; '#@ run-watch v1') hdr=1; continue ;;
       '#@ run-watch v'[0-9]*) die "$f:$n: a '${l#'#@ '}' table — written for a newer run-watch (this copy reads v1): $NEWER" ;;
       *) die "$f:$n: line 1 must be '#@ run-watch v1'" ;; esac; fi
@@ -232,8 +236,9 @@ load_targets() {   # T* per distinct target: kind host remote-dir recover; R_K[i
 
 # ---------- --approve: the program computes every pending block's sum and writes its `#@ ok` line ----------
 approve() {
-  local f=${TBL_PATH[0]} b i rep="" ins="" n=0 tmp
-  case "$APPROVE" in ''|*'"'*|*"$NL"*) die "--approve needs the user's words, one line, no double quote" ;; esac
+  local f=${TBL_PATH[0]} b i rep="" ins="" n=0 tmp x
+  case "$APPROVE" in ''|*'"'*|*"$NL"*) x=1 ;; *) x=$(printf '%s\n' "$APPROVE" | tbl_ctl) ;; esac   # (R7-7: the table's bytes)
+  [ -z "$x" ] || die "--approve needs the user's words, one line, no double quote, no control character other than tab"
   [ "${#TBL_PATH[@]}" = 1 ] && [ "$ACT" = 0 ] && [ -z "$ADOPTS$RELEASE" ] || die "--approve takes one table and no other action"
   for ((b = 0; b < NB; b++)); do
     [ "${B_N[b]}" -gt 0 ] && [ "${B_MATCH[b]}" = 0 ] || continue
