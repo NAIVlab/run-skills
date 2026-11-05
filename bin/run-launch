@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # run-skills bin/run-launch — launch the project's run on a nohup workstation target, contained (env.sh) and
 # detached. Runs LOCALLY from the repo root (cwd with .ws.conf) after run-sync + run-bootstrap.
-#   TARGET=<name> bash ~/.agents/run-skills/bin/run-launch [-d 0,1 | -n 2] [-N name] [--same-name-ok] [--gpu-busy-ok]
-#                 [--rs-attempt NONCE] [--rs-mode plan] [--rs-expect HASH] [-- <run cmd...>]
+#   TARGET=<name> bash ~/.agents/run-skills/bin/run-launch [-d 0,1 | -n 2] [-N name] [--nice N] [--same-name-ok]
+#                 [--gpu-busy-ok] [--rs-attempt NONCE] [--rs-mode plan] [--rs-expect HASH] [-- <run cmd...>]
 #     -d ids   use exactly these GPU ids (bypasses GPU_EXCLUDE)     -n N   auto-pick the N idlest free GPUs (memory.used)
 #     -N name  job/log name (default: JOB_NAME, else the remote dir basename)   -- cmd   overrides RUN from .ws.conf
+#     --nice N  the run's nice level 0-19 (default: NICE from .ws.conf)
 #     --same-name-ok  launch even if a run of this name from this project is alive (else exit 6)
 #     --gpu-busy-ok   launch onto GPUs with a compute process (else -d onto one = exit 6; auto-pick skips them)
 #     --rs-attempt NONCE  the attempt id ([A-Za-z0-9][A-Za-z0-9._-]{0,63}; default: generated) — reusing one exits 75, never relaunches
@@ -36,9 +37,6 @@ GPUX="${GPUX//[[:space:]]/}"     # '0, 1' -> '0,1' (else the exclude regex silen
 if [ -n "$GPUX" ] && ! printf %s "$GPUX" | grep -Eq '^[0-9]+(,[0-9]+)*$'; then
   die "GPU_EXCLUDE must be comma-separated GPU ids (got '$GPUX')"
 fi
-if [ -n "$NICE" ] && ! printf %s "$NICE" | grep -Eq '^[0-9]+$'; then
-  die "NICE must be a non-negative integer 0-19 (got '$NICE')"   # negative nice = priority over other users
-fi
 
 GPUS=""; NPICK=""; NONCE=""; SAME=""; BOK=""; PLAN=""; EXPECT=""
 while [ "$#" -gt 0 ]; do
@@ -46,6 +44,7 @@ while [ "$#" -gt 0 ]; do
     -d) GPUS="${2:?-d needs GPU ids}"; shift 2 ;;
     -n) NPICK="${2:?-n needs a count}"; shift 2 ;;
     -N) NAME="${2:?-N needs a name}"; shift 2 ;;
+    --nice) NICE="${2:?--nice needs a value}"; shift 2 ;;
     --same-name-ok) SAME=1; shift ;;
     --gpu-busy-ok) BOK=1; shift ;;
     --rs-attempt) NONCE="${2:?--rs-attempt needs a value}"; shift 2 ;;
@@ -53,9 +52,12 @@ while [ "$#" -gt 0 ]; do
     --rs-expect) h=${2:-}; [ -z "$EXPECT" ] && [ "${#h}" = 64 ] && [ -n "${h##*[!0123456789abcdef]*}" ] || die "--rs-expect takes one bound_hash (64 lowercase hex), once"
                  EXPECT=$h; shift 2 ;;
     --) shift; break ;;
-    *) echo "unknown arg: $1 (usage: run-launch [-d ids | -n N] [-N name] [--same-name-ok] [--gpu-busy-ok] [--rs-attempt NONCE] [--rs-mode plan] [--rs-expect HASH] -- <cmd>)" >&2; exit 2 ;;
+    *) echo "unknown arg: $1 (usage: run-launch [-d ids | -n N] [-N name] [--nice N] [--same-name-ok] [--gpu-busy-ok] [--rs-attempt NONCE] [--rs-mode plan] [--rs-expect HASH] -- <cmd>)" >&2; exit 2 ;;
   esac
 done
+if [ -n "$NICE" ] && ! printf %s "$NICE" | grep -Eq '^[0-9]+$'; then   # --nice beats the conf's NICE
+  die "NICE must be a non-negative integer 0-19 (got '$NICE')"   # negative nice = priority over other users
+fi
 # -d gets the same normalise+validate as GPU_EXCLUDE: a space inside CUDA_VISIBLE_DEVICES silently pins fewer GPUs.
 if [ -n "$GPUS" ]; then
   GPUS="${GPUS//[[:space:]]/}"

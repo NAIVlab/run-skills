@@ -10,12 +10,18 @@
     rsk grant add|deny|list|revoke|import|recount   what the user allowed / forbade for this project (the ledger)
     rsk adopt -T T (--job J | --log L) --as RUN     record an existing job of this project (identity checked)
     rsk adopt -T T --not-submitted NONCE --approve "the user's words"     close an unknown submit
+    rsk launch -T T [flags] -- CMD  plan on the target → a record that covers it, else the card + exit 4 (needs user)
+    rsk launch --plan ID [--plan ID]... --approve "the user's words"     submit approved plan(s) (a sweep: one approval)
+    rsk cancel RUN | --job J -T T [--approve "the user's words"]   identity checked, then scancel / kill (recorded)
+    rsk watch TABLE... [run-watch flags]   bin/run-watch under the project's watch lease (one watcher per project)
     rsk sync|bootstrap|pull -T T [args] / rsk avail [args]   the harness's bin/run-* (cwd = project, TARGET set)
     rsk doctor                      offline checks: install, the remote-run skill, packs, targets, ssh aliases, config
+    rsk doctor --legacy-refs [DIR]  read-only: project docs still naming hpc-run/ws-run or raw submit.sh/run-launch recipes
     rsk config [--template]         rsk's own settings (~/.config/run-skills/config.toml)
 
 Exit codes: 0 ok · 1 the remote command ran and failed (rsk exec / rsk logs print its code) · 2 usage/config/setup ·
-3 refused · 4 needs the user · 5 unknown/unreachable · 6 conflict · 141 stdout's reader left (`| head`).
+3 refused · 4 needs the user · 5 unknown/unreachable · 6 conflict · 7 watch lease ended · 8 placement ·
+141 stdout's reader left (`| head`).
 """
 
 from __future__ import annotations
@@ -27,7 +33,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from remote_run import __version__, adopt, config, grants, harness, install, packs, paths, state, wrappers
+from remote_run import __version__, adopt, cancel, config, grants, harness, install, launch, legacy, packs, paths, state
+from remote_run import watch, wrappers
 from remote_run import remote_exec
 from remote_run import status as status_cmd
 from remote_run.errors import OK, UNKNOWN, USAGE, RskError
@@ -232,6 +239,8 @@ def _ssh_alias_ok(host: str) -> bool:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
+    if getattr(args, "legacy_refs", None) is not None:
+        return legacy.cmd_legacy_refs(args.legacy_refs)
     fails = 0
 
     def report(level: str, msg: str) -> None:
@@ -367,8 +376,13 @@ def build_parser() -> argparse.ArgumentParser:
     remote_exec.add_parser(sub)
     grants.add_parsers(sub)
     adopt.add_parser(sub)
+    launch.add_parser(sub)
+    cancel.add_parser(sub)
+    watch.add_parser(sub)
     wrappers.add_parsers(sub)
     d = sub.add_parser("doctor", help="offline checks of this install")
+    d.add_argument("--legacy-refs", nargs="*", default=None, metavar="DIR", help="only report CLAUDE.md / AGENTS.md "
+                   "under DIR (default ~/projects) still naming hpc-run / ws-run or raw submit.sh / run-launch recipes")
     d.set_defaults(func=cmd_doctor)
     c = sub.add_parser("config", help="show rsk's settings")
     c.add_argument("--template", action="store_true", help="print every key with its default and meaning")

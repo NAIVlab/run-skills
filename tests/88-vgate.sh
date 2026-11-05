@@ -23,6 +23,11 @@ has "$(cat "$V/sbatch.log" 2>/dev/null)" "rs-vgate-rq --chdir $D job.sh\$" "requ
 has "$(cat "$D/job.sh" 2>/dev/null)" ">> \"$D/requeue.out\"" "job.sh appends to an absolute requeue.out"
 has "$(cat "$V/sbatch.log" 2>/dev/null)" '^--parsable -p gpu -c 1 ' "no extra sbatch args: none passed"
 hasnt "$(grep -v '^ *#' "$G")" '[^+]"\${X\[@\]}"' "extra sbatch args expand as \${X[@]+...} (bash < 4.4 + set -u)"
+C=$(cat "$V/calls.log" 2>/dev/null)   # the identity reads rsk cancel / run-watch rely on, each of the script's own jobs
+has "$C" '^squeue -h -u [^ ]* -O JobID:0|,UserName:0|,Name:0|,WorkDir:0|$' "identity read: squeue -u -O JobID,UserName,Name,WorkDir"
+has "$C" '^squeue -h -u [^ ]* --states=all -O JobID:0|,Name:0|,UserName:0|,WorkDir:0|,State:0|$' "identity read: run-watch's / rsk cancel's squeue format"
+has "$C" '^squeue -h -j 10[0-9] -O JobID:0|,UserName:0|$' "identity read: squeue -j (another user's job by id)"
+has "$C" '^sacct -X -n -j 10[0-9] -o JobID,JobName,User,WorkDir -P$' "identity read: sacct -j -o JobID,JobName,User,WorkDir -P"
 
 echo "-- slurm-remote.sh: sbatch fails --"
 touch "$V/sbatch-fails"; : > "$V/calls.log"
