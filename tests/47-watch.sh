@@ -13,7 +13,8 @@
 # WorkDir, older state lines' targets (R4-14), the rsk watch steer and RS_WATCH_PARENT (exit 7 once it is gone: R4-7);
 # round 5: a table keeps every fail-stop that holds it, --release clears only its own (R5-7); a row's target is a plain
 # target name rs_targets lists (R5-8); round 6: a --release not used yet is withdrawn once a fail-stop holds its table later in
-# the same watch (several rounds: a sleep stub runs the world's next step between them).
+# the same watch (several rounds: a sleep stub runs the world's next step between them); round 7: a table holding a NUL byte or a
+# control character other than tab (a CR too) is refused at every read, with rsk's words, as are such --approve words (R7-7).
 set -u
 . "$RS_HOME/tests/lib.sh"
 export WORLD=$T/world RBIN=$T/rbin TBIN=$T/bin; mkdir -p "$WORLD" "$RBIN"
@@ -812,3 +813,42 @@ hasnt "$O" 'RESUBMIT name=b' "  ...no resubmit of b past it (HEAD resubmitted it
 reset; approved "#@ allow preempt=1" "a fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --adopt a=1000 >/dev/null
 q; acct "1000|a|CANCELLED by 1|0:0|$P"; echo 2000 > "$WORLD/nextjid"; O=$(rwm t.tsv --act --every 60 --release a); has "$O" 'RESUBMIT name=a .*release=1' "control: with no stop, the release is used (one resubmit)"
 hasnt "$O" 'release-withdrawn' "  ...and never withdrawn"
+
+echo "-- round 7 (R7-7): a table holding a NUL byte or a control character other than tab is refused (exit 2), as rsk refuses it --"
+M7='a NUL byte or a control character other than tab — a run-watch table is plain text (LF line ends); rsk and run-watch both refuse it'
+reset; q; printf '%b\n' '#@ run-watch v1' '#@ allow launch errors=0 fail\0-stop' "a fx-slurm - $ROW" "b fx-slurm - $ROW" > "$P/t.tsv"; cp "$P/t.tsv" "$T/t7"
+O=$(rw t.tsv --approve "go ahead, stop the group if one fails"); RC=$?   # bash's read drops the NUL (fail-stop), rsk's reader kept it
+[ "$RC" = 2 ] && cmp -s "$P/t.tsv" "$T/t7" && ok "'#@ allow … fail<NUL>-stop': --approve refused (exit 2), nothing written" || bad "NUL in the allow line: --approve (rc=$RC)"
+has "$O" "^ERROR: t.tsv: line 2 holds 0x00, $M7\$" "  ...rsk's words, naming the line and the byte"
+reset; approved "#@ allow launch errors=0 fail-stop" "a fx-slurm - $ROW" "b fx-slurm - $ROW"
+q "1000|a|RUNNING|None|0|$NOW|$P|" "1001|b|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --act --max-active 2 --adopt a=1000 --adopt b=1001 >/dev/null
+printf '%b\n' '#@ run-watch v1' '#@ allow launch errors=0 fail\0-stop' "$(grep '^#@ ok' "$P/t.tsv")" "a fx-slurm - $ROW" "b fx-slurm - $ROW" > "$P/t.tsv"
+q "1001|b|RUNNING|None|0|$NOW|$P|"; acct "1000|a|FAILED|1:0|$P"; : > "$WORLD/ssh.log"; O=$(rw t.tsv --once --act --max-active 2); RC=$?
+[ "$RC" = 2 ] && [ ! -s "$WORLD/ssh.log" ] && [ ! -s "$WORLD/scancel.log" ] && ok "  ...that NUL put into an approved table: --act refused before any ssh, b never cancelled (2ea37db cancelled it)" \
+  || bad "  ...approved table + NUL: rc=$RC scancel=$(cat "$WORLD/scancel.log" 2>/dev/null)"
+reset; q; printf '%b\n' '#@ run-watch v1' '#@ allow launch' "a\0 fx-slurm - $ROW" > "$P/t.tsv"; O=$(rw t.tsv --approve go); RC=$?
+[ "$RC" = 2 ] && [ "$(grep -ac '^#@ ok' "$P/t.tsv")" = 0 ] && has "$O" "line 3 holds 0x00, " "a row 'a<NUL>' (bash: a; rsk: 'a\\x00', missing a deny of a): --approve refused" || bad "NUL in a row name (rc=$RC)"
+O=$(rw t.tsv --once --act --max-active 1); RC=$?; [ "$RC" = 2 ] && [ "$(nsub)" = 0 ] && ok "  ...--act refused, 0 sbatch" || bad "  ...--act (rc=$RC, $(nsub) sbatch)"
+for c in '1 0x0d CRLF line ends@crlf' '3 0x01 a ^A in a comment@# note \001' '3 0x0b a vertical tab in a comment (rsk would split the line there)@# x\013#@ allow launch fail-stop' \
+         '3 0x0c a form feed@# x\014' '3 0x1b an ESC@# \033[2J' '3 0x1c a file separator@# x\034y' '3 0x7f a DEL@# x\177' '2 0x1f a unit separator after the allow words@#@ allow launch \037'; do
+  w=${c%%@*}; l=${c#*@}; reset; q
+  case "$w:$l" in *:crlf) printf '%b\r\n' '#@ run-watch v1' '#@ allow launch' "a fx-slurm - $ROW" ;; 2\ *) printf '%b\n' '#@ run-watch v1' "$l" "a fx-slurm - $ROW" ;;
+    *) printf '%b\n' '#@ run-watch v1' '#@ allow launch' "$l" "a fx-slurm - $ROW" ;; esac > "$P/t.tsv"
+  O=$(rw t.tsv --approve go); RC=$?; w=${w#* }; h=${w%% *}
+  [ "$RC" = 2 ] && [ "$(grep -ac '^#@ ok' "$P/t.tsv")" = 0 ] && has "$O" "line ${c%% *} holds $h, " "${w#* }: refused (exit 2), nothing written" || bad "${w#* } (rc=$RC)"
+done
+reset; q; printf '#@ run-watch v1\n#@ allow launch\na\tfx-slurm -\t%s\n' "$ROW" > "$P/t.tsv"; O=$(rw t.tsv --approve go); RC=$?; O=$(rw t.tsv --once --act --max-active 1)
+[ "$RC" = 0 ] && printf '%s\n' "$O" | grep -q 'LAUNCH name=a ' && ok "a tab is not refused (it separates a row's fields, as before)" || bad "a table with tabs (rc=$RC)"
+reset; q; table "#@ allow launch" "a fx-slurm - $ROW"; cp "$P/t.tsv" "$T/t7"
+for w in 'an ESC@go\033[2J ahead' 'a CR@go\rahead' 'a ^A@go\001'; do O=$(rw t.tsv --approve "$(printf '%b' "${w#*@}")"); RC=$?
+  [ "$RC" = 2 ] && cmp -s "$P/t.tsv" "$T/t7" && ok "--approve words holding ${w%%@*}: refused (exit 2), nothing written" || bad "--approve words holding ${w%%@*} (rc=$RC)"; done
+O=$(rw t.tsv --approve "$(printf 'go\tahead')"); [ "$?" = 0 ] && grep -q '^#@ ok .* "go	ahead"$' "$P/t.tsv" && ok "  ...a tab in them is not" || bad "  ...--approve words with a tab"
+reset; q; table "#@ allow launch" "# 中文注释：先跑 a" "a fx-slurm - $ROW"; O=$(rw t.tsv --approve "可以，跑吧"); RC=$?   # UTF-8: bytes >= 0x80, never control
+[ "$RC" = 0 ] && grep -q '^#@ ok .* "可以，跑吧"$' "$P/t.tsv" && [ "$(rw t.tsv --once >/dev/null; echo $?)" = 4 ] && ok "  ...nor UTF-8 text (the user's words, a comment): approved and read" || bad "  ...UTF-8 words / comment (rc=$RC)"
+reset; approved "#@ allow launch" "a fx-slurm - $ROW"; q; wstep 1 "1000|a|RUNNING|None|0|$NOW|$P|"
+cat >> "$WORLD/step1.sh" <<'EOS'
+printf '# edited\0 during the watch\n' >> t.tsv
+EOS
+O=$(rwm t.tsv --act --max-active 1 --every 60); RC=$?
+has "$O" 'LAUNCH name=a .*job=1000' "a watch: round 1 launches a"; [ "$RC" = 2 ] && has "$O" "^ERROR: t.tsv: line 5 holds 0x00, $M7\$" "  ...a NUL written into the table during the watch: refused at the next read (exit 2)" || bad "  ...mid-watch NUL (rc=$RC)"
+[ ! -d "$P/logs/run-watch/.lock" ] && [ "$(nsub)" = 1 ] && ok "  ...one sbatch, the lock released" || bad "  ...$(nsub) sbatch, lock $(ls -d "$P/logs/run-watch/.lock" 2>/dev/null)"

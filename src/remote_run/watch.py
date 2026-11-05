@@ -30,10 +30,15 @@ run-watch runs with RS_VIA_RSK=1 and RS_WATCH_PARENT=<this rsk's pid>, as its di
 (exit 7, LEASE_ENDED: nothing more submitted or cancelled, its lock released) once that pid is gone or is no longer its
 parent — a run-watch whose rsk watch was killed outright stops at its next check (start, each round, after each read,
 before each submit or cancel ssh), never holding the lock for the rest of --for.
+A table holding a NUL byte or another control character but tab (CR too: a CRLF table) is refused (exit 2), before
+the lease, in every mode, with run-watch's own words — run-watch refuses it too (R7-7): bash `read` drops a NUL that
+Python keeps, so the two would read different rows; rsk reads a table as run-watch does (lines end at LF, words split at
+space / tab).
 Exit: run-watch's, with its 3 (lease over, or --once with rows still moving) as rsk's 7 (LEASE_ENDED); 0 every row
-done, 2 table/conf error, 3 a deny matches a row, 4 the rest waits on the user; 6 another watcher holds the lease or
-the run-watch lock (rsk's check above, or run-watch's own: a live holder here, or any holder on another host — its
-pid, host, start and act printed, nothing run), or grants.json cannot be read. Numeric flags are read as run-watch
+done, 2 table/conf error (also a table that is not plain text), 3 a deny matches a row, 4 the rest waits on the
+user; 6 another watcher holds the lease or the run-watch lock (rsk's check above, or run-watch's own: a live holder
+here, or any holder on another host — its pid, host, start and act printed, nothing run), or grants.json cannot be
+read. Numeric flags are read as run-watch
 reads them: base 10, leading zeros dropped, at most 9 significant digits.
 """
 
@@ -109,22 +114,70 @@ def kind_of(kinds: dict[str, str], tgt: str) -> str:
     return hits.pop() if len(hits) == 1 else ""
 
 
-def table_rows(path: Path, kinds: dict[str, str]) -> tuple[set[str], list[dict]]:
+CTL = re.compile(rb"[\x00-\x08\x0b-\x1f\x7f]")   # a NUL byte or a control character other than tab (LF ends a line)
+
+
+def table_ctl(data: bytes) -> str:
+    """R7-7: '' unless DATA (a table's bytes) holds a NUL byte or a control character other than tab — CR included, so
+    a CRLF table too —; else `line N holds 0xHH` (its first one; N counts the LFs before it, as bin/run-watch's
+    tbl_ctl does). bash `read` drops a NUL that Python keeps, and str.splitlines() ends a line at \\v \\f \\x1c-\\x1e
+    \\x85 that bash does not: such a table would be two different tables to rsk's deny check and to run-watch."""
+    m = CTL.search(data)
+    if not m:
+        return ""
+    line = data.count(b"\n", 0, m.start()) + 1      # (no backslash inside an f-string: python 3.11)
+    return f"line {line} holds 0x{data[m.start()]:02x}"
+
+
+def table_refusal(word: str, data: bytes) -> str:
+    """The refusal for table WORD (as given) when its bytes DATA are not plain text (R7-7) — the same words as
+    bin/run-watch's (rsk and run-watch never read a table differently); '' when they are."""
+    x = table_ctl(data)
+    return (f"{word}: {x}, a NUL byte or a control character other than tab — a run-watch table is plain text (LF "
+            "line ends); rsk and run-watch both refuse it") if x else ""
+
+
+def check_tables(proj: Path, argv: list[str]) -> None:
+    """R7-7: every table of ARGV is plain text (table_refusal()), else RskError(USAGE) — before the lease, the deny
+    check or run-watch, in every mode (a table that cannot be read here: run-watch says why)."""
+    for t in tables(argv):
+        try:
+            data = (proj / t).read_bytes()
+        except OSError:
+            continue
+        why = table_refusal(t, data)
+        if why:
+            raise RskError(why, USAGE)
+
+
+def _words(line: str) -> list[str]:
+    """LINE's words as bash's `set -- $l` splits them under the default IFS (space and tab; a line has no LF): never
+    str.split(), which also splits at Unicode spaces bash keeps inside a word."""
+    return [w for w in re.split(r"[ \t]+", line) if w]
+
+
+def table_rows(path: Path, kinds: dict[str, str], word: str = "") -> tuple[set[str], list[dict]]:
     """(the actions the table's `#@ allow` line lets run-watch take, one plan-like dict per row) — read only to check
     denies (run-watch parses and validates the table itself). Row: `name target done submit-words` (-p -g -G -t …
     before `--`), `#@ allow launch preempt=N errors=N timeout=N fail-stop`. A row's GPU type and partition are left
     unknown (the -G / -p words are kept as asked_gtype / asked_partition, for the message): the target's policy may
-    force a GPU type or rewrite the partition. An unreadable file → no rows (run-watch refuses it)."""
+    force a GPU type or rewrite the partition. Read as bin/run-watch reads it: lines end at LF only, words split at
+    space / tab only; a table holding a NUL byte or another control character but tab → RskError(USAGE) (R7-7: both
+    refuse it; WORD: the table as the command line gave it, for the message). An unreadable file → no rows (run-watch
+    refuses it)."""
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        data = path.read_bytes()
     except OSError:
         return set(), []
+    why = table_refusal(word or str(path), data)
+    if why:
+        raise RskError(why, USAGE)
+    text = data.decode("utf-8", errors="replace")
     acts: set[str] = set()
     rows: list[dict] = []
-    for raw in text.splitlines():
-        line = raw.rstrip("\r")
+    for line in text.split("\n"):
         if line.startswith("#@ allow"):
-            for w in line.split()[2:]:
+            for w in _words(line)[2:]:
                 key, _, val = w.partition("=")
                 if key == "launch":
                     acts.add("launch")
@@ -133,9 +186,9 @@ def table_rows(path: Path, kinds: dict[str, str]) -> tuple[set[str], list[dict]]
                 elif key == "fail-stop":
                     acts.add("cancel")
             continue
-        if not line.strip() or line.lstrip().startswith("#"):
+        if not _words(line) or line.lstrip(" \t").startswith("#"):
             continue
-        f = line.split()
+        f = _words(line)
         if len(f) < 3:
             continue
         name, tgt, words = f[0], f[1], f[3:]
@@ -179,7 +232,7 @@ def deny_hit(led: L.Ledger, proj: Path, argv: list[str], kinds: dict[str, str]) 
         isinstance(r, dict) and r.get("kind") == "deny" and not grants.fail_closed(r)
         and (r.get("scope") or {}).get("jobs"))])
     for t in tables(argv):
-        acts, rows = table_rows(proj / t, kinds)
+        acts, rows = table_rows(proj / t, kinds, t)
         for row in rows:
             row = {**row, "classes_recorded": grants.run_classes(st.runs.get(L.run_id(row["name"])))}
             for a in ROW_ACTIONS:
@@ -303,12 +356,14 @@ def run_watch(led: L.Ledger, argv: list[str], cwd: str, env: dict[str, str], cmd
                 if guard is not None:
                     try:
                         denied = guard()
-                    except RskError as exc:                # grants.json unreadable (exit 6) …
-                        denied, denied_code = f"the ledger's denies cannot be read ({exc})", exc.code
+                    except RskError as exc:                # grants.json unreadable (exit 6), a table no longer plain
+                        denied, denied_code = (str(exc) if exc.code == USAGE else    # text (exit 2, R7-7) …
+                                               f"the ledger's denies cannot be read ({exc})"), exc.code
                     except OSError as exc:                 # … or the ledger itself: never act unchecked
                         denied = f"the ledger's denies cannot be read ({exc})"
                     if denied:
-                        print(f"denied: {denied} — run-watch gets TERM", flush=True)
+                        print(f"{'denied' if denied_code == REFUSED else 'stopped'}: {denied} — run-watch gets TERM",
+                              flush=True)
                         child.terminate()
                         try:
                             rc = child.wait(timeout=30)
@@ -349,6 +404,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
     env["RS_WATCH_PARENT"] = str(os.getpid())    # run-watch stops (exit 7) once this rsk is gone (R4-7): Popen it directly
     for k in ("CLUSTER", "STATION", "TARGET"):
         env.pop(k, None)
+    check_tables(proj, argv)       # R7-7: a table that is not plain text is refused by both, in every mode
     led = L.Ledger(proj)
     guard = None
     if "--act" in argv or "--approve" in argv:

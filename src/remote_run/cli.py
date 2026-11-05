@@ -313,13 +313,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             continue
         report("ok", f"{t.name}: {t.kind} via {t.host}{f', files via {t.xfer_host}' if t.xfer_host else ''} ({t.dir})")
         hosts.update(h for h in (t.host, t.xfer_host) if h)
-    out("== grants ==")             # R6-9: a stored record naming a target / partition the harness does not know
-    stale = grants.stale_records(tlist)
+    out("== grants ==")             # R6-9 / R7-2: a stored record naming a target the harness does not know (a partition
+    stale = grants.stale_records(tlist)    # the profile's T_PARTITIONS omits is a NOTE in rsk grant list / status only)
     for line in stale:
         report("WARN", line)
     if not stale:
-        report("ok", f"no grant or deny in the ledgers under {paths.state_dir() / 'projects'} names a target or "
-                     "partition the harness does not know")
+        report("ok", f"no grant or deny in the ledgers under {paths.state_dir() / 'projects'} names a target the "
+                     "harness does not know")
     out("== local tools ==")
     for tool in ("bash", "ssh", "rsync", "git"):
         report("ok" if shutil.which(tool) else "FAIL", f"{tool}: {shutil.which(tool) or 'not found'}")

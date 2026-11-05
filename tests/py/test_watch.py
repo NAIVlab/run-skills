@@ -362,5 +362,87 @@ class Denies(ScratchHome):
         self.assertIsNone(Wt.lock_holder(self.proj)["alive"])
 
 
+
+class Round7(ScratchHome):
+    """R7-7 (NF6-table-nul): rsk and run-watch never read a table differently — a table holding a NUL byte or another
+    control character but tab is refused by both (exit 2, the same words), and rsk splits lines and words as bash."""
+
+    TABLE, guard = Denies.TABLE, Denies.guard
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.proj = self.home / "proj"
+        self.proj.mkdir()
+        (self.proj / ".hpc.conf").write_text("REMOTE_DIR=/r\n")
+        (self.proj / "t.tsv").write_text(self.TABLE)
+        self.led = L.Ledger(self.proj)
+        self.kinds = {"fx-slurm": "slurm"}
+
+    WORDS = ("a NUL byte or a control character other than tab — a run-watch table is plain text (LF line ends); rsk "
+             "and run-watch both refuse it")
+
+    def test_r7_7_a_nul_in_the_allow_line_or_a_row_name_is_refused_before_anything_starts(self):
+        """bash `read` drops a NUL that Python kept: `fail\\0-stop` was fail-stop to run-watch (it cancelled job 1001)
+        and no fail-stop to rsk (R6-7 then dropped the user's "do not cancel job 1001"); a row `a\\0` was `a` to
+        run-watch and never matched a `--name a` deny. Now exit 2 in every mode, nothing run, no lease."""
+        G.add(self.led, G.new_deny("do not cancel job 1001, whatever happens to the group", {"jobs": ["1001"]},
+                                   ["cancel"]))
+        (self.proj / "t.tsv").write_bytes(b"#@ run-watch v1\n#@ allow launch errors=0 fail\x00-stop\n"
+                                          b"a fx-slurm - -p gpu -g 1 -- python a.py\n")
+        with self.assertRaises(RskError) as c:
+            self.guard()()
+        self.assertEqual(c.exception.code, USAGE)
+        self.assertEqual(str(c.exception), f"t.tsv: line 2 holds 0x00, {self.WORDS}")
+        G.add(self.led, G.new_deny("never launch a", {"names": ["a"]}, ["launch"]))
+        (self.proj / "t.tsv").write_bytes(b"#@ run-watch v1\n#@ allow launch\na\x00 fx-slurm - -p gpu -- python a.py\n")
+        ran = []
+        with mock.patch.object(Wt, "run_watch", lambda *a, **k: ran.append(a) or 0):
+            for argv in (["--once", "--act"], ["--approve", "go"], ["--once"]):
+                rc, text = run("watch", "-C", str(self.proj), "t.tsv", *argv)
+                self.assertEqual(rc, USAGE, (argv, text))
+                self.assertIn(f"rsk: t.tsv: line 3 holds 0x00, {self.WORDS}", text)
+        self.assertEqual(ran, [])                                     # run-watch never started
+        self.assertIsNone(self.led.lease().data)
+
+    def test_r7_7_a_table_that_gets_a_nul_while_run_watch_runs_stops_it(self):
+        """run-watch re-reads its tables every round (and then refuses this one); rsk's refresh check reads them too:
+        a NUL written mid-watch stops run-watch (TERM) with exit 2 and the same words, the lease released."""
+        def later():
+            time.sleep(0.4)
+            (self.proj / "t.tsv").write_bytes(self.TABLE.encode().replace(b"preempt=2", b"preempt=2 fail\x00-stop"))
+        t = threading.Thread(target=later)
+        t.start()
+        try:
+            with mock.patch.object(Wt, "REFRESH_S", 0.2), self.assertRaises(RskError) as c:
+                Wt.run_watch(self.led, ["t.tsv", "--act"], str(self.proj), dict(os.environ),
+                             ["bash", "-c", "trap 'exit 0' TERM; sleep 20 & wait"], guard=self.guard())
+        finally:
+            t.join()
+        self.assertEqual(c.exception.code, USAGE)
+        self.assertIn(f"run-watch was stopped (TERM) — t.tsv: line 2 holds 0x00, {self.WORDS}", str(c.exception))
+        self.assertIsNone(self.led.lease().data)
+
+    def test_r7_7_every_control_character_but_tab_is_refused_cr_included(self):
+        for ch, line in ((b"\r", 1), (b"\x0b", 3), (b"\x0c", 3), (b"\x1c", 3), (b"\x1e", 3), (b"\x7f", 3), (b"\x01", 3)):
+            data = (b"#@ run-watch v1" + (b"\r" if line == 1 else b"") + b"\n#@ allow launch\n"
+                    + (ch if line == 3 else b"") + b"a fx-slurm - -p gpu -- x\n")
+            self.assertEqual(Wt.table_ctl(data), f"line {line} holds 0x{ch[0]:02x}", ch)
+            (self.proj / "t.tsv").write_bytes(data)
+            with self.assertRaises(RskError):
+                Wt.table_rows(self.proj / "t.tsv", self.kinds)
+        ok = b"#@ run-watch v1\n#@ allow\tlaunch\ta\x85b \xc2\xa0\n\ta\tfx-slurm\t-\t-p gpu -- x"   # tab, no final LF
+        self.assertEqual(Wt.table_ctl(ok), "")
+        self.assertEqual(Wt.table_refusal("t.tsv", ok), "")
+
+    def test_r7_7_lines_end_at_lf_only_and_words_split_at_space_and_tab_only(self):
+        """str.splitlines() ended a line at \\x85 / \\u2028 (bash does not) and str.split() split a word at a Unicode
+        space (bash's IFS does not): rsk read other rows than run-watch."""
+        (self.proj / "t.tsv").write_text("#@ run-watch v1\n#@ allow launch\u00a0fail-stop\n"
+                                         "# a note\u0085b fx-slurm - -p gpu -- python b.py\n"
+                                         "\ta\tfx-slurm - -p gpu -g 2 -- python a.py\n", encoding="utf-8")
+        acts, rows = Wt.table_rows(self.proj / "t.tsv", self.kinds)
+        self.assertEqual(acts, set())                     # `launch\u00a0fail-stop` is one word (run-watch refuses it)
+        self.assertEqual([(r["name"], r["target"], r.get("gres")) for r in rows], [("a", "fx-slurm", "gpu:2")])
+
 if __name__ == "__main__":
     unittest.main()

@@ -20,8 +20,8 @@ submit — every step recorded in the project's ledger (ledger.py) and checked a
    `RS_VIA_RSK=1 bin/run-launch --rs-attempt <nonce> --rs-mode plan …` from the harness (cwd = the project, TARGET
    set; the block launch.sh prints is its own api= line). A deploy that does not speak api=3, an older parser's exit 2
    (`unknown arg …`), or a block that lacks a key this rsk needs (grants.NEEDED: env_hook venv_dir uv_sync_args,
-   warnings_avail warnings_id; slurm conf_extra flags; nohup busy_ok info_run_gpu info_launchers) → exit 6 `needs:
-   sync`. A plan never submits: its refusal (policy 3, duplicate 6, usage 2, too few free GPUs 8, a nohup env that
+   warnings_avail warnings_id; slurm conf_extra flags; nohup busy_ok launch_cfg info_run_gpu info_launchers) → exit
+   6 `needs: sync`. A plan never submits: its refusal (policy 3, duplicate 6, usage 2, too few free GPUs 8, a nohup env that
    would fail the gate 1) is the exit code, with the target's lines (a nohup plan creates nothing outside .rs/).
 3. The plan and its card are stored (plans/<id>.json, never rewritten). Its action is derived, never a flag: a run that
    already has attempts that may have run (any target; not this plan's own) in the ledger, or in the target's journal
@@ -637,7 +637,8 @@ def render_card(rec: dict) -> str:
                 ("chain", "singleton (--rs-chain)" if b.get("chain") == "1" else "no")]
     else:
         rows = [("name", b.get("name", "")), ("gpus", b.get("gpus_req", "")), ("exclude", b.get("exclude", "")),
-                ("nice", b.get("nice", "")), ("busy ok", _dec(b.get("busy_ok", ""))),
+                ("nice", b.get("nice", "")), ("launch cfg", _cfgs(b.get("launch_cfg", ""))),
+                ("busy ok", _dec(b.get("busy_ok", ""))),
                 ("payload", _dec(b.get("payload", ""))),
                 ("env", " ".join(x for x in (_dec(b.get("env_kind", "")), _dec(b.get("env_name", ""))) if x))]
     rows += [("env hook", _hook(b.get("env_hook", ""))), ("venv dir", _dec(b.get("venv_dir", ""))),
@@ -692,6 +693,24 @@ def _hook(v: object) -> str:
     d = _dec(v)
     path, _, h = d.rpartition(":")
     return f"{path} (sha256 {h[:12]})" if path and len(h) == 64 else d
+
+
+_CFG_SPLIT = re.compile(r"(?:(?<=:[0-9a-f]{64})|(?<=:unreadable)),")
+
+
+def _cfgs(v: object) -> str:
+    """launch_cfg (nohup, bound — R7-5) = '<path>:<sha256>[,…]': every launcher config / hostfile launch.sh read for its
+    launcher checks (accelerate's config, deepspeed's /job/hostfile), sorted; '<path>:unreadable' for one it could not
+    read; '' = none. Shown as '<path> (sha256 <12 hex>)' each; anything else as printed. Bound: a file changed after the
+    card is the target's exit 6 (`changed: launch_cfg`)."""
+    d = _dec(v)
+    shown = []
+    for item in (_CFG_SPLIT.split(d) if d else []):
+        path, _, h = item.rpartition(":")
+        shown.append(f"{path} (sha256 {h[:12]})" if path and grants.HEX64.fullmatch(h) else
+                     f"{path} (UNREADABLE on the box: what the launcher reads there is unknown)" if path and
+                     h == "unreadable" else item)
+    return " · ".join(shown)
 
 
 def make_plan(led: L.Ledger, src: Path, proj: Path, place: harness.Place, req: Request, deadline: float) -> dict:
@@ -913,9 +932,13 @@ def drift(rec: dict, text: str) -> str:
     old = rec.get("block") or {}
     keys = ("target", *(grants.SLURM_BOUND if rec.get("kind") == "slurm" else grants.NOHUP_BOUND))
 
-    def show(v: object) -> str:
-        return "(absent)" if v is None else (_words(v) or "none")[:80]
-    diffs = [f"{k}: {show(old.get(k))} → {show(now.get(k))}" for k in keys if old.get(k) != now.get(k)]
+    def show(k: str, v: object) -> str:
+        if v is None:
+            return "(absent)"
+        if k in ("launch_cfg", "env_hook"):   # path (sha256 12 hex) each: the change is in the digest, never cut off
+            return ({"launch_cfg": _cfgs, "env_hook": _hook}[k](v) or "none")[:400]
+        return (_words(v) or "none")[:80]
+    diffs = [f"{k}: {show(k, old.get(k))} → {show(k, now.get(k))}" for k in keys if old.get(k) != now.get(k)]
     if diffs:
         return "; ".join(diffs)
     if str(now.get("warnings_id", "")) != str(old.get("warnings_id", "")):

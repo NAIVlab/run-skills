@@ -10,7 +10,8 @@
 # nohup: busy GPU never grant-covered, approved card -> --gpu-busy-ok, cancel TERM/KILL; the watch lease. The P3 review
 # findings (H1 H2 H3 M1 M3 M4 M5 M6 M7 L2 L3 L4 L5), the round-3 decisions (D1 D3 D5 D6 D8 D9 D10; C-stale-API,
 # F-unknown, grants#1/3/4, H1-owner/msg, G-space), the round-4 ones (R4-1 R4-2 R4-4 R4-6 R4-8 R4-15) and the round-5 ones
-# (R5-1 R5-4 R5-5 R5-8 R5-9) and the round-6 ones (R6-1 R6-4 R6-5 R6-7 R6-8 R6-9), each end to end.
+# (R5-1 R5-4 R5-5 R5-8 R5-9), the round-6 ones (R6-1 R6-4 R6-5 R6-7 R6-8 R6-9) and the round-7 ones (R7-1 R7-2 R7-5 R7-6
+# R7-7), each end to end.
 # Run by selftest.sh with RS_HOME set:  bash tests/62-rsk-launch.sh
 set -u
 . "$RS_HOME/tests/lib.sh"
@@ -525,15 +526,20 @@ sed 's/T_HOST=fx;/T_HOST=fx2;/' "$U6/targets/fx-slurm/profile.sh" > "$U6/targets
     || { bad "R6-1 unnamed (rc=$RC)"; printf '%s\n' "$O" | grep -E 'covered|denied|submitted|prior' | sed 's/^/    | /'; } )
 cp "$T/r.conf" "$R/.hpc.conf"
 
-echo "-- round 6 R6-5: a partition the profile does not list is refused; R6-9: grant list flags a stored deny naming an unknown target; R6-7 --"
+echo "-- round 7 R7-2: a partition the profile does not list is recorded with a NOTE (T_PARTITIONS: display only); R6-9 + R7-6: grant list and status flag a stored deny naming an unknown target; R6-7 --"
 R6=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\n' "$R6" > "$R6/.hpc.conf"; CWD=$R6
-O=$(rsk grant deny --quote "never use the forbidden queue" -T fx-slurm --partition forbiden); RC=$?
-[ "$RC" = 2 ] && has "$O" "unknown partition 'forbiden'" "R6-5: a misspelt --partition -> exit 2 (the deny would match nothing)" || bad "R6-5 (rc=$RC)"
-has "$O" 'fx-slurm list gpu, forbidden (T_PARTITIONS)' "...the profile's list is named"; hasnt "$(rsk grant list)" 'forbidden queue' "...nothing recorded"
+O=$(rsk grant deny --quote "never use the forbidden queue" -T fx-slurm --partition forbiden); RC=$?; DF=$(printf '%s\n' "$O" | sed -n 's/^\(d-[^ ]*\)  deny .*/\1/p')
+[ "$RC" = 0 ] && has "$O" "NOTE: partition forbiden is not in the profile's display list (T_PARTITIONS of fx-slurm: gpu, forbidden) — recorded as given" "R7-2: a partition the profile does not list -> recorded (exit 0), a NOTE says so — never refused" || bad "R7-2 (rc=$RC)"
+hasnt "$O" 'unknown partition' "...never 'unknown partition'"; has "$(rsk grant list)" 'never use the forbidden queue' "...recorded"
+has "$(rsk grant list)" "NOTE: partition forbiden is not in the profile's display list" "...grant list repeats the NOTE"
+hasnt "$(rsk grant list)" 'WARNING: .*partition' "...never 'never matches' for a partition (policy.sh decides what exists)"
 O=$(rsk grant deny --quote "never the gt-zz GPUs" -T fx-slurm --gpu-type gt-zz --action cancel_own); RC=$?
 [ "$RC" = 0 ] && has "$O" 'NOTE: GPU type gt-zz is not checked' "R6-5: a GPU type is not checked (no list), echoed" || bad "R6-5 gpu type (rc=$RC)"
 pyl 'G.add(L.Ledger(sys.argv[2]), G.new_deny("never launch anything on fx-slurm again", {"targets": ["fx-slrum"]}))' "$R6"
 has "$(rsk grant list)" 'WARNING: d-[^ ]* (deny): target fx-slrum is not one the harness knows .* never matches .* fix or revoke' "R6-9: grant list flags a stored deny naming an unknown target"
+O=$(rsk status); has "$O" 'WARNING: d-[^ ]* (deny): target fx-slrum is not one the harness knows .* never matches .* fix or revoke' "R7-6: rsk status (the skill's first read) shows the same WARNING"
+has "$O" "NOTE: partition forbiden is not in the profile's display list" "R7-6: ...and the partition NOTE"
+rsk grant revoke "$DF" --quote "the forbidden queue is fine again" >/dev/null || bad "revoke $DF"   # (a partition deny matches every Slurm row of rsk watch: R6-7 below)
 rsk grant deny --quote "do not cancel job 555 (the other project's eval)" --job 555 --action cancel >/dev/null
 printf '#@ run-watch v1\n#@ allow launch\nw fx-slurm - -p gpu -g 1 -t 1:00:00 -- python w.py\n' > "$R6/w.tsv"
 O=$(rsk watch w.tsv --approve "run w under the watch"); RC=$?
@@ -541,6 +547,60 @@ O=$(rsk watch w.tsv --approve "run w under the watch"); RC=$?
 printf '#@ run-watch v1\n#@ allow launch fail-stop\nf fx-slurm - -p gpu -g 1 -t 1:00:00 -- python f.py\n' > "$R6/f.tsv"; cp "$R6/f.tsv" "$T/f.before"
 O=$(rsk watch f.tsv --approve "run f, stop the rest if one fails"); RC=$?
 [ "$RC" = 3 ] && cmp -s "$R6/f.tsv" "$T/f.before" && has "$O" 'do not cancel job 555' "R6-7: under fail-stop it binds (the row's job is not known here): exit 3, no '#@ ok'" || bad "R6-7 fail-stop (rc=$RC)"
+CWD=$P
+
+echo "-- round 7 R7-1: a deny written with an attempt's job name (<run>--aNN, as squeue shows it) stands for the whole run --"
+R7=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\n' "$R7" > "$R7/.hpc.conf"; CWD=$R7
+rsk grant add --quote "run the smokes on fx and auto-resume them after a preemption" -T fx-slurm --action launch,relaunch --max-live none --max-launches none --expires 2099-12-31 >/dev/null
+O=$(rsk launch -T fx-slurm -n exp--smoke--q -g 1 -- python t.py); J1=$(jid "$O"); jobstate "$J1" PREEMPTED; rsk status >/dev/null
+O=$(rsk launch --relaunch exp--smoke--q); J2=$(jid "$O"); jobstate "$J2" PREEMPTED; rsk status >/dev/null
+[ -n "$J1" ] && [ -n "$J2" ] && grep -q -- '--job-name=exp--smoke--q--a02' "$T/sbatch.log" && ok "R7-1 setup: a01 and a02 (job name exp--smoke--q--a02) preempted" || bad "R7-1 setup ($J1 $J2)"
+O=$(rsk grant deny --quote "do not relaunch exp--smoke--q--a02, preemptions keep killing it" --action relaunch --name exp--smoke--q--a02); RC=$?
+[ "$RC" = 0 ] && has "$O" "NOTE: name exp--smoke--q--a02 is an attempt's name (--aNN): the deny stands for run exp--smoke--q" "R7-1: recorded as given; the NOTE says the attempt's name stands for its run" || bad "R7-1 deny (rc=$RC)"
+: > "$T/sbatch.log"; O=$(rsk launch --relaunch exp--smoke--q); RC=$?
+[ "$RC" = 3 ] && has "$O" 'denied by d-.*preemptions keep killing it' "R7-1: the relaunch grant no longer resumes the run the user stopped by its attempt's name (exit 3)" || { bad "R7-1 relaunch (rc=$RC)"; printf '%s\n' "$O" | grep -E 'covered|denied|submitted' | sed 's/^/    | /'; }
+nosub "...nothing submitted (was: a03 under the auto-resume grant)"
+printf '#@ run-watch v1\n#@ allow launch preempt=2\nexp--smoke--q fx-slurm - -p gpu -g 1 -- python t.py\n' > "$R7/q.tsv"; cp "$R7/q.tsv" "$T/q.before"
+O=$(rsk watch q.tsv --approve "watch q, resume it if preempted"); RC=$?
+[ "$RC" = 3 ] && cmp -s "$R7/q.tsv" "$T/q.before" && has "$O" 'preemptions keep killing it' "R7-1: ...and a run-watch row of that run (named by its run id): exit 3, no '#@ ok'" || bad "R7-1 watch row (rc=$RC)"
+
+echo "-- round 7 R7-2: T_PARTITIONS is a display list — a deny of a partition policy.sh accepts but the profile omits is recorded and enforced; commas separate --"
+U7=$T/user-r72; cp -R "$RS_USER_DIR" "$U7"; mkdir -p "$U7/targets/fx-dbg"
+sed "s/T_PARTITIONS='gpu forbidden'/T_PARTITIONS='gpu'/" "$U7/targets/fx-slurm/profile.sh" > "$U7/targets/fx-dbg/profile.sh"
+printf '%s\n' 't_partition() { case "$1" in gpu|debug) P_GPUS=1-4 P_CPU_PER_GPU=8 P_MEM_PER_GPU=40 ;; *) return 1 ;; esac; }' 't_policy() { return 0; }' > "$U7/targets/fx-dbg/policy.sh"
+( export RS_USER_DIR=$U7
+  D7=$(mk_proj fx-dbg 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\n' "$D7" > "$D7/.hpc.conf"; CWD=$D7
+  rsk grant add --quote "run the sweep on fx-dbg" -T fx-dbg --action launch --max-live 4 --max-launches 10 --expires 2099-12-31 >/dev/null
+  O=$(rsk grant deny --quote "never use the debug partition, it is for the admins" -T fx-dbg --partition debug); RC=$?
+  [ "$RC" = 0 ] && has "$O" "NOTE: partition debug is not in the profile's display list (T_PARTITIONS of fx-dbg: gpu)" "R7-2: the policy's debug partition, not in T_PARTITIONS: the deny is recorded (was: exit 2, lost)" || bad "R7-2 authority deny (rc=$RC)"
+  : > "$T/sbatch.log"; O=$(rsk launch -T fx-dbg -n s1 -p debug -g 1 -t 30 -- python train.py); RC=$?
+  [ "$RC" = 3 ] && has "$O" 'never use the debug partition' "R7-2: -p debug under the standing grant -> the deny wins (exit 3)" || { bad "R7-2 enforced (rc=$RC)"; printf '%s\n' "$O" | grep -E 'covered|denied|submitted|partition' | sed 's/^/    | /'; }
+  has "$O" '^  partition  debug$' "...(the target's policy accepts debug: the plan names it)"; nosub "...nothing submitted"
+  hasnt "$(rsk grant list)" 'WARNING' "...grant list never says 'never matches' about it"
+  O=$(rsk launch -T fx-dbg -n s2 -p gpu -g 1 -t 30 -- python train.py); RC=$?
+  [ "$RC" = 0 ] && has "$O" '^covered by g-' "...the grant still covers the other partition" || bad "R7-2 gpu (rc=$RC)"
+  sed "s/T_PARTITIONS='gpu'/T_PARTITIONS='gpu,debug'/" "$U7/targets/fx-dbg/profile.sh" > "$T/p.x" && mv "$T/p.x" "$U7/targets/fx-dbg/profile.sh"
+  O=$(rsk grant deny --quote "never debug on fx-dbg" -T fx-dbg --partition debug); RC=$?
+  [ "$RC" = 0 ] && hasnt "$O" 'NOTE' "R7-2: T_PARTITIONS='gpu,debug' is two partitions (commas separate, as run-avail's sinfo -p list): no NOTE" || bad "R7-2 comma (rc=$RC)"
+  hasnt "$(rsk grant list)" 'NOTE: partition' "...nor in grant list" )
+
+echo "-- round 7 R7-7: a table with a NUL byte (or another control character but tab) is refused by rsk and run-watch alike --"
+CWD=$R7
+rsk grant deny --quote "do not cancel job 1001, whatever happens to the group" --job 1001 --action cancel -T fx-slurm >/dev/null
+printf '#@ run-watch v1\n#@ allow launch errors=0 fail\0-stop\nn1 fx-slurm - -p gpu -g 1 -- python a.py\n' > "$R7/n.tsv"; cp "$R7/n.tsv" "$T/n.before"
+for a in "--approve go" "--once --act" "--once"; do
+  O=$(rsk watch n.tsv $a); RC=$?
+  [ "$RC" = 2 ] && has "$O" '^rsk: n.tsv: line 2 holds 0x00, a NUL byte or a control character other than tab — a run-watch table is plain text (LF line ends); rsk and run-watch both refuse it$' "R7-7: rsk watch n.tsv $a -> exit 2 (was: fail-stop unseen, the job deny dropped)" || bad "R7-7 $a (rc=$RC)"
+done
+cmp -s "$R7/n.tsv" "$T/n.before" && ok "...the table untouched (no '#@ ok')" || bad "...the table untouched"
+[ -z "$(pyl 'print(L.Ledger(sys.argv[2]).lease().data or "")' "$R7")" ] && ok "...no lease taken" || bad "...no lease taken"
+W1=$(cd "$R7" && PATH="$T/bin:$PATH" bash "$RS_HOME/bin/run-watch" n.tsv --once 2>&1); RC=$?
+W1=$(printf '%s\n' "$W1" | grep -o 'n\.tsv: line 2 holds 0x00, .*both refuse it' | head -n 1)
+W2=$(rsk watch n.tsv --once | grep -o 'n\.tsv: line 2 holds 0x00, .*both refuse it' | head -n 1)
+[ "$RC" = 2 ] && [ -n "$W1" ] && [ "$W1" = "$W2" ] && ok "R7-7: bin/run-watch refuses it too (exit 2), in the same words" || bad "R7-7 run-watch (rc=$RC: '$W1')"
+printf '#@ run-watch v1\r\n#@ allow launch\r\nc1 fx-slurm - -p gpu -g 1 -- python a.py\r\n' > "$R7/c.tsv"
+O=$(rsk watch c.tsv --once); RC=$?
+[ "$RC" = 2 ] && has "$O" 'c.tsv: line 1 holds 0x0d' "R7-7: a CRLF table too (a CR is a control character)" || bad "R7-7 CRLF (rc=$RC)"
 CWD=$P
 
 echo "-- watch: the lease (one watcher per project) --"
@@ -593,6 +653,19 @@ O=$(rsk launch --plan "$PS1" --approve "yes, share GPU 1 with my eval job"); RC=
 [ "$RC" = 6 ] && has "$O" "busy_ok: 1:GPU-aaaa0000-0001:$ME → 1:GPU-aaaa0000-0001:${U1:-?}" "H1-owner/msg: another occupant -> exit 6, the refusal names the change" || { bad "H1-owner (rc=$RC)"; printf '%s\n' "$O" | tail -4 | sed 's/^/    | /'; }
 hasnt "$O" 'the conf changed since' "...never blamed on the conf"; ! ls "$W"/logs/share1-* >/dev/null 2>&1 && ok "...nothing launched" || bad "...launched beside another user's process"
 rm -f "$T/apps" "$T/apps.next"
+
+echo "-- round 7 R7-5: the launcher config launch.sh read is bound (launch_cfg): a change after the card -> exit 6, named --"
+W8=$(mk_proj ws-box 'x'); ln -s "$W8" "$H/projects/w8"; printf 'WS_REMOTE_DIR=projects/w8\nENV_KIND=none\n' > "$W8/.ws.conf"; CWD=$W8
+rm -f "$T/apps" "$T/apps.next"; printf 'distributed_type: MULTI_GPU\nnum_processes: 1\ngpu_ids: 0\n' > "$W8/ddp.yaml"
+O=$(rsk launch -T ws-box -g 1 -N ad -- accelerate launch --config_file ddp.yaml train.py); RC=$?; PAD=$(pid_of "$O")
+[ "$RC" = 4 ] && has "$O" '^  launch cfg .*ddp\.yaml (sha256 [0-9a-f]\{12\})$' "R7-5: the card shows the config launch.sh read, with its digest" || { bad "R7-5 card (rc=$RC)"; printf '%s\n' "$O" | grep -E 'launch cfg|WARNING|lacks|needs' | sed 's/^/    | /'; }
+printf '%s\n' "$O" | grep -A1 '^  launch cfg' | tail -n 1 | grep -q '^  busy ok' && ok "...shown in the bound order (right before busy ok)" || bad "...launch cfg before busy ok"
+printf 'distributed_type: MULTI_GPU\nnum_processes: 1\ngpu_ids: 1\n' > "$W8/ddp.yaml"      # edited after the card
+O=$(rsk launch --plan "$PAD" --approve "ok, accelerate on GPU 0 is fine"); RC=$?
+[ "$RC" = 6 ] && has "$O" 'launch_cfg: .*ddp\.yaml (sha256 [0-9a-f]\{12\}) → .*ddp\.yaml (sha256 [0-9a-f]\{12\})' "R7-5: the config changed since the card -> exit 6, rsk names launch_cfg (was: launched onto gpu_ids 1)" || { bad "R7-5 drift (rc=$RC)"; printf '%s\n' "$O" | tail -6 | sed 's/^/    | /'; }
+has "$O" 'changed: launch_cfg' "...the box says changed: launch_cfg"
+! ls "$W8"/logs/ad-* >/dev/null 2>&1 && ok "...nothing launched" || bad "...launched with a config the user never saw"
+has "$(att ad a01)" '^NOT_SUBMITTED' "...ledger: NOT_SUBMITTED"
 
 echo "-- F-unknown (nohup) + D10: run-launch's GPU-table read fails before its launch ssh -> NOT_SUBMITTED; --plan retries --"
 W5=$(mk_proj ws-box 'x'); ln -s "$W5" "$H/projects/w5"; printf 'WS_REMOTE_DIR=projects/w5\nENV_KIND=none\n' > "$W5/.ws.conf"; CWD=$W5

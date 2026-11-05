@@ -3,7 +3,8 @@
 # under stub sbatch/scontrol/squeue/sacct/scancel and an instant sleep: a scratch dir given relative to the remote home
 # reaches sbatch as an absolute --chdir and job.sh writes absolute paths; a failed sbatch stops the gate (exit 1). And
 # tests/vgate/launchers.sh on fake deepspeed / accelerate modules, tests/vgate/containers.sh on stub docker / podman /
-# apptainer / singularity (their plumbing; the facts come from installed copies on a box, with the user's OK).
+# apptainer / singularity (their plumbing; the facts come from installed copies on a box, with the user's OK), and
+# tests/vgate/envdrop.sh (R7-3) on this machine's own tmux / setpriv when installed (those facts, for real) and stubs.
 set -u
 . "$RS_HOME/tests/lib.sh"
 G=$RS_HOME/tests/vgate/slurm-remote.sh; V=$T/vg; mkdir -p "$V/bin" "$V/home"
@@ -107,11 +108,13 @@ else echo "  SKIP: no python3 here: launchers.sh's plumbing not exercised"; fi
 
 echo "-- containers.sh (R6-2's container facts, read on a box): its plumbing, on stub docker / podman / apptainer / singularity --"
 CG=$RS_HOME/tests/vgate/containers.sh; CB=$T/cbin; mkdir -p "$CB"
-for rt in docker podman; do   # a docker-like stub: `run` passes in no host environment, only -e NAME[=VALUE]; image bad = exit 125
-  printf '%s\n' '#!/usr/bin/env bash' 'case "$1" in' "  --version) echo '$rt version 0.0-stub' ;;" '  info) echo nvidia ;;' \
-    '  run) shift; [ "$1" = --help ] && { echo "      --gpus gpu-request   GPU devices to add"; exit 0; }; e=()' \
-    '    while [ $# -gt 0 ]; do case "$1" in --rm) shift ;; -e) case "$2" in *=*) e+=("$2") ;; *) [ -z "${!2+x}" ] || e+=("$2=${!2}") ;; esac; shift 2 ;; *) break ;; esac; done' \
-    '    [ "$1" != bad ] || exit 125; shift; exec env -i ${e[@]+"${e[@]}"} "$@" ;;' 'esac' > "$CB/$rt"; done
+for rt in docker podman; do   # a docker-like stub: `run` passes in no host environment, only -e NAME[=VALUE]; image bad = exit 125;
+  # run -d --name N records a container N (nothing runs); `exec N CMD` runs CMD with no host environment either; rm -f N
+  printf '%s\n' '#!/usr/bin/env bash' "C=$CB/ctr.$rt" 'case "$1" in' "  --version) echo '$rt version 0.0-stub' ;;" '  info) echo nvidia ;;' \
+    '  run) shift; [ "$1" = --help ] && { echo "      --gpus gpu-request   GPU devices to add"; exit 0; }; e=(); d=""; n=""' \
+    '    while [ $# -gt 0 ]; do case "$1" in --rm) shift ;; -d) d=1; shift ;; --name) n=$2; shift 2 ;; -e) case "$2" in *=*) e+=("$2") ;; *) [ -z "${!2+x}" ] || e+=("$2=${!2}") ;; esac; shift 2 ;; *) break ;; esac; done' \
+    '    [ "$1" != bad ] || exit 125; [ -z "$d" ] || { : > "$C.$n"; echo "id-$n"; exit 0; }; shift; exec env -i ${e[@]+"${e[@]}"} "$@" ;;' \
+    '  exec) shift; [ -f "$C.$1" ] || exit 1; shift; exec env -i "$@" ;;' '  rm) shift; [ "$1" != -f ] || shift; rm -f "$C.$1" ;;' 'esac' > "$CB/$rt"; done
 for rt in apptainer singularity; do   # an apptainer-like stub: the host environment passes in unless --cleanenv / --containall;
   P=APPTAINERENV_; [ "$rt" = apptainer ] || P=SINGULARITYENV_   # <PREFIX>CUDA_VISIBLE_DEVICES sets it inside either way
   printf '%s\n' '#!/usr/bin/env bash' 'case "$1" in' "  --version) echo '$rt version 0.0-stub' ;;" \
@@ -120,14 +123,36 @@ for rt in apptainer singularity; do   # an apptainer-like stub: the host environ
     'esac' > "$CB/$rt"; done
 chmod +x "$CB"/*
 O=$(PATH="$CB:$PATH" bash "$CG" img img.sif 2>&1); RC=$?
-[ "$RC" = 0 ] && has "$O" '^docker_version=docker_version_0.0-stub docker_gpus_flag=yes docker_env=unset (want unset) docker_env_e=5 (want 5) docker_default_runtime=nvidia$' \
-  "containers.sh: the docker line (--gpus in run --help, the environment inside without and with a bare -e, DefaultRuntime)" || { bad "containers.sh on stubs (rc=$RC)"; printf '%s\n' "$O" | head -5 | sed 's/^/    | /'; }
-has "$O" '^podman_version=podman_version_0.0-stub podman_gpus_flag=yes podman_env=unset (want unset) podman_env_e=5 (want 5)$' "containers.sh: the podman line"
+[ "$RC" = 0 ] && has "$O" '^docker_version=docker_version_0.0-stub docker_gpus_flag=yes docker_env=unset (want unset) docker_env_e=5 (want 5) docker_exec_env=unset (want unset) docker_default_runtime=nvidia$' \
+  "containers.sh: the docker line (--gpus in run --help, the environment inside without and with a bare -e, exec into a detached one (R7-3), DefaultRuntime)" || { bad "containers.sh on stubs (rc=$RC)"; printf '%s\n' "$O" | head -5 | sed 's/^/    | /'; }
+has "$O" '^podman_version=podman_version_0.0-stub podman_gpus_flag=yes podman_env=unset (want unset) podman_env_e=5 (want 5) podman_exec_env=unset (want unset)$' "containers.sh: the podman line"
+[ -z "$(ls "$CB"/ctr.* 2>/dev/null)" ] && ok "...the detached container it exec'd into is removed (rm -f)" || bad "...the detached container is left ($(ls "$CB"/ctr.* 2>/dev/null))"
 has "$O" '^apptainer_version=apptainer_version_0.0-stub apptainer_env=5 (want 5) apptainer_cleanenv=unset (want unset) apptainer_containall=unset (want unset) apptainer_prefix=7 (want 7)$' \
   "containers.sh: the apptainer line (passed in; --cleanenv / --containall drop it; APPTAINERENV_ sets it inside)"
 has "$O" '^singularity_version=singularity_version_0.0-stub singularity_env=5 .* singularity_prefix=7 (want 7)$' "containers.sh: the singularity line (SINGULARITYENV_)"
 O=$(PATH="$CB:$PATH" bash "$CG" bad - 2>&1); has "$O" '^docker_.* docker_env=fail(rc=125) ' "...a container that does not start: fail(rc=N), never read as unset"
+has "$O" '^docker_.* docker_exec_env=fail(run -d) ' "...nor one it cannot start detached: fail(run -d), never read as unset"
 has "$O" '^apptainer_version=[^ ]* apptainer_env=skipped (no image)$' "...'-': that kind's container checks skipped"
 O=$(PATH=/usr/bin:/bin bash "$CG" img img.sif 2>&1); RC=$?; e=0
 for rt in docker podman apptainer singularity; do PATH=/usr/bin:/bin command -v "$rt" >/dev/null 2>&1 || { printf '%s\n' "$O" | grep -qx "$rt=absent" || e=1; }; done
 [ "$RC" = 0 ] && [ "$e" = 0 ] && ok "containers.sh: a runtime that is not installed: <rt>=absent, never a guess" || bad "containers.sh: absent runtimes (rc=$RC)"
+
+echo "-- envdrop.sh (R7-3's facts, read on a box: tmux / screen / setpriv / systemd-run): this machine's own tmux and setpriv when installed, stubs for the plumbing --"
+EG=$RS_HOME/tests/vgate/envdrop.sh
+if command -v tmux >/dev/null 2>&1; then O=$(bash "$EG" tmux 2>&1)
+  has "$O" '^tmux_version=[^ ]* tmux_server_env=unset (want unset) tmux_first_env=5 (want 5) tmux_session=other (want other)$' \
+    "fact (this machine's tmux): a session made while a tmux server runs gets the SERVER's environment, not the client's CUDA_VISIBLE_DEVICES, in another session"
+else echo "  SKIP: no tmux here: the tmux fact is not reproduced (run envdrop.sh on a box)"; fi
+if command -v setpriv >/dev/null 2>&1; then O=$(bash "$EG" setpriv 2>&1)
+  has "$O" '^setpriv_version=[^ ]* setpriv_reset_env=unset (want unset) setpriv_reset_prefix=unset (want unset)$' "fact (this machine's setpriv): --reset-env, and its prefix --res, clear CUDA_VISIBLE_DEVICES"
+else echo "  SKIP: no setpriv here: the setpriv fact is not reproduced (run envdrop.sh on a box)"; fi
+SB=$T/edbin; mkdir -p "$SB"   # a screen that detaches with setsid (environment kept), a systemd-run that starts its unit with none
+printf '%s\n' '#!/usr/bin/env bash' 'case "$1" in -v) echo "Screen version 0.0-stub"; exit 1 ;; -dmS) shift 2; setsid "$@" </dev/null >/dev/null 2>&1 & exit 0 ;; -S) exit 0 ;; esac; exit 1' > "$SB/screen"
+printf '%s\n' '#!/usr/bin/env bash' 'while [ "$#" -gt 0 ]; do case "$1" in --*) shift ;; *) break ;; esac; done; exec env -i PATH=/usr/bin:/bin "$@"' > "$SB/systemd-run"; chmod +x "$SB"/*
+O=$(PATH="$SB:$PATH" bash "$EG" screen systemd-run 2>&1); RC=$?
+[ "$RC" = 0 ] && has "$O" '^screen_version=Screen_version_0.0-stub screen_dm_env=5 screen_session=other (want other)$' "envdrop.sh: the screen line (plumbing, on a stub)" || { bad "envdrop.sh on stubs (rc=$RC)"; printf '%s\n' "$O" | head -3 | sed 's/^/    | /'; }
+has "$O" '^systemd_run_env=unset (want unset)$' "envdrop.sh: the systemd-run line (plumbing, on a stub)"
+MB=$T/edmin; mkdir -p "$MB"; for c in bash sh env mktemp ps tr cat sleep rm mv chmod head mkdir timeout; do p=$(command -v "$c") && ln -s "$p" "$MB/$c"; done
+O=$(PATH=$MB bash "$EG" tmux screen setpriv systemd-run 2>&1); RC=$?
+[ "$RC" = 0 ] && [ "$(printf '%s\n' "$O" | tr '\n' ' ')" = "tmux=absent screen=absent setpriv=absent systemd-run=absent " ] && ok "envdrop.sh: a tool that is not installed: <tool>=absent, never a guess" || bad "envdrop.sh: absent tools (rc=$RC: $O)"
+O=$(bash "$EG" sudo 2>&1); [ "$?" = 2 ] && has "$O" "^vgate=fail unknown check 'sudo'" "envdrop.sh: an unknown check: vgate=fail, exit 2 (sudo is never run)" || bad "envdrop.sh: unknown check"
