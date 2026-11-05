@@ -1,20 +1,20 @@
 # run-skills
 
-**Let your coding agent run experiments on Slurm clusters and GPU workstations — contained, confirmed, and watched.**
+**Let your coding agent run experiments on Slurm clusters and GPU workstations — contained, authorised, and watched.**
 
 run-skills is one agent skill, `remote-run`, plus a small bash harness and its `rsk` command. You say *"run this on mycluster
-with 2 GPUs for a day"*; the agent syncs your project, builds its environment on the remote side, shows you a
-one-line plan, and — after you say go — submits a correctly sized job and keeps an eye on it. Works with
-**Claude Code**, **OpenAI Codex** and **pi** from one installed copy.
+with 2 GPUs for a day"*; the agent syncs your project, builds its environment on the remote side, shows you the plan
+the cluster resolved, and — once you approve it, or when a permission you already gave covers it — submits a
+correctly sized job and keeps an eye on it. Works with **Claude Code**, **OpenAI Codex** and **pi** from one installed copy.
 
 ```text
 you    › train configs/base.yaml on mycluster, 2 GPUs, 1 day
 agent  › [mycluster] remote: mycluster:/project/lab/me/myproj  tag: MYCLUSTER  deploy: .mycluster
          bootstrap done (mycluster).
-         Plan: mycluster / gpu / 2x A100 / 1-00:00:00 / python -m train --config configs/base.yaml
+         plan p-… — launch on mycluster (slurm): partition gpu · gres gpu:a100:2 · time 1-00:00:00 · warnings 0
          name mytask-v1--train--base--scratch--s0--a01 · checkpoints + auto-resume ✓ — go?
 you    › go
-agent  › Submitted batch job 4815162 · log: logs/mytask-v1--train--base--scratch--s0--a01_4815162.out
+agent  › approval ap-… ("go") · submitted: job 4815162 · log: logs/mytask-v1--train--base--scratch--s0--a01_4815162.out
          I'll review it with status.sh soon after it starts, then less often while it stays healthy.
 ```
 
@@ -36,8 +36,13 @@ guard rails built in, and gives the agent a short, per-site reference instead of
 - **Fail-closed.** A broken conf, a missing venv or a half-applied environment aborts the job instead of running it
   misconfigured. Walltimes above a partition's cap are rejected (they would pend forever); busy GPUs produce a warning
   that needs an explicit `-y`; site policies can refuse a submission outright.
-- **A human in the loop.** The agent prints a one-line plan and waits for your explicit "go" before every submit or
-  launch, and never cancels or kills a job without your OK.
+- **Your authorisation, checked first — asked only when it is missing.** Every submit, launch and cancel is checked
+  against what you already allowed: a plan you approved, a sweep (one approval for the set), or a standing permission
+  ("smoke runs on mybox are fine", "auto-resume preemptions up to 3 times") with the limits you set. The agent asks
+  only outside that — a charged partition, more resources, a wider scope, its own idea that a run should stop. Your
+  words are recorded verbatim (`rsk grant`); a cancel first checks the job is this project's and yours, and someone
+  else's job is never touched. The record keeps you from being asked twice; it is bookkeeping, not proof that you
+  agreed, and it cannot make an agent comply — it constrains what goes through `rsk`.
 - **Cheap, honest monitoring.** One deployed script, `status.sh`, returns a ~2 KB digest of a run: scheduler or PID
   state, restarts, exit footer, error/OOM/NaN hint counts, the wandb URL and the last lines — all from byte-bounded
   reads. The agent reviews often while a run is young or odd and backs off while it is healthy.
@@ -141,10 +146,11 @@ trainer that cannot resume from a checkpoint. Nothing runs until you say go.
    │                  + deploy the harness into <remote dir>/.<target>/ (Slurm) or .ws/ (workstation)
    │                  + stamp the commit it pushed; refuse a dir another checkout of the project owns
    ├─ run-bootstrap   uv sync into the target's venv (--job: on a compute node) — or verify the conda env exists
-   ├─ one-line plan   … waits for your explicit "go"
+   ├─ rsk launch      plan on the target (every check below, nothing submitted) → the card → covered by your
+   │                  recorded words? submit : wait for them (rsk launch --plan <id> --approve "<your words>")
    ├─ submit          Slurm: submit.sh → site policy → partition limits → MaxTime → availability → sbatch
-   │                  workstation: run-launch → nohup on the idlest GPUs (shown to you first)
-   ├─ monitor         status.sh digest; deep reads stay byte-bounded; stopping a run is your call
+   │                  workstation: run-launch → nohup on the idlest free GPUs (never one another job uses unasked)
+   ├─ monitor         rsk status / rsk logs (the status.sh digest), byte-bounded; stopping a run is your call
    └─ run-pull        copy results back (the same transfer path as run-sync; never deletes local files)
 ```
 
@@ -193,13 +199,16 @@ Hooks cover the unusual cases: `ENV_HOOK` (sourced at the end of the environment
 
 These are part of the skill's instructions and are enforced by the harness where code can enforce them:
 
-- Confirm before every submit or launch; never `scancel`/`kill` anything without an explicit OK.
+- Check your existing authorisation before every submit, launch or cancel; ask only outside it. Cancel only after
+  an identity check; never someone else's job or process.
 - Partition and QOS are `submit.sh`'s decision — no raw `sbatch`/`srun`, no `--partition` smuggled in via
-  `SBATCH_EXTRA`. A policy refusal is final; `-y` only acknowledges availability warnings.
+  `SBATCH_EXTRA`. A policy refusal is final; `-y` acknowledges a plan's warnings (availability, occupancy, cost), and
+  rsk adds it only to a card you approved with those warnings on it.
 - Never create a conda env; never guess the remote directory; never use a machine's stored wandb credentials.
 - Smoke tests run with `WANDB_MODE=disabled`; real runs checkpoint and resume.
-- Monitoring is detect-only and byte-bounded; findings are reported, decisions stay with you. The one exception:
-  `run-watch --act` resubmits preempted jobs (or first-submits rows) of a run table you approved, within its budget.
+- Monitoring is detect-only and byte-bounded; findings are reported, decisions stay with you. The exceptions are what
+  you authorised: `run-watch --act` resubmits preempted jobs (or first-submits rows) of a run table you approved,
+  within its budget, and `rsk cancel` / a relaunch that a permission of yours covers.
 
 ## Repository layout
 
@@ -207,6 +216,7 @@ These are part of the skill's instructions and are enforced by the harness where
 |---|---|
 | `skills/remote-run/` | the skill: a thin `SKILL.md` + `references/` (INDEX, a procedure per kind, conf keys, project setup, experiment conventions) |
 | `INSTALL.md` | the install runbook your agent follows |
+| `src/remote_run/` | `rsk`: reads (`status`, `logs`, `exec`), `launch` / `cancel` / `watch` with the per-project ledger and grants, `setup` / `update` / `doctor` |
 | `bin/` | local commands: `run-avail` (free GPUs everywhere), `run-sync`, `run-pull`, `run-bootstrap`, `run-launch`, `run-watch` (batch watch), `run-probe` |
 | `lib/common.sh` | local helpers: target discovery, conf precedence, conf linter, INDEX generation |
 | `remote/` | deployed next to each project: `env.sh`, `bootstrap.sh`, `status.sh`, `submit.sh` + `job.sbatch` (Slurm), `launch.sh` (workstations); `run-sync` adds a `MANIFEST` |

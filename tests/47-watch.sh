@@ -429,3 +429,44 @@ fs fail-stop; acct "1000|a|FAILED|1:0|$P"; O=$(rw t.tsv --once --max-active 4); 
 reset; approved "a fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --adopt a=1000 >/dev/null
 cut -f1-15 "$P/logs/run-watch/t.state" > "$T/st15"; cp "$T/st15" "$P/logs/run-watch/t.state"; O=$(rw t.tsv --once)
 [ "$(st a 2)" = active ] && [ "$(st a 3)" = 1000 ] && hasnt "$O" 'state-lost' "a state file from before the nonce columns (15 fields) still loads" || bad "15-field state ($(st a 2))"
+
+echo "-- review M8: a row is one run by name: a renamed or copied table keeps its spent budgets (and its state) --"
+reset; approved "#@ allow preempt=1" "a fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --act --adopt a=1000 >/dev/null
+q; acct "1000|a|PREEMPTED|0:0|$P"; echo 2000 > "$WORLD/nextjid"; rw t.tsv --once --act >/dev/null
+q "2000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --act >/dev/null
+[ "$(st a 2):$(st a 4):$(nsub)" = "active:1:1" ] && ok "setup: a resubmitted once under preempt=1 (1/1), job 2000 running" || bad "M8 setup ($(st a 2):$(st a 4):$(nsub))"
+mv "$P/t.tsv" "$P/u.tsv"; O=$(rw u.tsv --once --act)
+has "$O" 'NOTE name=a .*state from logs/run-watch/t\.state: status=active job=2000 preempts=1' "renamed table: the row takes its state (status, job, spent budget) from t.state"
+hasnt "$O" 'ADOPT' "...no re-adoption from scratch"
+q; acct "1000|a|PREEMPTED|0:0|$P" "2000|a|PREEMPTED|0:0|$P"; echo 3000 > "$WORLD/nextjid"; O=$(rw u.tsv --once --act)
+has "$O" 'ATTENTION name=a .*reason=preempted why=budget action=needs-ok preempt=1/1' "...2000 preempted: the budget is spent (1/1) -> needs-ok"
+[ "$(nsub)" = 1 ] && ok "...no second resubmit under a preempt=1 approval" || bad "renamed table resubmitted again ($(nsub) submits)"
+cp "$P/u.tsv" "$P/t.tsv"; sed 's/	1	0	0	/	0	0	0	/' "$P/logs/run-watch/t.state" > "$T/t0" && cp "$T/t0" "$P/logs/run-watch/t.state"
+[ "$(st a 4)" = 0 ] || bad "M8 copy setup: t.state preempts reset ($(st a 4))"
+O=$(rw t.tsv --once --act); has "$O" 'NOTE name=a budgets-from=logs/run-watch/u\.state preempts=1' "copied table with a stale own state: its spent budget is never fewer than another state file holds"
+[ "$(st a 4)" = 1 ] && [ "$(nsub)" = 1 ] && ok "...preempts=1, still no second resubmit" || bad "copy: preempts $(st a 4), $(nsub) submits"
+reset; approved "a fx-slurm - $ROW"; mkdir -p "$P/logs/run-watch"; { echo '#run-watch-state v1'; printf 'a\tactive\t7\n'; } > "$P/logs/run-watch/old.state"
+O=$(rw t.tsv --once); [ "$(st a 2)" = held ] && [ "$(st a 4)" = 9999 ] && ok "another state file naming the row in a line that does not parse: held, budgets unknown" || bad "unparsable other state ($(st a 2) $(st a 4))"
+
+echo "-- review L6: fail-stop names a row whose submit was unknown, and cancels it once it is tracked --"
+reset; approved "#@ allow launch errors=0 fail-stop" "a fx-slurm - $ROW" "b fx-slurm - $ROW"
+echo 1001 > "$WORLD/nextjid"; q "1000|a|RUNNING|None|0|$NOW|$P|"; touch "$WORLD/sbatch.fail"
+rw t.tsv --once --act --max-active 4 --adopt a=1000 >/dev/null; rm -f "$WORLD/sbatch.fail"
+[ "$(st b 2)" = submit-unknown ] && ok "setup: b's submit outcome unknown" || bad "L6 setup ($(st b 2))"
+q "1001|b|RUNNING|None|0|$NOW|$P|"; acct "1000|a|FAILED|1:0|$P"; O=$(rw t.tsv --once --act --max-active 4)
+has "$O" 'ATTENTION name=b .*reason=fail-stop-not-cancelled why=submit-unknown trigger=a:1000' "fail-stop: b (submit-unknown) named, not cancelled blind"
+[ ! -s "$WORLD/scancel.log" ] && ok "...no scancel of an unverified job" || bad "...scancel ran: $(cat "$WORLD/scancel.log")"
+O=$(rw t.tsv --once --act --max-active 4 --adopt b=1001)
+has "$O" 'CANCEL name=b .*job=1001 by=fail-stop fail-stop=a' "once b is tracked (--adopt): cancelled, identity checked"
+[ "$(cat "$WORLD/scancel.log" 2>/dev/null)" = 1001 ] && ok "...one scancel of 1001" || bad "...scancel: $(cat "$WORLD/scancel.log" 2>/dev/null)"
+O=$(rw t.tsv --once --act --max-active 4); [ "$(grep -c . "$WORLD/scancel.log")" = 1 ] && ok "...and only once" || bad "...cancelled twice"
+
+echo "-- review L9: a row never carries --rs-* words; the journal's verdict=planned settles like refused --"
+reset; q; table "#@ allow launch" "a fx-slurm - --rs-mode plan -p gpu -g 1 -t 1:00:00 -- python train.py"; O=$(rw t.tsv --approve "go"); RC=$?
+[ "$RC" = 2 ] && has "$O" "no --rs-\* word ('--rs-mode')" "a row with --rs-mode: the table is refused (exit 2)" || bad "--rs-* row (rc=$RC)"
+table "a fx-slurm - -p gpu -- python train.py --rs-mode plan"; O=$(rw t.tsv --once); [ "$?" != 2 ] && ok "...after --, the payload's own words are its business" || bad "--rs-* after --"
+reset; approved "#@ allow launch" "a fx-slurm - $ROW"; q; touch "$WORLD/sbatch.fail"; rw t.tsv --once --act --max-active 2 >/dev/null; rm -f "$WORLD/sbatch.fail"
+N=$(st a 16); [ "$(st a 2)" = submit-unknown ] && [ -d "$P/.rs/attempts/$N" ] || bad "L9 setup ($(st a 2) $N)"
+printf 'stage=plan rc=0 verdict=planned at=1\n' > "$P/.rs/attempts/$N/result"; O=$(rw t.tsv --once --act --max-active 2)
+has "$O" "ATTENTION name=a .*reason=submit-refused attempt=$N .*verdict=planned" "verdict=planned: nothing was queued -> held submit-refused (never stuck unknown)"
+[ "$(st a 2)" = held ] && ok "...held" || bad "...held ($(st a 2))"

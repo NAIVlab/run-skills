@@ -20,7 +20,7 @@ from remote_run import ledger as L
 from remote_run.errors import NEEDS_USER, OK, REFUSED, USAGE, RskError
 
 SLURM_BOUND = ("kind", "target", "partition", "gres", "cpus", "mem", "time", "account", "name", "extra", "payload",
-               "env_kind", "env_name", "wandb_mode", "chain")
+               "env_kind", "env_name", "wandb_mode", "env_hook", "venv_dir", "uv_sync_args", "chain")
 
 
 def block(**kv: str) -> str:
@@ -28,7 +28,7 @@ def block(**kv: str) -> str:
     base = {"kind": "slurm", "target": "fx", "partition": "gpu", "gres": "gpu:gt-a:2", "cpus": "16", "mem": "64G",
             "time": "1-00:00:00", "account": "''", "name": "exp--train--base--scratch--s0--a01", "extra": "",
             "payload": "python train.py --lr 0.1", "env_kind": "uv", "env_name": "''", "wandb_mode": "online",
-            "chain": "0", "warnings": "0"}
+            "env_hook": "''", "venv_dir": "''", "uv_sync_args": "''", "chain": "0", "warnings": "0"}
     base.update(kv)
     bound = [f"{k}={base[k]}" for k in SLURM_BOUND]
     h = kv.get("bound_hash") or hashlib.sha256(("\n".join(bound) + "\n").encode()).hexdigest()
@@ -36,8 +36,13 @@ def block(**kv: str) -> str:
             + f"info_avail=''\nwarnings={base['warnings']}\nbound_hash={h}\n@@end\n")
 
 
-def plan(**kv: str) -> dict:
-    return G.parse_plan(block(**kv))
+def plan(plan_id: str = "p-test", **kv: str) -> dict:
+    """A parsed block as rsk launch hands it to check(): + the plan id (approvals name plan ids)."""
+    return {**G.parse_plan(block(**kv)), "plan_id": plan_id}
+
+
+def approval(quote: str, plans: list[dict], **kw) -> dict:
+    return G.new_approval(quote, plans, plan_ids=[p.get("plan_id", "p-test") for p in plans], **kw)
 
 
 def state(*recs: dict, runs: dict | None = None, now: float | None = None) -> L.LedgerState:
@@ -116,7 +121,9 @@ class PlanBlock(unittest.TestCase):
         self.assertEqual(G.facts(plan(gres="gpu:4")).gpu_type, "any")
         self.assertEqual((G.facts(plan(gres="")).gpu_type, G.facts(plan(gres="")).gpus), ("", 0))
         self.assertEqual(G.facts(plan(gres="--gres=gpu:gt-b:8")).gpus, 8)
-        self.assertEqual(G.facts({**plan(), "class": "smoke"}).cls, "smoke")
+        self.assertEqual(G.facts({**plan(), "class": "smoke"}).cls, "train")       # the name's class wins
+        self.assertEqual(G.facts({**plan(), "class": "smoke"}).classes, ("train", "smoke"))
+        self.assertEqual(G.facts({**plan(name="exp-plain--a01"), "class": "smoke"}).cls, "smoke")   # a label
         self.assertEqual(G.facts(plan(gres="gpu:x:y")).unreadable, ("gres",))
         box = G.facts({"kind": "nohup", "target": "box", "name": "e", "gpus_req": "ids=0,2", "warnings": "0"})
         self.assertEqual((box.gpus, box.time_s, box.partition), (2, math.inf, None))
@@ -160,7 +167,7 @@ class Records(unittest.TestCase):
             G.new_deny("never there", {"max_gpus": 4})
         self.assertIn("a deny takes", str(cm.exception))
         with self.assertRaises(RskError):
-            G.validate({**G.new_approval("ok", [plan()]), "scope": {}})
+            G.validate({**approval("ok", [plan()]), "scope": {}})
         with self.assertRaises(RskError):
             G.validate({**G.new_cancel_approval("stop it", "fx", ["5"]), "scope": {"targets": ["fx"]}})
         missing = dict(g)
@@ -171,7 +178,7 @@ class Records(unittest.TestCase):
 
 class Covers(unittest.TestCase):
     def test_deny_wins(self):
-        st = state(grant({"targets": ["fx"]}), G.new_approval("yes", [plan()]),
+        st = state(grant({"targets": ["fx"]}), approval("yes", [plan()]),
                    G.new_deny("never on gpu", {"partitions": ["gpu"]}))
         d = G.check(st, "launch", plan=plan())
         self.assertFalse(d.covered)
@@ -211,8 +218,8 @@ class Covers(unittest.TestCase):
         self.assertFalse(d.covered)
         self.assertIn("warning", " ".join(d.reasons))
         self.assertTrue(G.check(state(grant({"allow_warnings": True})), "launch", plan=warned).covered)
-        self.assertFalse(G.check(state(G.new_approval("ok", [warned])), "launch", plan=warned).covered)
-        self.assertTrue(G.check(state(G.new_approval("ok", [warned], allow_warnings=True)), "launch",
+        self.assertFalse(G.check(state(approval("ok", [warned])), "launch", plan=warned).covered)
+        self.assertTrue(G.check(state(approval("ok", [warned], allow_warnings=True)), "launch",
                                 plan=warned).covered)
 
     def test_none_limits_are_unlimited_and_numbers_are_budgets(self):
@@ -253,19 +260,19 @@ class Covers(unittest.TestCase):
     def test_sweep_approval_is_consumed_per_hash(self):
         p1, p2 = plan(), plan(name="exp--train--base--scratch--s1--a01")
         H1 = p1["bound_hash"]
-        ap = G.new_approval("run both seeds", [p1, p2])
+        ap = approval("run both seeds", [p1, p2])
         st = state(ap)
         self.assertTrue(G.check(st, "launch", plan=p1).covered)
         self.assertFalse(G.check(st, "launch", plan=plan(name="exp--train--base--scratch--s2--a01")).covered)
         ap["used"].append({"nonce": "n1", "action": "launch", "hash": H1, "job": "", "at": L.now()})
         self.assertIn("used 1 time", " ".join(G.check(st, "launch", plan=p1).reasons))
         self.assertTrue(G.check(st, "launch", plan=p2).covered)
-        chain = G.new_approval("a chain of 3", [p1], actions=("launch", "chain"), launches=3)
+        chain = approval("a chain of 3", [p1], actions=("launch", "chain"), launches=3)
         chain["used"] = [{"nonce": f"c{i}", "action": "chain", "hash": H1, "job": "", "at": L.now()} for i in range(2)]
         self.assertTrue(G.check(state(chain), "chain", plan=p1).covered)
         chain["used"].append({"nonce": "c9", "action": "chain", "hash": H1, "job": "", "at": L.now()})
         self.assertFalse(G.check(state(chain), "chain", plan=p1).covered)
-        self.assertTrue(G.check(state(G.new_approval("x", [p1])), "launch", plan=p1).record["kind"] == "approval")
+        self.assertTrue(G.check(state(approval("x", [p1])), "launch", plan=p1).record["kind"] == "approval")
 
     def test_relaunch_needs_the_original_configuration(self):
         orig = plan()
@@ -273,7 +280,8 @@ class Covers(unittest.TestCase):
                "request": {"action": "launch", "plan": "p-1", "bound_hash": orig["bound_hash"], "bound": G.bound(orig)},
                "submissions": [{"nonce": "n1", "submit": "submitted", "job": "5"}], "result": {"state": "FAILED"}}
         runs = {"exp--train--base--scratch--s0": {"run": "exp--train--base--scratch--s0", "attempts": {"a01": att}}}
-        g = grant(actions=("launch", "relaunch", "resubmit"))
+        g = grant(actions=("launch", "relaunch"))
+        g["actions"].append("resubmit")          # (a record from before `rsk grant add` refused it: still valid)
         st = state(g, runs=runs)
         again = plan(name="exp--train--base--scratch--s0--a02")   # the name is bound: a new hash
         self.assertNotEqual(again["bound_hash"], orig["bound_hash"])
@@ -284,7 +292,7 @@ class Covers(unittest.TestCase):
         self.assertIn("not the original configuration: payload", " ".join(d.reasons))
         more = plan(name="exp--train--base--scratch--s0--a02", gres="gpu:gt-a:4")
         self.assertIn("gres", " ".join(G.check(st, "resubmit", plan=more, run="exp--train--base--scratch--s0").reasons))
-        self.assertTrue(G.check(state(g, G.new_approval("yes, with lr 1", [changed]), runs=runs), "launch",
+        self.assertTrue(G.check(state(g, approval("yes, with lr 1", [changed]), runs=runs), "launch",
                                 plan=changed).covered)                              # the user approved the change
         adopted = {"r": {"run": "r", "attempts": {"a01": {**att, "request": {"action": "adopted"}}}}}
         self.assertIn("no recorded plan", " ".join(G.check(state(g, runs=adopted), "relaunch",
@@ -322,8 +330,10 @@ class Covers(unittest.TestCase):
         d = G.check(state(g, G.new_deny("only I stop runs", {}, ["cancel_own"]), runs=runs), "cancel", job="7", run="exp")
         self.assertIn("cancel_own is denied", " ".join(d.reasons))
         bad = grant()
-        bad["limits"]["expires"] = "someday"                           # a hand-edited file: expired, not open
-        self.assertIn("expired", G.check(state(bad), "launch", plan=plan()).reasons[0])
+        bad["limits"]["expires"] = "someday"                           # a hand-edited file: invalid, covers nothing
+        d = G.check(state(bad), "launch", plan=plan())
+        self.assertFalse(d.covered)
+        self.assertIn("INVALID record covers nothing", d.reasons[0])
 
     def test_after_deny_flag(self):
         d = G.new_deny("not on gpu", {"partitions": ["gpu"]})
@@ -341,11 +351,111 @@ class Covers(unittest.TestCase):
     def test_describe_says_what_it_covers(self):
         self.assertEqual(G.describe(grant({"targets": ["fx"], "max_gpus": 4, "max_time_s": 7200})),
                          "launch: targets fx; <= 4 GPUs; <= 2:00:00; no plan with warnings")
-        self.assertIn("2 approved plan(s)", G.describe(G.new_approval("ok", [plan(), plan(name="x--a01")])))
+        self.assertIn("2 approved plan(s)", G.describe(approval("ok", [plan(), plan(name="x--a01")])))
         self.assertIn("cancel of job(s) 5", G.describe(G.new_cancel_approval("stop 5", "fx", ["5"])))
         self.assertEqual(G.describe(G.new_deny("no", {"names": ["x*"]})), "DENY every action: names x*")
         self.assertEqual(G.describe(G.new_deny("no", {}, ["cancel"])), "DENY cancel: anything")
         self.assertIn("no limit (user's words)", G.balance(grant(), state()))
+
+
+class ReviewFixes(unittest.TestCase):
+    """The P3 review findings, each pinned (H2 H3 M1 M2 M5 L1 L5 and `resubmit` in a new grant)."""
+
+    def test_h2_sbatch_extra_time_and_resources_are_read(self):
+        f = G.facts(plan(extra="--time=7-00:00:00 --qos=normal -t 2:00:00"))
+        self.assertEqual((f.time_s, f.time_extra, f.extra_res), (7200, "2:00:00", ()))   # the LAST --time / -t
+        f = G.facts(plan(extra="--nodes=8 --gpus-per-node=4 --mem-per-c=2G -N2 --exclude=n1 --mem=9G -n 4"))
+        self.assertEqual(f.extra_res, ("--nodes=8", "--gpus-per-node=4", "--mem-per-c=2G", "-N2", "-n 4"))
+        self.assertEqual(G.facts(plan(extra="--tim=5")).extra_res, ("--tim=5",))         # an ambiguous --time prefix
+        capped = grant({"max_time_s": 3600, "max_gpus": 2}, max_live=None, max_launches=None, expires=None)
+        d = G.check(state(capped), "launch", plan=plan(time="30", extra="--time=7-00:00:00"))
+        self.assertFalse(d.covered)
+        self.assertIn("7-00:00:00 time > 1:00:00", " ".join(d.reasons))
+        open_ = grant({"targets": ["fx"]})                          # no caps at all: still the user's call
+        d = G.check(state(open_), "launch", plan=plan(extra="--nodes=8 --gpus-per-node=4"))
+        self.assertFalse(d.covered)
+        self.assertIn("SBATCH_EXTRA asks for resources the grant's caps cannot read (--nodes=8, --gpus-per-node=4)",
+                      " ".join(d.reasons))
+        p = plan(extra="--nodes=8")
+        self.assertTrue(G.check(state(approval("yes, 8 nodes", [p])), "launch", plan=p).covered)   # the user saw it
+        self.assertTrue(G.check(state(open_), "launch", plan=plan(extra="--qos=normal --exclude=n1")).covered)
+
+    def test_h3_the_names_class_decides_and_a_deny_matches_either(self):
+        smoke = grant({"classes": ["smoke"]})
+        train_name = {**plan(), "class": "smoke"}                   # name exp--train--…, labelled smoke
+        d = G.check(state(smoke), "launch", plan=train_name)
+        self.assertFalse(d.covered)
+        self.assertIn("class train not in smoke", " ".join(d.reasons))
+        deny = G.new_deny("no train runs this week", {"classes": ["train"]})
+        self.assertTrue(G.check(state(smoke, deny), "launch", plan=train_name).denied)
+        labelled = {**plan(name="exp-plain--a01"), "class": "train"}
+        self.assertTrue(G.check(state(grant(), deny), "launch", plan=labelled).denied)     # the label alone
+        self.assertFalse(G.check(state(grant(), deny), "launch",
+                                 plan={**plan(name="exp--smoke--x--a01")}).denied)
+
+    def test_m1_a_deny_of_launch_stops_every_way_of_starting_a_run(self):
+        deny = G.new_deny("stop launching anything on fx today", {"targets": ["fx"]}, ["launch"])
+        g = grant(actions=("launch", "chain", "relaunch"))
+        g["actions"].append("resubmit")
+        for action in ("launch", "chain", "relaunch", "resubmit"):
+            self.assertTrue(G.check(state(g, deny), action, plan=plan(), run="exp").denied, action)
+        self.assertFalse(G.check(state(g, deny), "cancel", job="5", plan={"target": "fx"}).denied)
+        only_chain = G.new_deny("no chains", {}, ["chain"])
+        self.assertFalse(G.check(state(g, only_chain), "launch", plan=plan()).denied)
+
+    def test_m2_deny_names_match_the_run_id_grants_the_name_only(self):
+        deny = G.new_deny("never run exp--train--big again", {"names": ["exp--train--big"]})
+        for name in ("exp--train--big", "exp--train--big--a01", "exp--train--big--a02"):
+            for action in ("launch", "relaunch"):
+                self.assertTrue(G.check(state(grant(actions=("launch", "relaunch")), deny), action,
+                                        plan=plan(name=name), run="exp--train--big").denied, (name, action))
+        g = grant({"names": ["exp--train--big"]})
+        self.assertFalse(G.check(state(g), "launch", plan=plan(name="exp--train--big--a01")).covered)   # fails closed
+        self.assertTrue(G.check(state(grant({"names": ["exp--train--big*"]})), "launch",
+                                plan=plan(name="exp--train--big--a01")).covered)
+
+    def test_m5_an_approval_names_its_plans_and_expires_with_them(self):
+        p = plan(plan_id="p-1")
+        ap = approval("yes run it", [p])
+        self.assertEqual(ap["scope"]["plans"], ["p-1"])
+        self.assertTrue(G.check(state(ap), "launch", plan=p).covered)
+        again = {**p, "plan_id": "p-2"}                              # the same configuration, planned later
+        d = G.check(state(ap), "launch", plan=again)
+        self.assertFalse(d.covered)
+        self.assertIn("not one of the approved plans (p-2 not in p-1)", " ".join(d.reasons))
+        self.assertFalse(G.check(state(ap, now=time.time() + G.APPROVAL_TTL_S + 60), "launch", plan=p).covered)
+        old = {k: v for k, v in ap.items()}
+        old["scope"] = {k: v for k, v in ap["scope"].items() if k != "plans"}
+        old["limits"] = {**ap["limits"], "expires": None}            # an approval from before plan scoping
+        self.assertIn("scope.plans", G.valid(old))
+        self.assertFalse(G.check(state(old), "launch", plan=p).covered)
+
+    def test_l1_an_invalid_record_covers_nothing_an_invalid_deny_matches_everything(self):
+        quoteless = {"id": "g-x", "kind": "grant", "scope": {"targets": ["fx"]}, "actions": ["launch"], "used": [],
+                     "revoked": None}
+        d = G.check(state(quoteless), "launch", plan=plan())
+        self.assertFalse(d.covered)
+        self.assertIn("INVALID record covers nothing", d.reasons[0])
+        bad_deny = {"id": "d-x", "kind": "deny", "quote": "never", "scope": {"targets": ["elsewhere"]},
+                    "actions": ["launch"]}                           # malformed (keys missing): matches everything
+        d = G.check(state(grant(), bad_deny), "launch", plan=plan())
+        self.assertTrue(d.denied)
+        self.assertIn("matches everything", d.reasons[0])
+        self.assertTrue(any("INVALID" in ln for ln in G.lines(state(grant(), bad_deny))))
+
+    def test_l5_a_chain_segment_does_not_count_its_own_attempt_against_max_live(self):
+        g = grant(actions=("chain",), max_live=1, max_launches=10, expires=None)
+        runs = {"r": {"run": "r", "attempts": {"a01": {"target": "fx", "request": {"grant": g["id"]},
+                                                      "submissions": [{"nonce": "n1", "submit": "submitted"}]}}}}
+        self.assertFalse(G.check(state(g, runs=runs), "chain", plan=plan()).covered)
+        self.assertTrue(G.check(state(g, runs=runs), "chain", plan=plan(), extending=("r", "a01")).covered)
+        self.assertFalse(G.check(state(g, runs=runs), "chain", plan=plan(), extending=("r", "a02")).covered)
+
+    def test_resubmit_is_not_a_new_standing_grants_action(self):
+        with self.assertRaises(RskError) as c:
+            grant(actions=("launch", "resubmit"))
+        self.assertIn("'resubmit' is not a standing grant's action", str(c.exception))
+        self.assertIn("resubmit", G.new_deny("no resubmits", {}, ["resubmit"])["actions"])
 
 
 class Store(ScratchHome):
@@ -420,6 +530,20 @@ class Store(ScratchHome):
         self.assertTrue(all("covers" in r for r in doc["records"]))
         self.assertEqual(run("grant", "add", "-C", str(self.proj), "--quote", "x", "--max-live", "1",
                              "--max-launches", "1", "--expires", "none")[0], USAGE)          # no --action
+
+    def test_grant_add_and_import_refuse_resubmit(self):
+        rc, text = run("grant", "add", "-C", str(self.proj), "--quote", "retry them", "--action", "launch,resubmit",
+                       "--max-live", "none", "--max-launches", "none", "--expires", "none")
+        self.assertEqual(rc, USAGE, text)
+        self.assertIn("'resubmit' is not a standing grant's action", text)
+        f = self.home / "g.json"
+        f.write_text(json.dumps([{"kind": "grant", "quote": "q", "source": "a note", "scope": {},
+                                  "actions": ["resubmit"], "limits": {"max_live": None, "max_launches": None,
+                                                                      "expires": None}}]))
+        rc, text = run("grant", "import", "-C", str(self.proj), str(f))
+        self.assertEqual(rc, USAGE, text)
+        rc, text = run("grant", "deny", "-C", str(self.proj), "--quote", "no resubmits", "--action", "resubmit")
+        self.assertEqual(rc, OK, text)
 
     def test_import(self):
         good = {"kind": "grant", "quote": "no need to check with me, submit them yourself", "source": "memory note 2026-10-01",

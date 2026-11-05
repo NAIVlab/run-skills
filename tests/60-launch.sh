@@ -152,13 +152,24 @@ noss && ok "...before any ssh" || bad "...before any ssh"; [ ! -s "$T/rsk.log" ]
 O=$( cd "$W" && RS_VIA_RSK= PATH="$T/rskbin:$T/bin:$PATH" bash "$RS_HOME/bin/run-launch" -N t -- c 2>&1 ); [ "$?" = 2 ] && ok "an empty RS_VIA_RSK counts as unset" || bad "empty RS_VIA_RSK"
 NORSK=$(printf %s "$PATH" | tr ':' '\n' | while IFS= read -r d; do [ -n "$d" ] && [ ! -x "$d/rsk" ] && printf '%s:' "$d"; done)
 : > "$T/launch.log"; O=$( cd "$W" && env -u RS_VIA_RSK PATH="$T/bin:${NORSK%:}" bash "$RS_HOME/bin/run-launch" -N t -- c 2>&1 ); RC=$?
-[ "$RC" = 0 ] && has "$O" '^NOTE: no rsk on PATH (installed without uv): run-launch launches directly' "no rsk on PATH: launches, with a one-line NOTE" || bad "no rsk on PATH (rc=$RC)"
-has "$(cat "$T/launch.log")" 'launch\.sh' "...the launch did go out"; [ "$(printf '%s\n' "$O" | grep -c '^NOTE: no rsk')" = 1 ] && ok "...one NOTE line" || bad "...one NOTE line"
-hasnt "$(launch "$W" -N t -- c)" 'NOTE: no rsk\|^use: rsk' "RS_VIA_RSK=1 (rsk's own call): neither"
+[ "$RC" = 0 ] && has "$O" '^NOTE: run-skills is installed without rsk: run-launch launches directly' "no rsk installed: launches, with a one-line NOTE" || bad "no rsk installed (rc=$RC)"
+has "$(cat "$T/launch.log")" 'launch\.sh' "...the launch did go out"; [ "$(printf '%s\n' "$O" | grep -c '^NOTE: run-skills is installed without rsk')" = 1 ] && ok "...one NOTE line" || bad "...one NOTE line"
+hasnt "$(launch "$W" -N t -- c)" 'NOTE: run-skills is installed without rsk\|^use: rsk' "RS_VIA_RSK=1 (rsk's own call): neither"
+mkdir -p "$T/uvbin" "$T/uvtool"; printf '#!/bin/sh
+case "$*" in "tool dir --bin") echo "%s/uvtool" ;; esac
+' "$T" > "$T/uvbin/uv"
+printf '#!/bin/sh
+echo "rsk stub $*" >> "%s/rsk.log"
+' "$T" > "$T/uvtool/rsk"; chmod +x "$T/uvbin/uv" "$T/uvtool/rsk"; : > "$T/ssh-host.log"
+O=$( cd "$W" && env -u RS_VIA_RSK PATH="$T/uvbin:$T/bin:${NORSK%:}" bash "$RS_HOME/bin/run-launch" -N t -- c 2>&1 ); RC=$?
+[ "$RC" = 2 ] && has "$O" '^use: rsk launch -T ws-box' "rsk in uv's tool bin dir (not on PATH): installed too -> points at rsk launch, exit 2" || bad "rsk via uv tool dir (rc=$RC)"
+noss && ok "...before any ssh" || bad "...before any ssh (uv tool dir)"
 P=$(mk_proj fx-slurm 'REMOTE_DIR=/x')
-O=$(TARGET=fx-slurm launch "$P" -N t -- c); RC=$?
+O=$( cd "$P" && TARGET=fx-slurm RS_VIA_RSK=1 PATH="$T/rskbin:$T/bin:$PATH" bash "$RS_HOME/bin/run-launch" -N t -- c 2>&1 ); RC=$?
 [ "$RC" = 2 ] && has "$O" 'run-launch is for nohup targets' "slurm target refused" || bad "slurm target refused (rc=$RC)"
-has "$O" 'submit\.sh' "refusal points at submit.sh"
+has "$O" 'rsk launch -T fx-slurm … -- <cmd>' "...rsk installed: the refusal points at rsk launch -T <t>"; hasnt "$O" 'ssh .*submit\.sh' "...no raw ssh … submit.sh recipe"
+O=$( cd "$P" && TARGET=fx-slurm RS_VIA_RSK=1 PATH="$T/bin:${NORSK%:}" bash "$RS_HOME/bin/run-launch" -N t -- c 2>&1 ); RC=$?
+[ "$RC" = 2 ] && has "$O" 'its deployed submit\.sh (references/procedure-slurm\.md)' "...no rsk: the short fallback (the deployed submit.sh, the procedure)" || bad "slurm refusal without rsk (rc=$RC)"
 O=$(TARGET= launch "$W" -N t); RC=$?; [ "$RC" = 2 ] && has "$O" 'set TARGET=' "no TARGET -> exit 2" || bad "no TARGET -> exit 2 (rc=$RC)"
 
 echo "-- part 2: the deployed launch.sh runs (executing stub) --"

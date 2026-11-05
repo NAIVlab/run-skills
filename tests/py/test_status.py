@@ -323,6 +323,22 @@ class Ledgered(Base):
         self.assertIn("watch lease: none", text)
         self.assertIn("== grants ==\n  none recorded", text)
 
+    def test_run_watchs_and_bootstraps_own_submits_are_not_unledgered(self):
+        self.journal("rw-20261105T000000Z-1-1", receipt="job=102\nname=exp--b01\nnonce=rw-20261105T000000Z-1-1\n",
+                     result="stage=done rc=0 verdict=submitted at=1\n")
+        self.journal("rw-20261105T000000Z-1-2", stage="sbatch\n")               # its submit still open
+        with (self.stub / "squeue.out").open("a") as f:
+            f.write(f"103|proj-bootstrap|RUNNING|None|0|1700000000|{self.remote}|\n")
+        rc, text = run("status", "-C", str(self.proj))
+        self.assertEqual(rc, OK, text)
+        self.assertRegex(text, r"PENDING\s+job 102\s+exp--b01  \(Priority\)  \(run-watch's\)")
+        self.assertRegex(text, r"RUNNING\s+job 103\s+proj-bootstrap.*  \(bootstrap's\)")
+        self.assertIn("run-watch attempt rw-20261105T000000Z-1-2  open", text)
+        self.assertNotIn("UNLEDGERED", text)
+        self.assertNotIn("rsk adopt", text)                                       # nothing to adopt
+        doc = json.loads(run("status", "-C", str(self.proj), "--json")[1])
+        self.assertEqual({u["by"] for u in doc["unledgered"]}, {"run-watch"})
+
     def test_submit_unknown_reconciled_from_the_journal(self):
         self.led.record_attempt(name="exp--b01", target="fx-slurm", kind="slurm", nonce="n-b", submit="unknown")
         self.journal("n-b", receipt="job=102\nname=exp--b01\nnonce=n-b\n", result="stage=done rc=0 verdict=submitted\n")

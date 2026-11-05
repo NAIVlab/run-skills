@@ -33,7 +33,9 @@ Either way, this installs the run-skills engine (the `rsk` command), registers t
 
 In a project repo, ask your agent, e.g. *"run this on bigcluster, 2 GPUs, 1 day"*. The first time it scaffolds
 `.hpc.conf` (see [`hpc.conf.example`](hpc.conf.example) for our directory layout) and asks for the remote dir.
-It always shows a one-line plan and waits for your "go" before submitting.
+Before every submit it checks whether your words already cover it (`rsk launch` reads the project's grants): if
+they do, it submits and says so; if not, it shows you the plan card and waits for your "go". Charged partitions,
+more resources or a wider scope than you allowed always come back to you.
 
 ## Personal facts (the install asks each member)
 

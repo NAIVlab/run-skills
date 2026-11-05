@@ -13,17 +13,20 @@ This document explains *why* run-skills is shaped the way it is. The user-facing
 4. **The agent reads little and guesses nothing**: an index of targets plus one self-contained page per target.
    A long session's context gets summarized, and a summary of that page is not the page: `run-sync`, `run-launch`,
    `submit.sh` and `status.sh` re-print its path (`rs_ref`, deployed as `T_REF`) so it can be re-read; one line each.
-5. **Unsafe actions need a human**: submissions, launches, cancellations, new conda envs, remote directories. One
-   narrow, pre-approved exception: `run-watch --act` (below).
+5. **Unsafe actions need the user's authorisation — checked first, asked for only when it is missing**: submissions,
+   launches and cancellations are checked against what the user already allowed (below); new conda envs, remote
+   directories and someone else's jobs are never the agent's to decide.
 
-Non-goals: multi-node jobs, non-NVIDIA hardware, a new configuration language, a daemon or a database
-(`run-watch` is a foreground command the session owns, with a lease; its state file is a receipt, not a database).
+Non-goals: multi-node jobs, non-NVIDIA hardware, a new configuration language or task file, a daemon, a database server
+or a control plane (rsk runs only when called; its ledger is a few JSON files per project on the user's machine;
+`run-watch` is a foreground command the session owns, with a lease; its state file is a receipt, not a database).
 
 ## Three layers
 
 ```text
 skills/remote-run/SKILL.md + refs/     what the agent reads (thin entry, index, a procedure per kind, conf keys, conventions)
-bin/ + lib/common.sh                   local commands run from the project root (sync, bootstrap, launch)
+src/remote_run/ (rsk)                  the agent's commands: reads, plan → the user's authorisation → act, the ledger
+bin/ + lib/common.sh                   local commands run from the project root (sync, bootstrap, launch, watch)
 remote/                                deployed next to each project and executed there (env, bootstrap, status,
                                        submit, job wrapper)
 ```
@@ -148,19 +151,88 @@ An approval is given to what the user was shown, but a submit is resolved on the
 added flags, `SBATCH_EXTRA`. Between "here is the plan" and "go" any of that can change (a re-sync, an edited conf, a
 policy update), and an agent re-typing the command can drift too. So the remote scripts resolve the request twice with
 the same code: `--rs-mode plan` runs the whole submit or launch path — policy, limits, availability, duplicate guard,
-lint, the GPU pick, the env gate — and, instead of `sbatch` / `setsid`, prints one `@@plan v1` block of *bound* fields
-(what an approval is for: partition, gres, cpus, mem, time, account, name, the extra sbatch words, the payload argv, the
-env; for a workstation the GPU request rather than the ids picked) with `bound_hash`, the sha256 of those lines. The
+lint, the GPU pick (on a workstation not the env gate: `env.sh` creates the project's cache dirs, and a plan creates
+nothing outside `.rs/`; the gate runs at the launch) — and, instead of `sbatch` / `setsid`, prints one `@@plan v1` block
+of *bound* fields (what an approval is for: partition, gres, cpus, mem, time, account, name, the extra sbatch words, the
+payload argv, the env — kind, name, the `ENV_HOOK` file by its sha256, `VENV_DIR`, `UV_SYNC_ARGS`; for a workstation the
+GPU request rather than the ids picked, and the busy GPUs the landing accepts) with `bound_hash`, the sha256 of those lines. The
 envelope (free GPUs now, which ids a pick chose, file hashes, the source commit) is printed as `info_*` and not bound:
 it legitimately changes between plan and run. `--rs-expect <hash>` then recomputes the hash with the same function
 right before the snapshots and `sbatch` (before the env gate on a workstation) and refuses (exit 6) on any difference.
 Plan mode treats every `-y` gate as acknowledged — it prints the WARNING and goes on — so one card shows every
-warning, and `warnings=` counts them; a plan with warnings needs the `-y` again at submit time, which is not bound. The
+warning, and `warnings=` counts them; a plan with warnings needs the `-y` again at submit time, which is not bound — so
+the submit also carries the card's count (`--rs-warnings N`) and the script recounts its `WARNING:` lines: another
+number is exit 6, and a `-y` sent for the card's warnings never passes a new one (under `--rs-expect` a failed squeue,
+the duplicate check, is exit 1, not a `-y` gate). An `SBATCH_EXTRA` `--time` (sbatch takes the last one) is held to
+MaxTime like `-t`, and the card shows it and any resources `SBATCH_EXTRA` adds. The
 flags are separate words, so an older `submit.sh` / `launch.sh` exits 2 on the bare value word instead of submitting
 without the check (`remote/API` tells rsk what a deploy speaks). The hash proves the submission is the planned one, not
 that the user agreed to it: that stays the user's words, recorded by rsk. A busy GPU is part of the same decision: the
 workstation launch reads `nvidia-smi --query-compute-apps` once and never picks, or launches `-d` onto, a GPU with a
-compute process unless `--gpu-busy-ok` — the user's OK, not a default.
+compute process unless `--gpu-busy-ok` — the user's OK naming the GPUs (`-d`), not a default; rsk sends it only when the
+approved card's own landing was busy, pinned to that landing, and the busy set is bound: another GPU busy since is exit 6.
+
+## Authorization: check first, ask only outside scope
+
+The first rails were "confirm before every submit, confirm before every cancel". For long experiments that is tedious
+and it wastes intent the user has already expressed: a user who said "run these five ablations on this cluster"
+should not be asked five times, and a preempted job should not wait overnight for a "yes, resume it". The user's
+policy: no need to ask again every time, but every action must check whether an authorisation exists.
+
+| situation | ask again? |
+|---|---|
+| the user said "run this set of experiments on this target" | parameters within that scope: act directly |
+| the user approved a sweep | the whole set shares one approval, no per-member question |
+| a preempted run resumes with its original configuration, and the user authorised auto-resume | within the budget: act directly |
+| a charged partition, more resources, or a wider experiment scope | confirm |
+| the user said "cancel job 123" | cancel once the job's identity is verified |
+| the user authorised "on a failure, stop the rest of the group" | act when the condition holds |
+| the agent decides on its own that a run is not worth continuing | confirm — unless the user authorised that kind of judgment |
+
+How rsk maps it. `rsk launch` plans on the target first (plan mode, above), stores the plan and its card, and calls
+`grants.check()` before anything is submitted; `rsk cancel` does the same before it signals anything. There is one
+record type, in the project's ledger under rsk's state dir: an **approval** (the plan ids and bound hashes of the cards
+the user approved, expiring with those plans — one record covers a whole sweep, a chain of N segments is one approval
+used N times; a later plan of the same configuration is a new card, also after a refused submit gave its use back — or
+the jobs a user named for cancelling), a **grant** (a standing predicate: targets, partitions, GPU types, classes, name globs, caps on
+GPUs / CPUs / memory / time, the actions allowed, and `max_live` / `max_launches` / `expires` — all three always stated,
+`none` meaning the user's words set none, so a limit is never the agent's invention), and a **deny** (it always wins).
+Covered → act and record the use; not covered → `needs user:` with the card, exit 4; the user's words then go to
+`--approve`. The rows "charged partition / more resources / wider scope" fall out of the predicate: a plan with
+warnings (a `-y` gate: availability, occupancy, cost) is never covered unless the user's words allowed warnings, a
+request above a cap is not covered (the time a cap holds is the one sbatch takes: `SBATCH_EXTRA`'s last `--time`), nor
+is one whose `SBATCH_EXTRA` asks for resources no cap can read (`--nodes`, `--gpus*`, `--ntasks*`, …), and a relaunch is
+covered only with the original attempt's bound fields. A run's class is the one its name carries (`--class` only labels
+a name without one); a deny of `launch` stops relaunches and chains too, and its name globs also match the run id.
+Preemption: Slurm's own requeue, a run-watch table's `#@ allow preempt=N` (its `#@ ok` line carries the user's words),
+or a `relaunch` grant. "Cancel job 123": `--approve` records a cancel approval naming that job, and the identity check
+(name, WorkDir and user on Slurm; the receipt's pid, process start time and boot id on a workstation) runs in the same
+ssh that cancels. "Stop the rest of the group": run-watch's `#@ allow fail-stop`. The agent's own judgment: a grant with
+`cancel_own`, which covers only runs rsk launched for this project (never adopted ones). Some decisions are never a
+grant's, only the user's words at the time: a GPU another job is using, a policy flag the user must ask for
+(`--*-user-asked`), a second live copy of a run (`--same-name-ok`), a remote delete (`rsk sync -D`) and a job no card
+showed (`rsk bootstrap --job`) — those two run only with `--approve`; and nothing ever covers someone else's job or process, a policy refusal
+or a new conda env. Sweeps and chains cost one question; a plan that drifted between card and submit (`--rs-expect`)
+costs a new card, never a silent submit.
+
+**P7: one path.** With rsk installed, `bin/run-launch` called directly prints `use: rsk launch -T <t> …` and exits 2
+(rsk sets `RS_VIA_RSK=1`; installed = on PATH or in `uv tool dir --bin`; a Slurm target is pointed at `rsk launch` too);
+installed without rsk it keeps working, with a NOTE, and the skill's
+bash fallback checks the user's words in the conversation, with no ledger to keep them. `rsk doctor --legacy-refs`
+lists project docs that still teach the old skills or raw `ssh … submit.sh` / `run-launch` recipes. Both steer;
+neither is a guard.
+
+**The honest limits.** A grant or approval record is bookkeeping, not proof of consent: its quote is whatever the agent
+wrote as the user's words, and an agent can write anything — the rails (show the card, wait for the user's words,
+record only what they said, never widen a grant) are what make it the user's decision. rsk constrains only the actions
+that go through it: an agent with ssh can still type `sbatch`, `scancel` or `kill`, and `submit.sh` cannot tell who
+called it (its policy refusals and guards still hold). `rsk sync -D` and `rsk bootstrap --job` take only the user's
+words (`--approve`, recorded in the audit log with the command line); the other `rsk sync|bootstrap|pull|avail` calls are
+thin wrappers with no check: rails only. A run-watch table's `#@ ok` is a second store of approvals, kept
+by bash; `rsk watch` only adds the lease. Nothing here guarantees that an agent complies. What it does guarantee is
+narrower and checkable: an action that goes through rsk is checked against the recorded decisions before it happens,
+every use is counted against its limits under a lock, denies win, a lost reply is never resubmitted blind, and the
+ledger shows what was done under which words.
 
 ## Monitoring (`remote/status.sh`)
 
@@ -184,8 +256,9 @@ lexically; the description stays under 1024 characters and free of `<>`). The cl
 their rails, conventions and project setup almost word for word, and a placement left open spans both kinds anyway
 (`run-avail` reads every target), so an agent needed both and had to route between them. `remote-run` keeps one INDEX
 with a `kind` column, one rail list (kind-specific rails labelled) and a procedure per kind; `rsk` is its read-only
-observation path. Since an agent lists every installed skill by its description, a leftover `hpc-run` next to
-`remote-run` would compete with it on stale text: `install.sh` removes the old copies it generated in the shared root
+observation path and, through `rsk launch` / `rsk cancel`, its checked path for acting. Since an agent lists every
+installed skill by its description, a leftover `hpc-run` next to `remote-run` would compete with it on stale text:
+`install.sh` removes the old copies it generated in the shared root
 (and links to them), moves everything else out of every root Claude Code, Codex and pi scan instead of deleting it
 (a copy elsewhere may carry the user's edits), and `rsk doctor` fails while one is still discoverable. Packs keep
 their `routing/hpc-run.md` / `ws-run.md` (members on older engines read only those names); the INDEX uses them when a
@@ -222,7 +295,8 @@ already on the server is checked for remote-only edits and a hand-built venv bef
 with stubs for `sbatch`, `sinfo`, `squeue`, `scontrol`, `ssh`, `uv` and `rsync` that dispatch on literal command
 strings. Phase B runs every real target's `tests.sh` (engine, packs, overlay) with the same helpers. Documentation
 is tested too: the committed INDEX stub must equal the generator's output, the skill must keep every rail, and
-an optional list of forbidden words keeps private names out of the repo.
+an optional list of forbidden words keeps private names out of the repo. `rsk` itself has unit tests (`tests/py/`) and
+an end-to-end section (`tests/62-rsk-launch.sh`) in which an executing ssh stub runs the deployed scripts locally.
 
 ## Batch watching (`run-watch`)
 
@@ -242,6 +316,9 @@ is the one shared watcher:
   user agreed; the skill rail (show the rows and budget, wait for the OK) does that.
 - **Never guess a submit outcome.** One row per submit ssh; no `+ sbatch` line from `submit.sh` = refused before
   sbatch (budget refunded); a receipt = submitted; anything else is a sticky `submit-unknown` that only `--adopt` or
-  a user-approved `--release` clears. CANCELLED is never resubmitted (someone may have pressed cancel).
+  a user-approved `--release` clears (the attempt journal's `refused`/`failed`/`planned` = nothing queued). CANCELLED is
+  never resubmitted (someone may have pressed cancel). A row is one run by its name: a table renamed or copied keeps the
+  row's state and spent budgets (taken from the other `logs/run-watch/*.state` files; spent budgets never fewer than any
+  of them holds), so a new file name never resets a budget; a row's words never carry `--rs-*`.
 - **Report, never interfere**: requeue storms, stalls (log mtime) and a missing resume line are events only.
 

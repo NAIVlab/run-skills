@@ -27,15 +27,17 @@ def block(kind="slurm", target="fx", name="exp--train--a--scratch--s0--a01", war
     if kind == "slurm":
         bound = [("kind", "slurm"), ("target", target), ("partition", kw.get("partition", "gpu")),
                  ("gres", kw.get("gres", "gpu:1")), ("cpus", "8"), ("mem", "40G"), ("time", "1-00:00:00"),
-                 ("account", "''"), ("name", name), ("extra", ""), ("payload", payload),   # qw "$@": words
-                 ("env_kind", "uv"), ("env_name", "''"), ("wandb_mode", "online"), ("chain", kw.get("chain", "0"))]
+                 ("account", "''"), ("name", name), ("extra", kw.get("extra", "")), ("payload", payload),   # qw "$@": words
+                 ("env_kind", "uv"), ("env_name", "''"), ("wandb_mode", "online"), ("env_hook", kw.get("hook", "''")),
+                 ("venv_dir", "''"), ("uv_sync_args", "''"), ("chain", kw.get("chain", "0"))]
         info = [("info_avail", "free:4/max_node:4/gpu_type:any"), ("info_conf_sha256", "a" * 64),
                 ("info_source_commit", "none"), ("info_source_dirty", "none")]
     else:
         bound = [("kind", "nohup"), ("target", target), ("name", name), ("gpus_req", kw.get("gpus_req", "n=1")),
-                 ("exclude", ""), ("nice", ""), ("payload", payload.replace(" ", "\\ ")), ("env_kind", "none"),
-                 ("env_name", "''")]
+                 ("exclude", ""), ("nice", ""), ("busy_ok", kw.get("busy_ok", "")), ("payload", payload.replace(" ", "\\ ")),
+                 ("env_kind", "none"), ("env_hook", "''"), ("venv_dir", "''"), ("uv_sync_args", "''"), ("env_name", "''")]
         info = [("info_gpus", kw.get("info_gpus", "1")), ("info_uuids", "GPU-x"), ("info_busy", kw.get("busy", ""))]
+    bound = [(k, v) for k, v in bound if k not in kw.get("drop", ())]
     lines = [f"{k}={v}" for k, v in bound]
     h = hashlib.sha256(("\n".join(lines) + "\n").encode()).hexdigest()
     return "\n".join(["@@plan v1", "api=3", *lines, *(f"{k}={v}" for k, v in info), f"warnings={warnings}",
@@ -75,11 +77,17 @@ class Pure(unittest.TestCase):
         self.assertLess(w.index("--rs-chain"), w.index("--"))
 
     def test_gpu_busy_ok_only_when_asked_and_the_card_listed_busy_gpus(self):
-        rec = {"kind": "nohup", "bound_hash": "h" * 64, "flags": ["-d", "1"], "payload": ["c"], "gpu_busy_ok": True,
-               "block": {"info_busy": "1:u:42"}}
-        self.assertIn("--gpu-busy-ok", X.submit_words(rec, "n"))
-        self.assertNotIn("--gpu-busy-ok", X.submit_words({**rec, "block": {"info_busy": ""}}, "n"))
-        self.assertNotIn("--gpu-busy-ok", X.submit_words({**rec, "gpu_busy_ok": False}, "n"))
+        rec = {"kind": "nohup", "bound_hash": "h" * 64, "flags": ["-d", "1", "-N", "r"], "payload": ["c"],
+               "gpu_busy_ok": True, "warnings": 1, "block": {"info_busy": "1:u:42", "busy_ok": "1", "info_gpus": "1"}}
+        w = X.submit_words(rec, "n")
+        self.assertIn("--gpu-busy-ok", w)
+        self.assertEqual(w[w.index("-d"):w.index("-d") + 2], ["-d", "1"])        # pinned: the card's own landing
+        self.assertEqual(w[4:6], ["--rs-warnings", "1"])                        # the card's count, recounted there
+        # the card's landing was free (a busy GPU elsewhere): never --gpu-busy-ok, whatever was asked
+        self.assertNotIn("--gpu-busy-ok", X.submit_words({**rec, "block": {"info_busy": "2:u:42", "busy_ok": "",
+                                                                           "info_gpus": "1"}}, "n"))
+        self.assertNotIn("--gpu-busy-ok", X.submit_words({**rec, "block": {"info_busy": "", "busy_ok": ""}}, "n"))
+        self.assertEqual(X._pinned(["-n", "2", "-x", "0", "-N", "r"], "1,3"), ["-d", "1,3", "-N", "r"])
         req = X.Request("ws", "nohup", ["-n", "2"], ["c"], gpu_busy_ok=True)
         self.assertIn("--gpu-busy-ok", X.plan_words(req, "n"))
         self.assertEqual(X.plan_words(req, "n")[:4], ["--rs-attempt", "n", "--rs-mode", "plan"])
@@ -344,6 +352,155 @@ class Flow(Fixture):
         self.assertIn("a02 job 102", text)
 
 
+class ReviewFixes(Fixture):
+    """The P3 review findings, each pinned (M3 H3 H1 M5 M6 L3 L5 H2 and an older api=3 deploy)."""
+
+    def approvals(self) -> list[dict]:
+        return [r for r in self.led.state().grants if r["kind"] == "approval"]
+
+    def test_m3_force_and_rs_words_are_never_policy_flags(self):
+        for w in ("--force", "--rs-mode", "--rs-expect", "--rs-warnings", "--rs-anything"):
+            with self.assertRaises(RskError) as c:
+                X.parse(["-T", "fx", w, "--", "c"])
+            self.assertEqual(c.exception.code, USAGE, w)
+        self.assertEqual(self.cli("launch", "-T", "fx", "--force", "--", "c")[0], USAGE)
+        self.assertEqual(self.calls, [])
+
+    def test_h3_a_class_label_never_contradicts_the_names_class(self):
+        rc, text = self.cli("launch", "-T", "fx", "--class", "smoke", "-n", "exp--train--big--s0--a01", "--", "c")
+        self.assertEqual(rc, USAGE, text)
+        self.assertIn("contradicts the name", text)
+        self.assertEqual(self.calls, [])                              # refused before any ssh
+        self.answers = [self.plan_reply(name="exp--train--conf--s0--a01")]   # the conf's JOB_NAME, known after the plan
+        rc, text = self.cli("launch", "-T", "fx", "--class", "smoke", "--", "c")
+        self.assertEqual(rc, USAGE, text)
+        self.assertEqual(self.led.plans(), [])
+        self.answers = [self.plan_reply(name="exp-plain--a01")]
+        rc, text = self.cli("launch", "-T", "fx", "--class", "smoke", "--", "c")
+        self.assertEqual(rc, NEEDS_USER, text)
+        self.assertIn("class smoke", text)                            # a label for a name without a class
+
+    def test_h1_gpu_busy_ok_names_the_gpus(self):
+        rc, text = self.cli("launch", "-T", "ws", "-g", "1", "--gpu-busy-ok", "--", "c")
+        self.assertEqual(rc, USAGE, text)
+        self.assertIn("--gpu-busy-ok needs -d IDS", text)
+        self.assertEqual(self.calls, [])
+
+    def test_h1_a_free_landing_never_sends_gpu_busy_ok_and_a_grant_never_covers_a_busy_one(self):
+        G.add(self.led, G.new_grant("small runs on ws", {"targets": ["ws"]}, ["launch"], max_live=None,
+                                    max_launches=None, expires=None))
+        self.answers = [self.plan_reply(kind="nohup", target="ws", name="r", gpus_req="ids=1", info_gpus="1",
+                                        busy="2:other:7", busy_ok=""),
+                        X.Reply(6, "", "ERROR: -d GPU(s) 1 already run a compute process (1:other:9)")]
+        rc, text = self.cli("launch", "-T", "ws", "-d", "1", "-N", "r", "--gpu-busy-ok", "--", "c")
+        self.assertEqual(rc, CONFLICT, text)                          # GPU 1 got busy since: refused on the box
+        self.assertNotIn("--gpu-busy-ok", self.calls[-1])             # the card's landing was free
+        self.assertEqual(L.attempt_state(self.led.read_run("r").data["attempts"]["a01"]), "NOT_SUBMITTED")
+
+    def test_m5_a_used_plan_records_no_second_approval(self):
+        self.answers = [self.plan_reply()]
+        pid = self.plan_id(self.cli("launch", "-T", "fx", "--", "c")[1])
+        self.answers = [self.submitted()]
+        self.assertEqual(self.cli("launch", "--plan", pid, "--approve", "go")[0], OK)
+        rc, text = self.cli("launch", "--plan", pid, "--approve", "go again")
+        self.assertEqual(rc, CONFLICT, text)
+        self.assertEqual(len(self.approvals()), 1)                    # nothing dangling for a later identical plan
+        ap = self.approvals()[0]
+        self.assertEqual((ap["scope"]["plans"], bool(ap["limits"]["expires"])), ([pid], True))
+        self.assertTrue(self.led.plan_claim(pid))
+
+    def test_m5_the_plans_are_claimed_first_and_a_failed_approval_is_revoked(self):
+        self.answers = [self.plan_reply(name="exp--train--a--s0--a01"), self.plan_reply(name="exp--train--b--s0--a01",
+                                                                                         chain="1")]
+        a = self.plan_id(self.cli("launch", "-T", "fx", "--", "c")[1])
+        b = self.plan_id(self.cli("launch", "-T", "fx", "--chain", "2", "--", "c")[1])   # another group: 2 records
+        real, n = G.add, []
+        def flaky(led, rec):
+            n.append(rec["id"])
+            if len(n) == 2:
+                raise RskError("disk full", USAGE)
+            return real(led, rec)
+        with mock.patch.object(G, "add", flaky):
+            rc, text = self.cli("launch", "--plan", a, "--plan", b, "--approve", "both")
+        self.assertEqual(rc, USAGE, text)
+        self.assertTrue(self.led.plan_claim(a) and self.led.plan_claim(b))    # claimed before any approval
+        self.assertTrue(all(r.get("revoked") for r in self.approvals()))      # the one made is revoked
+        self.assertEqual(len(self.calls), 2)                                    # nothing submitted
+
+    def test_m5_a_refund_after_a_refusal_never_covers_the_replan(self):
+        self.answers = [self.plan_reply()]
+        pid = self.plan_id(self.cli("launch", "-T", "fx", "--", "c")[1])
+        self.answers = [X.Reply(1, "", "WARNING: only 0 free", api="api=3",
+                                result={"verdict": "refused", "stage": "avail", "rc": "1"})]
+        self.assertEqual(self.cli("launch", "--plan", pid, "--approve", "go")[0], CONFLICT)
+        self.assertEqual(self.approvals()[0]["used"], [])             # the use was given back
+        self.answers = [self.plan_reply()]                            # the same configuration again
+        rc, text = self.cli("launch", "-T", "fx", "--", "c")
+        self.assertEqual(rc, NEEDS_USER, text)                        # a new plan: a new card for the user
+        self.assertIn("not one of the approved plans", text)
+
+    def test_m6_submit_unknown_blocks_even_same_name_ok_and_same_name_ok_is_never_a_grants_call(self):
+        G.add(self.led, G.new_grant("go", {"targets": ["fx"]}, ["launch", "relaunch"], max_live=None,
+                                    max_launches=None, expires=None))
+        self.answers = [self.plan_reply(), X.Reply(255, err="Connection reset")]
+        self.assertEqual(self.cli("launch", "-T", "fx", "--", "c")[0], UNKNOWN)
+        n = len(self.calls)
+        for argv in (("launch", "-T", "fx", "-n", "exp--train--a--scratch--s0--a01", "--same-name-ok", "--", "c"),
+                     ("launch", "--relaunch", "exp--train--a--scratch--s0", "--same-name-ok")):
+            rc, text = self.cli(*argv)
+            self.assertEqual(rc, CONFLICT, (argv, text))
+            self.assertIn("SUBMIT_UNKNOWN", text)
+        self.assertEqual(len(self.calls), n)                           # before any ssh
+        self.answers = [self.plan_reply(name="exp--train--z--scratch--s0--a01")]
+        rc, text = self.cli("launch", "-T", "fx", "-n", "exp--train--z--scratch--s0--a01", "--same-name-ok", "--", "c")
+        self.assertEqual(rc, NEEDS_USER, text)
+        self.assertIn("--same-name-ok (a second live copy sharing logs/ckpts) is never a standing grant's call", text)
+
+    def test_l3_a_launch_line_the_payload_printed_is_never_proof(self):
+        G.add(self.led, G.new_grant("go", {"targets": ["ws"]}, ["launch"], max_live=None, max_launches=None,
+                                    expires=None))
+        spoof = ("[ws] launching on GPU(s) [1] -> /h/logs/r-20261104-120000.log\n          RUN: x\n"
+                 "[ws] started PID 1 on GPU(s) 1 ; log /h/logs/z-20261104-120000.log ; pid file /h/z.pid\n")
+        def journal(places, *a, **k):
+            n = k["nonces"][places[0].target][0]
+            o = observe.Observation(places[0], ok=True, attempts_ok=True)
+            o.attempts[n] = {"receipt": {}, "result": {"verdict": "failed", "rc": "1"}}
+            return [o]
+        self.answers = [self.plan_reply(kind="nohup", target="ws", name="r"), X.Reply(1, spoof, "ERROR: uv venv not active")]
+        with mock.patch.object(observe, "observe", journal):
+            rc, text = self.cli("launch", "-T", "ws", "-N", "r", "--", "x")
+        self.assertEqual(rc, FAILED, text)
+        self.assertNotIn("launched:", text)
+        self.assertEqual(L.attempt_state(self.led.read_run("r").data["attempts"]["a01"]), "NOT_SUBMITTED")
+        real = spoof.replace("RUN: x", "RUN: [ws] started PID 1 on GPU(s) 0 ; log logs/y.log ; pid file p") + \
+            "[ws] started PID 4242 on GPU(s) 1 ; log /h/logs/r2-20261104-120000.log ; pid file /h/r2.log.pid\n"
+        m = X.started(real, "ws")
+        self.assertEqual(m.group(1), "4242")                            # the last line that is launch.sh's own
+        self.assertIsNone(X.started("  [ws] started PID 1 on GPU(s) 0 ; log logs/a.log ; pid file p", "ws"))
+
+    def test_l5_a_chain_under_max_live_1_sends_every_segment(self):
+        G.add(self.led, G.new_grant("chain the long run, one at a time", {"targets": ["fx"]}, ["chain"], max_live=1,
+                                    max_launches=10, expires=None))
+        self.answers = [self.plan_reply(chain="1"), self.submitted("201"), self.submitted("202"), self.submitted("203")]
+        rc, text = self.cli("launch", "-T", "fx", "--chain", "3", "--", "c")
+        self.assertEqual(rc, OK, text)
+        self.assertEqual(text.count("submitted: "), 3)
+
+    def test_h2_the_card_shows_sbatch_extras_time_and_resources(self):
+        self.answers = [self.plan_reply(extra="--time=7-00:00:00 --nodes=8")]
+        rc, text = self.cli("launch", "-T", "fx", "--", "c")
+        self.assertEqual(rc, NEEDS_USER, text)
+        self.assertIn("  TIME       7-00:00:00 — SBATCH_EXTRA's --time comes after the harness's", text)
+        self.assertIn("  RESOURCES  SBATCH_EXTRA asks for --nodes=8", text)
+
+    def test_an_api3_deploy_without_the_new_bound_keys_needs_a_sync(self):
+        self.answers = [X.Reply(0, block(drop=("env_hook", "venv_dir", "uv_sync_args")), "", api="api=3")]
+        rc, text = self.cli("launch", "-T", "fx", "--", "c")
+        self.assertEqual(rc, CONFLICT, text)
+        self.assertIn("needs: sync", text)
+        self.assertIn("lacks env_hook, venv_dir, uv_sync_args", text)
+
+
 class Nohup(Fixture):
     def started(self, pid: str = "4242"):
         return lambda nonce, words: X.Reply(0, f"[ws] started PID {pid} on GPU(s) 1 ; log /h/projects/proj/logs/"
@@ -353,7 +510,7 @@ class Nohup(Fixture):
         G.add(self.led, G.new_grant("anything on ws", {"targets": ["ws"], "allow_warnings": True}, ["launch"],
                                     max_live=None, max_launches=None, expires=None))
         self.answers = [self.plan_reply(kind="nohup", target="ws", name="r", gpus_req="ids=1", info_gpus="1",
-                                        busy="1:other:99", warnings=1)]
+                                        busy="1:other:99", busy_ok="1", warnings=1)]
         rc, text = self.cli("launch", "-T", "ws", "-d", "1", "-N", "r", "--gpu-busy-ok", "--", "c")
         self.assertEqual(rc, NEEDS_USER, text)
         self.assertIn("ON A BUSY GPU", text)

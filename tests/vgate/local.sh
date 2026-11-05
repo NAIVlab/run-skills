@@ -6,7 +6,10 @@
 # addr-a/addr-b (two addresses behind the alias' round-robin name) each session is a fresh connection to its own login
 # node, else both use the alias as configured; the hostnames printed show where they landed. (2) a non-pty ssh whose
 # client dies: does the remote command survive when it stays silent, and when it writes to the dead stdout? (3) nohup
-# targets: boot_id and the /proc/<pid>/stat start time are readable. Writes only under <scratch-dir>. NOT in selftest.
+# targets: boot_id and the /proc/<pid>/stat start time are readable; the two nvidia-smi reads launch.sh makes (the GPU
+# table, and the compute processes: `--query-compute-apps=gpu_uuid,pid --format=csv,noheader` — one `<uuid>, <pid>` line
+# each, or a "No running processes found" line — with `ps -o user=` of the first pid), read-only. Writes only under
+# <scratch-dir>. NOT in selftest.
 set -u
 H=$1; D=$2; K=${3:-slurm}; A=${4:-}; B=${5:-}
 case "$D" in *'~'*) echo "vgate=fail: <scratch-dir> without '~' (a relative path starts at the remote home)"; exit 2 ;; esac
@@ -32,4 +35,6 @@ sleep 2; kill "$p1" "$p2" 2>/dev/null; wait 2>/dev/null; sleep 10
 echo "nopty_after_client_death=$("${S[@]}" "cd '$D' && for f in nopty-silent nopty-writer; do [ -e \$f ] && echo \${f}:survived || echo \${f}:killed; done" | tr '\n' ' ')"
 if [ "$K" = nohup ]; then
   echo "proc=$("${S[@]}" 'echo boot_id=$(cat /proc/sys/kernel/random/boot_id) self_start=$(sed "s/.*) //" /proc/self/stat | cut -d" " -f20) clk_tck=$(getconf CLK_TCK) shell=$0')"
+  echo "gpus=$("${S[@]}" 'nvidia-smi --query-gpu=index,uuid,memory.used --format=csv,noheader,nounits 2>&1 | head -n 16 | tr "\n" ";"') (want <index>, <uuid>, <MiB>;…)"
+  echo "apps=$("${S[@]}" 'a=$(nvidia-smi --query-compute-apps=gpu_uuid,pid --format=csv,noheader 2>&1); r=$?; echo "rc=$r $(printf "%s\n" "$a" | head -n 16 | tr "\n" ";")"; p=$(printf "%s\n" "$a" | sed -n "1s/.*, *//p" | tr -cd 0-9); [ -z "$p" ] || echo "user_of_$p=$(ps -o user= -p "$p" 2>&1)"' | tr '\n' ' ') (want <uuid>, <pid>;… or No running processes found)"
 fi

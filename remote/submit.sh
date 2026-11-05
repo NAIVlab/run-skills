@@ -2,7 +2,7 @@
 # run-skills remote/submit.sh — generic Slurm submit. Runs ON the login node from <REMOTE_DIR>/.<target>/ (deployed
 # by run-sync next to profile.sh, policy.sh, job.sbatch). Partition limits and gates come from the target's policy.sh
 # (t_partition / t_policy, contract in targets/_template-slurm/policy.sh); this file names no cluster.
-#   submit.sh [--rs-attempt NONCE] [--rs-mode plan] [--rs-expect HASH] [--rs-chain] [-p partition] [-g ngpu] [-G gputype]
+#   submit.sh [--rs-attempt NONCE] [--rs-mode plan] [--rs-expect HASH [--rs-warnings N]] [--rs-chain] [-p partition] [-g ngpu] [-G gputype]
 #             [-t time] [-m mem] [-c cpus] [-n name] [-y] [--same-name-ok] [--<policy-flag>] -- <cmd...>
 # Defaults from ../.hpc.conf: <TAG>_KEY beats KEY (DEFAULT_GPUS/CPUS/MEM/TIME ACCOUNT SBATCH_EXTRA JOB_NAME); CLI beats both.
 # -y queues past an availability/occupancy warning. Exit 1 = warning, 2 = usage/data error, 3 = policy refusal,
@@ -12,13 +12,16 @@
 # all written BEFORE anything reaches the caller (the EXIT trap replays out/err), so a dead ssh loses nothing.
 # Protocol api=3 (../API): --rs-mode plan runs every check (-y gates count as acknowledged: WARNING, go on), prints ONE
 # `@@plan v1` … `@@end` block (the bound fields + bound_hash) and stops before the snapshots and sbatch; --rs-expect HASH
-# submits only if that hash is still the one rs_bound gives (else the block + ERROR, exit 6); --rs-chain = a singleton segment.
+# submits only if that hash is still the one rs_bound gives AND this call printed as many `WARNING:` lines as the approved
+# card counted (--rs-warnings N, default 0: -y never passes a new one) — else the block + ERROR, exit 6; under --rs-expect a
+# failed squeue is exit 1, never a -y gate. --rs-chain = a singleton segment. An SBATCH_EXTRA --time / -t (sbatch takes
+# the last one) is held to MaxTime like -t.
 set -euo pipefail
 unset RS_ATTEMPT RS_CONF_FILE RS_RUN RS_ACKS     # a submit from inside a job (--export=ALL) never inherits its attempt
 trap '' HUP                                      # a session that hangs up (ssh -t) cannot stop it between decide and record
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJ="$(cd "$SELF/.." && pwd)"
-NONCE=""; _ra=0; _dd=0; _av=(); PLAN=0; EXPECT=""; CHAIN=0   # pre-scan, before --: each value a SEPARATE word (an old
+NONCE=""; _ra=0; _dd=0; _av=(); PLAN=0; EXPECT=""; CHAIN=0; RS_WARN=""   # pre-scan, before --: each value a SEPARATE word (an old
 while [ "$#" -gt 0 ]; do                                      # parser exits 2 on the bare word: unknown arg, nothing submitted)
   case "$_dd:$1" in
     0:--rs-attempt) [ "$_ra" = 0 ] && [ "$#" -ge 2 ] || { echo "ERROR: --rs-attempt takes one NONCE, once" >&2; exit 2; }
@@ -28,12 +31,16 @@ while [ "$#" -gt 0 ]; do                                      # parser exits 2 o
     0:--rs-expect) [ -z "$EXPECT" ] && [ "$#" -ge 2 ] && [ "${#2}" = 64 ] && [ -n "${2##*[!0123456789abcdef]*}" ] \
                      || { echo "ERROR: --rs-expect takes one bound_hash (64 lowercase hex), once" >&2; exit 2; }
                    EXPECT=$2; shift 2; continue ;;
+    0:--rs-warnings) [ -z "$RS_WARN" ] && [ "$#" -ge 2 ] && [ -n "$2" ] && [ -n "${2##*[!0123456789]*}" ] && [ "${#2}" -le 4 ] \
+                       || { echo "ERROR: --rs-warnings takes one count (digits), once" >&2; exit 2; }
+                     RS_WARN=$2; shift 2; continue ;;
     0:--rs-chain) CHAIN=1; shift; continue ;;
-    0:--rs-*) echo "ERROR: '$1' is not a flag of this submit.sh (api=3: --rs-attempt NONCE, --rs-mode plan, --rs-expect HASH, --rs-chain; values as separate words)" >&2; exit 2 ;;
+    0:--rs-*) echo "ERROR: '$1' is not a flag of this submit.sh (api=3: --rs-attempt NONCE, --rs-mode plan, --rs-expect HASH, --rs-warnings N, --rs-chain; values as separate words)" >&2; exit 2 ;;
     0:--) _dd=1 ;;
   esac; _av+=("$1"); shift
 done
 set -- ${_av[@]+"${_av[@]}"}
+[ -z "$RS_WARN" ] || [ -n "$EXPECT" ] || { echo "ERROR: --rs-warnings goes with --rs-expect (the approved card's count)" >&2; exit 2; }
 AN=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789   # spelled out: [A-Z] ranges follow the locale
 if [ "$_ra" = 1 ]; then case "$NONCE" in [$AN]*) ;; *) NONCE=/ ;; esac   # never '.', '..' or a leading '-' (an old parser's flag)
   case "$NONCE" in *[!$AN._-]*) echo "ERROR: --rs-attempt NONCE must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}" >&2; exit 2 ;; esac
@@ -70,7 +77,7 @@ CLUSTER="${T_NAME:?$SELF/profile.sh lacks T_NAME — deploy with run-sync}"
 TAG=$(printf %s "$CLUSTER" | tr -cd '[:alnum:]' | tr '[:lower:]' '[:upper:]')
 # trust only .hpc.conf for conf-owned keys — never stale login-shell exports (which --export=ALL would also forward)
 _keys=""; for _k in DEFAULT_PARTITION DEFAULT_GPU_TYPE DEFAULT_GPUS DEFAULT_CPUS DEFAULT_MEM DEFAULT_TIME ACCOUNT SBATCH_EXTRA \
-          JOB_NAME VENV_DIR ENV_KIND ENV_NAME ENV_HOOK WANDB_MODE ${T_CONF_KEYS:-}; do unset "$_k" "${TAG}_$_k"; _keys="$_keys $_k ${TAG}_$_k"; done
+          JOB_NAME VENV_DIR ENV_KIND ENV_NAME ENV_HOOK WANDB_MODE UV_SYNC_ARGS ${T_CONF_KEYS:-}; do unset "$_k" "${TAG}_$_k"; _keys="$_keys $_k ${TAG}_$_k"; done
 [ -f "$PROJ/.hpc.conf" ] || { echo "ERROR: MISSING $PROJ/.hpc.conf (partial sync?) — run run-sync first." >&2; exit 2; }
 # snapshot the conf (the job's env.sh reads this copy), source it after profile.sh (PROJ CLUSTER TARGET TAG set, as env.sh) in a CHILD
 # bash (no rc files/BASH_ENV/stdin, its stdout to stderr) that hands back those keys as NUL-separated pairs, read as data, never eval'd
@@ -139,14 +146,17 @@ t_min() {
   elif [ -n "${b:-}" ]; then echo $(( 10#$a + (10#$b>0 ? 1 : 0) ))
   else echo $(( 10#$a )); fi
 }
-# reject -t beyond the partition's MaxTime NOW (sbatch accepts it and the job pends forever)
-_cap="${P_MAXTIME:-${T_MAXTIME:-}}"
-if [ -n "$_cap" ]; then
-  _req=$(t_min "$TIME"); _max=$(t_min "$_cap")
-  if [ "$_req" -gt 0 ] && [ "$_max" -gt 0 ] && [ "$_req" -gt "$_max" ]; then
-    echo "ERROR: -t $TIME exceeds '$PART' MaxTime $_cap on $CLUSTER — the job would pend forever. Lower -t." >&2; exit 2
+# reject a time limit beyond the partition's MaxTime NOW (sbatch accepts it and the job pends forever): -t here, an
+# SBATCH_EXTRA --time / -t (sbatch takes the last one: it comes after the harness's --time) below
+time_cap() {   # time_cap WHAT VALUE
+  local cap="${P_MAXTIME:-${T_MAXTIME:-}}" req max
+  [ -n "$cap" ] || return 0
+  req=$(t_min "$2"); max=$(t_min "$cap")
+  if [ "$req" -gt 0 ] && [ "$max" -gt 0 ] && [ "$req" -gt "$max" ]; then
+    echo "ERROR: $1 $2 exceeds '$PART' MaxTime $cap on $CLUSTER — the job would pend forever. Lower $1." >&2; exit 2
   fi
-fi
+}
+time_cap -t "$TIME"
 # the run command must not be a Slurm submission itself: partition/QOS are this script's decision
 case "$1" in sbatch|srun|salloc) echo "ERROR: run command must not itself call sbatch/srun/salloc ('$1')" >&2; exit 2 ;; esac
 # SBATCH_EXTRA: space-separated sbatch flags (set -f keeps globs literal), ONE option per word: short flags are never
@@ -155,9 +165,10 @@ case "$1" in sbatch|srun|salloc) echo "ERROR: run command must not itself call s
 # (-q NAME, -qNAME, --qos=NAME, --qo=NAME) and a dangling value flag.
 _bad() { echo "ERROR: SBATCH_EXTRA must not contain '$_w' — partition, name/output, arrays, --wait, ':' and bundled short flags are not accepted here. Fix .hpc.conf." >&2; exit 2; }
 if [ -n "$SB_EXTRA" ]; then
-  set -f; _prev=""
+  set -f; _prev=""; _xt=""
   for _w in $SB_EXTRA; do
-    _q=""; case "$_prev" in -q|--qo|--qos) _q="$_w" ;; esac
+    _q=""; case "$_prev" in -q|--qo|--qos) _q="$_w" ;; --time|-t) _xt=$_w ;; esac
+    case "$_w" in --time=*) _xt=${_w#--time=} ;; -t?*) _xt=${_w#-t} ;; esac
     case "$_w" in
       --part*|--j*|--ou*|--er*|--ar*|--wai|--wait|:) _bad ;;
       --qo=*|--qos=*) _q="${_w#*=}" ;;
@@ -171,6 +182,7 @@ if [ -n "$SB_EXTRA" ]; then
   done
   case "$_prev" in -q|--qo|--qos) echo "ERROR: SBATCH_EXTRA ends with a dangling '$_prev' (no value) — fix .hpc.conf." >&2; exit 2 ;; esac
   set +f
+  [ -z "$_xt" ] || time_cap "SBATCH_EXTRA's --time" "$_xt"
 fi
 if [ "$CHAIN" = 1 ]; then   # --rs-chain: one singleton chain segment; another dependency already set is a conflict, never merged
   _d=""; _prev=""; for _w in "${SB_ARGS[@]}"; do case "$_prev:$_w" in -d:*|--dependency:*|*:--dependency=*|*:-d?*) _d="$_d $_w" ;; esac; _prev=$_w; done
@@ -199,7 +211,8 @@ check_gpu_avail() {
   echo "  -> $free free now; up to $maxn on one node (a 1-node job needs $NGPU on ONE node)."; AVAIL="free:$free/max_node:$maxn/gpu_type:$2"
   if { [ "$free" -lt "$NGPU" ] || [ "$maxn" -lt "$NGPU" ]; }; then
     [ "$FORCE" = 1 ] || { echo "WARNING: only $free free of '$2' ($maxn on one node). Re-run -y to queue, pick another -G, or lower -g." >&2; exit 1; }
-    [ "$PLAN" = 0 ] || echo "WARNING: only $free free of '$2' ($maxn on one node) — the submit needs -y to queue anyway." >&2
+    if [ "$PLAN" = 1 ]; then echo "WARNING: only $free free of '$2' ($maxn on one node) — the submit needs -y to queue anyway." >&2
+    elif [ -n "$EXPECT" ]; then echo "WARNING: only $free free of '$2' ($maxn on one node) — -y: queuing anyway (the approved card's warning, counted)." >&2; fi
   fi
 }
 GRES=(); AVAIL=cpu-only
@@ -227,6 +240,8 @@ if [ "$SAME_OK" = 0 ] && [ "$_chain" = 0 ]; then
       echo "ERROR: '$NAME' is already ${_j#* } from this project (job ${_j%% *}; live: $(printf %s "$_live" | cut -d' ' -f1 | paste -sd, -)) —" \
         "a second copy would share its logs/ckpts. Follow that job, pick another -n, or pass --same-name-ok if both are wanted." >&2; exit 6
     fi
+  elif [ -n "$EXPECT" ]; then   # an approved plan is submitted only with its duplicate check: -y never skips it here
+    echo "ERROR: squeue failed ($(head -n 1 "$A/squeue.err")) — cannot check for a live '$NAME' from this project; an approved plan (--rs-expect) is never submitted without that check — nothing submitted, retry later" >&2; exit 1
   elif [ "$FORCE" = 1 ]; then echo "WARNING: squeue failed — no check for a live '$NAME' from this project; -y: submitting anyway" >&2
   else echo "WARNING: squeue failed ($(head -n 1 "$A/squeue.err")) — cannot check for a live '$NAME' from this project. Re-run -y to submit anyway." >&2; exit 1; fi
 fi
@@ -258,24 +273,31 @@ _c=""; _prev=""; for _w in "${SB_ARGS[@]}"; do   # the job's comment = the last 
   [ "$_prev" != --comment ] || _c=$_w; case "$_w" in --comment=*) _c=${_w#--comment=} ;; esac; _prev=$_w; done
 rs_sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | cut -d' ' -f1; }   # stdin -> hex
 qw() { [ "$#" = 0 ] || { local s; s=$(printf ' %q' "$@"); printf %s "${s# }"; }; }   # words -> one line of %q words
+rs_hook() {   # env_hook as bound: '<ENV_HOOK>:<sha256 of $PROJ/ENV_HOOK>' ('<ENV_HOOK>:missing'), '' = no ENV_HOOK
+  [ -n "${ENV_HOOK:-}" ] || return 0
+  if [ -f "$PROJ/$ENV_HOOK" ]; then printf '%s:%s' "$ENV_HOOK" "$(rs_sha < "$PROJ/$ENV_HOOK")"; else printf '%s:missing' "$ENV_HOOK"; fi
+}
 rs_bound() {   # THE bound list (the plan block's lines kind= … chain=; bound_hash = sha256 of them): what an approval covers
   local g=${GRES[0]:-} x=("${SB_ARGS[@]}"); [ "${x[*]:0:${#SB_H[@]}}" != "${SB_H[*]}" ] || x=("${x[@]:${#SB_H[@]}}")
-  printf 'kind=slurm\ntarget=%q\npartition=%q\ngres=%q\ncpus=%q\nmem=%q\ntime=%q\naccount=%q\nname=%q\nextra=%s\npayload=%s\nenv_kind=%q\nenv_name=%q\nwandb_mode=%q\nchain=%s\n' \
+  printf 'kind=slurm\ntarget=%q\npartition=%q\ngres=%q\ncpus=%q\nmem=%q\ntime=%q\naccount=%q\nname=%q\nextra=%s\npayload=%s\nenv_kind=%q\nenv_name=%q\nwandb_mode=%q\nenv_hook=%q\nvenv_dir=%q\nuv_sync_args=%q\nchain=%s\n' \
     "$CLUSTER" "$PART" "${g#--gres=}" "$NCPU" "$MEM" "$TIME" "$ACCOUNT" "$NAME" "$(qw ${x[@]+"${x[@]}"})" "$(qw "$@")" \
-    "${ENV_KIND:-uv}" "$(ovr ENV_NAME)" "${WANDB_MODE:-online}" "$_chain"
+    "${ENV_KIND:-uv}" "$(ovr ENV_NAME)" "${WANDB_MODE:-online}" "$(rs_hook)" "$(ovr VENV_DIR)" "${UV_SYNC_ARGS:-}" "$_chain"
 }
-rs_plan() {   # plan mode: the block, exit 0. --rs-expect: the SAME rs_bound hash; a mismatch prints the block + ERROR, exit 6
-  local b h w f k v; b=$(rs_bound "$@") && h=$(printf '%s\n' "$b" | rs_sha) && [ "${#h}" = 64 ] \
+rs_plan() {   # plan mode: the block, exit 0. --rs-expect: the SAME rs_bound hash and as many WARNING: lines as the approved
+  local b h w f k v ok=0  # card counted (--rs-warnings N); else the block + ERROR, exit 6
+  b=$(rs_bound "$@") && h=$(printf '%s\n' "$b" | rs_sha) && [ "${#h}" = 64 ] \
     || { echo "ERROR: cannot hash the plan (no sha256sum or shasum here?) — nothing submitted" >&2; exit 2; }
-  [ "$PLAN" = 1 ] || [ "$h" != "$EXPECT" ] || { echo "plan: bound_hash=$h = --rs-expect (the approved plan)"; return 0; }
-  if [ -z "$EXPECT" ] || [ "$h" = "$EXPECT" ]; then rs_stage plan; else rs_stage expect; fi
-  w=$(cat "$A/out" "$A/err" | grep -c '^WARNING: ' || true)   # `WARNING (lint):` lines are not counted
+  w=$(cat "$A/out" "$A/err" | grep -c '^WARNING: ' || true); w=${w:-0}   # `WARNING (lint):` lines are not counted
+  [ -n "$EXPECT" ] && { [ "$h" != "$EXPECT" ] || [ "$w" != "${RS_WARN:-0}" ]; } || ok=1   # ok: no --rs-expect, or it holds
+  if [ "$PLAN" = 0 ] && [ "$ok" = 1 ]; then echo "plan: bound_hash=$h = --rs-expect (the approved plan); warnings $w = the approved card's"; return 0; fi
+  if [ "$ok" = 1 ]; then rs_stage plan; else rs_stage expect; fi
   printf '@@plan v1\napi=3\n%s\ninfo_avail=%q\n' "$b" "$AVAIL"
   for f in conf:"$A/conf" profile:"$SELF/profile.sh" policy:"$SELF/policy.sh" policy_local:"$SELF/policy.local.sh"; do
     v=none; [ ! -f "${f#*:}" ] || v=$(rs_sha < "${f#*:}"); printf 'info_%s_sha256=%s\n' "${f%%:*}" "$v"; done
   for k in commit dirty; do v=$(sed -n "s/^$k=//p" "$PROJ/.run-source" 2>/dev/null | head -n 1) || v=""; printf 'info_source_%s=%q\n' "$k" "${v:-none}"; done
-  printf 'warnings=%s\nbound_hash=%s\n@@end\n' "${w:-0}" "$h"
-  [ -z "$EXPECT" ] || [ "$h" = "$EXPECT" ] || { echo "ERROR: the resolved submission differs from the approved plan (bound_hash $h, --rs-expect $EXPECT) — nothing submitted; plan it again" >&2; exit 6; }
+  printf 'warnings=%s\nbound_hash=%s\n@@end\n' "$w" "$h"
+  [ "$ok" = 1 ] || [ "$h" = "$EXPECT" ] || { echo "ERROR: the resolved submission differs from the approved plan (bound_hash $h, --rs-expect $EXPECT) — nothing submitted; plan it again" >&2; exit 6; }
+  [ "$ok" = 1 ] || { echo "ERROR: the resolved submission differs from the approved plan: $w warning(s) now, ${RS_WARN:-0} on the approved card (a new -y gate, or one it showed is gone) — nothing submitted; plan it again" >&2; exit 6; }
   exit 0
 }
 [ "$PLAN" = 0 ] && [ -z "$EXPECT" ] || rs_plan "$@"     # (exits unless an --rs-expect matched)

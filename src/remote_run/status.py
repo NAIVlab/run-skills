@@ -6,7 +6,9 @@ It also reads the local ledger (ledger.py) and records what it saw there — nev
 - ledger runs, one line each: the latest attempt's state, the age and source of that evidence (a failed read leaves
   the last good observation in place and says the target is unobservable now);
 - UNLEDGERED: live jobs/runs of this dir the ledger does not know (adopt them: rsk adopt), and journal attempts
-  (.rs/attempts/<nonce>/) the ledger does not know whose outcome is open;
+  (.rs/attempts/<nonce>/) the ledger does not know whose outcome is open — except what this project's own tools made:
+  run-watch's submits (journal nonces rw-…) and run-bootstrap --job's job (<JOB_NAME>-bootstrap) are tagged with the
+  tool (`(run-watch's)`, `run-watch attempt …`), never UNLEDGERED, no adopt hint;
 - SUBMIT_UNKNOWN attempts reconciled from the remote journal: a receipt, or a job whose comment carries rs=<nonce>
   = submitted; result verdict refused|failed = not submitted (its grant use is given back); anything else stays
   SUBMIT_UNKNOWN (sticky: never resubmitted blind) and becomes a `needs user:` line;
@@ -82,8 +84,32 @@ def _line(j: observe.Job, now: int) -> str:
     return f"  {j.state:<9} job {j.id:<8} {j.name}{extra}"
 
 
+def tool_of(nonce: str, name: str) -> str:
+    """Which of this project's own tools made a submission the ledger does not hold: 'run-watch' (its journal nonces
+    are rw-…), 'bootstrap' (run-bootstrap --job names its job <JOB_NAME>-bootstrap), '' = unknown (UNLEDGERED)."""
+    if str(nonce).startswith("rw-"):
+        return "run-watch"
+    return "bootstrap" if str(name).endswith("-bootstrap") else ""
+
+
+def labels_of(o: observe.Observation) -> dict[str, str]:
+    """job id / log -> the tool its journal receipt says made it (tool_of); jobs named <…>-bootstrap too."""
+    out = {}
+    for n, a in o.attempts.items():
+        rc = a.get("receipt") or {}
+        k, t = rc.get("job") or rc.get("log") or "", tool_of(n, rc.get("name", ""))
+        if k and t:
+            out[k] = t
+    for j in o.jobs:
+        t = tool_of("", j.name)
+        if t and (j.id or j.log):
+            out.setdefault(j.id or j.log, t)
+    return out
+
+
 def render(o: observe.Observation, days: int, known: set[str] | None = None) -> list[str]:
-    """KNOWN: the job ids / logs the ledger holds on this target (None: no ledger view, no UNLEDGERED tags)."""
+    """KNOWN: the job ids / logs the ledger holds on this target (None: no ledger view, no UNLEDGERED tags). A job a
+    tool of this project made (run-watch, run-bootstrap --job) is tagged with that tool: not UNLEDGERED, no adopt."""
     p = o.place
     head = f"[{p.target}] {p.host}:{p.remote_dir}" if p.host else f"[{p.target}]"
     if not o.ok:
@@ -94,8 +120,10 @@ def render(o: observe.Observation, days: int, known: set[str] | None = None) -> 
     lines += [f"  partial: {x}" for x in o.partial]
     live = [j for j in o.jobs if j.state not in observe.TERMINAL and j.state not in ("ENDED", "NOPID", "UNKNOWN")]
     ended = [j for j in o.jobs if j not in live]
+    tools = labels_of(o)
     for j in sorted(live, key=lambda j: (ORDER.get(j.state, 2), j.name)):
-        tag = "" if known is None or (j.id if p.kind == "slurm" else j.log) in known else "  UNLEDGERED"
+        k = j.id if p.kind == "slurm" else j.log
+        tag = "" if known is None or k in known else f"  ({tools[k]}'s)" if k in tools else "  UNLEDGERED"
         lines.append(_line(j, now) + tag)
     if p.kind == "slurm":
         counts: dict[str, int] = {}
@@ -310,7 +338,7 @@ def view(led: L.Ledger, state: L.LedgerState, obs: list[observe.Observation], da
                 continue      # an old submit of another tool, long over: the job lines above already say so
             unledgered.append({"target": o.place.target, "nonce": n, "verdict": v or "open", "stage": a.get("stage"),
                                "job": rc.get("job", ""), "log": rc.get("log", ""), "name": rc.get("name", ""),
-                               "age": int(now - int(a.get("mtime") or now))})
+                               "age": int(now - int(a.get("mtime") or now)), "by": tool_of(n, rc.get("name", ""))})
     for r in state.grants:
         if r.get("revoked"):
             continue
@@ -367,8 +395,10 @@ def cmd_status(args: argparse.Namespace) -> int:
         lines = render(o, args.days, keys[o.place.target] if o.ok else None)
         for u in (x for x in v["unledgered"] if x["target"] == o.place.target):
             what = f"job {u['job']}" if u["job"] else f"log {u['log']}" if u["log"] else f"stage {u['stage'] or '?'}"
-            lines.append(f"  UNLEDGERED attempt {u['nonce']}  {u['verdict']}  {what}  {u['name']}  "
-                         f"({observe.age(u['age'])} ago)")
+            head = (f"{u['by']} attempt" if u.get("by") else "UNLEDGERED attempt")
+            lines.append(f"  {head} {u['nonce']}  {u['verdict']}  {what}  {u['name']}  ({observe.age(u['age'])} ago)"
+                         + ("  — this project's own tool: its own state follows it (run-watch: logs/run-watch/)"
+                            if u.get("by") else ""))
         if o.ok and any(t.endswith("UNLEDGERED") for t in lines):
             lines.append(f"  adopt a job of yours into the ledger: rsk adopt -T {o.place.target} "
                          f"{'--job <id>' if o.place.kind == 'slurm' else '--log <log>'} --as <run>")
