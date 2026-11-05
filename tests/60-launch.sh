@@ -68,6 +68,8 @@ has "$L" "--nice '7'" "per-station NICE passed to launch.sh"; has "$L" " -n '2' 
 has "$L" "--log 'logs/t-[0-9]\{8\}-[0-9]\{6\}\.log'" "-N names the log (local timestamp, as before)"; has "$L" " -- 'tagcmd --flag'\$" "<TAG>_RUN fallback, as ONE quoted word"
 hasnt "$L" 'same-name-ok' "no --same-name-ok unless asked"
 O=$(launch "$W"); has "$(cat "$T/launch.log")" "-N 'jobx'" "per-station JOB_NAME honoured"
+O=$(launch "$W" -N t --nice 3 -- c); has "$(cat "$T/launch.log")" "--nice '3'" "--nice beats the conf's NICE (rsk launch --nice)"
+O=$(launch "$W" -N t --nice -2 -- c) && bad "--nice -2 rejected" || { has "$O" 'non-negative' "--nice -2 rejected"; noss && ok "...before any ssh" || bad "...before any ssh"; }
 O=$(launch "$W" -d 1 -N t -- c); L=$(cat "$T/launch.log")
 has "$L" " -d '1' " "-d goes to launch.sh"; has "$L" " -- 'c'\$" "payload after -- overrides RUN"; hasnt "$L" " -x '" "-d sends no exclude"; hasnt "$L" " -n '" "-d sends no count"
 O=$(launch "$W" -d '0, 1' -N t -- c); has "$(cat "$T/launch.log")" " -d '0,1' " "-d '0, 1' whitespace-normalised"

@@ -3,7 +3,8 @@
 # user's OK:  ssh <alias> bash -s -- <scratch-dir> <partition> [VENV=<venv>] [sbatch args...] < tests/vgate/slurm-remote.sh
 # Submits 3 tiny CPU jobs (1 cpu, 1G, <= 5 min): two held and cancelled unrun (duplicate options, SBATCH_* vs CLI,
 # Comment storage), one --requeue job that this script requeues once (env and stored script after a requeue; a
-# login-node dir seen from the compute node; torch arch flags without a GPU when VENV= is given), then cancelled.
+# login-node dir seen from the compute node; torch arch flags without a GPU when VENV= is given), then cancelled. Also
+# the identity reads rsk cancel and run-watch's fail-stop / --adopt rely on (squeue -O / sacct -o of its own jobs).
 # Prints key=value lines. Writes only under <scratch-dir>; cancels only the jobs it submitted. NOT part of selftest.
 set -u
 D=$1; P=$2; shift 2; VENV=""
@@ -25,6 +26,8 @@ j2=$(SBATCH_TIMELIMIT=00:04:00 sb --hold --time=00:02:00 -J rs-vgate-env --wrap 
 echo "env_vs_cli_time=$(tl "$j2") (SBATCH_TIMELIMIT=00:04:00, --time=00:02:00)"
 scancel "$j" "$j2"; sleep 8
 echo "comment_sacct=$(sacct -X -n -P -j "$j" -o Comment 2>&1 | head -n 1)"
+# identity of an ended job (run-watch --adopt, rsk cancel's "gone"): JobID|JobName|User|WorkDir, -P (no trailing '|')
+echo "id_sacct=$(sacct -X -n -j "$j" -o JobID,JobName,User,WorkDir -P 2>&1 | head -n 1) (want $j|rs-vgate-dup|$U|$D)"
 
 # 2. how far back sacct may look (MaxQueryTimeRange)
 sacct -X -n -P -u "$U" -S now-30days -o JobID > /dev/null 2> sacct.err; echo "sacct_30d_rc=$? err=$(head -c 200 sacct.err | tr '\n' ' ')"
@@ -40,6 +43,10 @@ mkdir -p "$D/compute-made-\${SLURM_RESTART_COUNT:-0}"
 sleep 120
 EOF
 j3=$(RS_VG=one sb --requeue -t 00:05:00 -J rs-vgate-rq --chdir "$D" job.sh); got "$j3" requeue
+# identity of a live job, read-only, this user's own: every -O field ends with '|' (Name may hold one: parsed from the right)
+echo "id_squeue=$(squeue -h -u "$U" -O 'JobID:0|,UserName:0|,Name:0|,WorkDir:0|' 2>&1 | grep -a "^$j3|" | head -n 1) (want $j3|$U|rs-vgate-rq|$D|)"
+echo "id_squeue_state=$(squeue -h -u "$U" --states=all -O 'JobID:0|,Name:0|,UserName:0|,WorkDir:0|,State:0|' 2>&1 | grep -a "^$j3|" | head -n 1) (want $j3|rs-vgate-rq|$U|$D|<state>|)"
+echo "id_squeue_j=$(squeue -h -j "$j3" -O 'JobID:0|,UserName:0|' 2>&1 | head -n 1) (want $j3|$U|; rsk cancel: another user's job by id)"
 sed -i 's/script=v1/script=v2/' job.sh   # a requeue must still run the copy stored at submit
 for _ in $(seq 60); do [ -s requeue.out ] && break; sleep 5; done
 if [ ! -s requeue.out ]; then echo "requeue=not-started-in-5min $(squeue -h -j "$j3" -O State:0,Reason:0)"; exit 0; fi

@@ -93,6 +93,13 @@ def run_install(src: Path) -> int:
     return subprocess.call(["bash", str(src / "install.sh")], env=env(src))
 
 
+def reference(src: Path, target: str) -> str:
+    """The target's reference file(s) as lib/common.sh's rs_ref names them ('' when the profile does not load)."""
+    done = subprocess.run(["bash", "-c", '. "$RS_HOME/lib/common.sh"; rs_load_target "$1" >/dev/null 2>&1 && rs_ref', "rs",
+                           target], env=env(src), capture_output=True, text=True, timeout=60)
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
 def places(src: Path, project: Path) -> list[Place]:
     """Every target whose conf (.hpc.conf for slurm, .ws.conf for nohup) in PROJECT resolves a remote dir, and every
     target whose profile does not load (Place.error). A conf that does not source fails the whole read: USAGE."""
