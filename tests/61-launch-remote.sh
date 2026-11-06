@@ -898,7 +898,13 @@ O=$(L n -N b1 -n 2 -- c); RC=$?
 has "$O" "^\[ws-box\] GPU(s) in use (id:user:pid): 1:$U:$$,2:?:$DP\$" "names them id:user:pid (ps -o user=; a pid ps cannot see: ?)"
 O=$(L n --rs-attempt b2 -N b2 -n 3 -- c); RC=$?
 [ "$RC" = 1 ] && has "$O" 'only 2 GPU id(s) free' "fewer free than -n -> exit 1 (only K free)" || bad "busy shortfall (rc=$RC)"
+has "$O" 'Use -n 2, -d <ids>, or' "...and suggests -n K, the free count"
 has "$(cat "$N/.rs/attempts/b2/result")" 'rc=1 verdict=refused' "...verdict=refused"; nolog b2 && ok "...nothing launched" || bad "...nothing launched"
+O=$(L n --rs-attempt b2z -N b2z -n 1 -x 0,3 -- c); RC=$?   # busy 1,2 + the free 0,3 excluded: none left
+[ "$RC" = 1 ] && has "$O" 'only 0 GPU id(s) free' "none free (1,2 busy, 0,3 excluded) -> exit 1" || bad "none free (rc=$RC)"
+hasnt "$O" ' -n 0' "...never suggests -n 0 (no GPU count: exit 2)"
+has "$O" 'None is free: wait for one, or (only with the user.s OK naming them) -d <ids> --gpu-busy-ok' "...says none is free"
+nolog b2z && ok "...nothing launched" || bad "...nothing launched (none free)"
 O=$(L n --rs-attempt b3 -N b3 -d 3,1 -- c); RC=$?
 [ "$RC" = 6 ] && has "$O" '^ERROR: -d GPU(s) 1 already run a compute process' "-d onto a busy GPU -> exit 6" || bad "-d busy (rc=$RC)"
 has "$(cat "$N/.rs/attempts/b3/result")" 'rc=6 verdict=refused' "...verdict=refused"; nolog b3 && ok "...nothing launched" || bad "...nothing launched"

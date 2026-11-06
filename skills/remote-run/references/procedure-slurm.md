@@ -362,7 +362,9 @@ at the next lease refresh, exit 3. Honest limit: that check is static — it rea
 target's policy makes of them: a policy that rewrites `-p` (or forces a GPU type) is not seen by `rsk watch`'s row
 check, which is why those denies match every row of the target; what a job really got is squeue's. `fail-stop` makes
 the table one group: once an approved row fails (FAILED/OUT_OF_MEMORY before its time limit) with its `errors` budget
-spent, it cancels the table's other live jobs — only those whose name, user and WorkDir it verified in that same ssh —
+spent, it cancels the table's other live jobs — only those whose name, user and WorkDir it verified in that same ssh;
+a failed job counts once Slurm has purged it from the queue (MinJobAge: `scontrol show config`, e.g. 300 s) and sacct
+holds its final state, so the stop lands that long after the failure, and a shorter sibling may have ended by then —
 and holds the rows not yet submitted; preemption, timeouts and CANCELLED never trigger it, workstation rows are never
 touched, and `--release <that row>` resumes the group once no other fail-stop holds the table. A row whose submit outcome was unknown at the stop is cancelled
 once it is tracked (its receipt, or `--adopt`), but only by an `--act` run and only while the table's approved `#@ allow`
