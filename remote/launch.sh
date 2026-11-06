@@ -330,7 +330,10 @@ else   # the NPICK idlest by memory.used among the free ones (busy ones last, an
       if (!y || ok) print y "," $0 }' | sort -t, -k1,1n -k4,4n -k2,2n | head -n "$NPICK" | cut -d, -f2-)
   DEV=$(printf '%s\n' "$P" | cut -d, -f1 | paste -sd, -); UUIDS=$(printf '%s\n' "$P" | cut -d, -f2 | paste -sd, -)
   got=$(printf '%s\n' "$P" | grep -c .)
-  [ "$got" -ge "$NPICK" ] || { VERDICT=refused; echo "ERROR: asked -n $NPICK but only $got GPU id(s) free (no compute process${BUSY:+; in use: $BUSY}) after GPU_EXCLUDE. Use -n $got, -d <ids>, or (only with the user's OK) --gpu-busy-ok." >&2; exit 1; }
+  [ "$got" -ge "$NPICK" ] || { VERDICT=refused   # -n 0 is no GPU count (exit 2 above): with none free, never suggest it
+    h="Use -n $got, -d <ids>, or (only with the user's OK) --gpu-busy-ok."
+    [ "$got" != 0 ] || h="None is free: wait for one, or (only with the user's OK naming them) -d <ids> --gpu-busy-ok."
+    echo "ERROR: asked -n $NPICK but only $got GPU id(s) free (no compute process${BUSY:+; in use: $BUSY}) after GPU_EXCLUDE. $h" >&2; exit 1; }
   b=$(printf '%s\n' "$P" | awk -F, -v b="$BID" 'index(b, "," $1 ",") { print $1 }' | paste -sd, -)
   [ -z "$b" ] || echo "WARNING: the pick includes GPU(s) $b with a compute process ($BUSY); --gpu-busy-ok: launching onto them" >&2
 fi
