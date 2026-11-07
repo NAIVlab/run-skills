@@ -137,10 +137,11 @@ has "$(rsk grant list)" 'plans used 1/1' "the approval's use is counted"
 O=$(rsk launch --plan "$PL1" --approve "again"); [ "$?" = 6 ] && has "$O" 'was used already' "a used plan -> exit 6" || bad "a used plan -> exit 6"
 O=$(rsk status); has "$O" 'exp--smoke--base--scratch--s0 *a01  PENDING' "rsk status: the ledger run, observed PENDING"
 
-echo "-- local duplicate: a live ledger run of that name -> exit 6 before any ssh --"
-: > "$T/ssh-host.log"; O=$(rsk launch -T fx-slurm -n "$N1" -g 1 -- python train.py); RC=$?
+echo "-- local duplicate: a live ledger run of that name -> exit 6 after one read of its target (the refresh), no plan --"
+: > "$T/ssh-host.log"; NB=$(wc -l < "$T/ssh-body.log"); O=$(rsk launch -T fx-slurm -n "$N1" -g 1 -- python train.py); RC=$?
 [ "$RC" = 6 ] && has "$O" 'is live on fx-slurm in the ledger' "same run live -> exit 6" || bad "local duplicate (rc=$RC)"
-[ ! -s "$T/ssh-host.log" ] && ok "...nothing sent" || bad "...nothing sent"
+[ "$(wc -l < "$T/ssh-host.log")" -le 1 ] && hasnt "$(tail -n "+$((NB + 1))" "$T/ssh-body.log")" '--rs-mode' \
+  "...one read at most (the job is still PENDING there), no plan sent"
 O=$(rsk launch -T fx-slurm -n "$N1" -g 1 --same-name-ok -- python train.py); [ "$?" = 4 ] && ok "--same-name-ok: planned (exit 4)" || bad "--same-name-ok plans"
 has "$(grep -- '--rs-mode' "$T/ssh-body.log" | tail -n 1)" '--same-name-ok' "...and --same-name-ok reaches submit.sh"
 
@@ -307,12 +308,27 @@ JR=$(cut -d'|' -f1,3 "$T/jobs" | sed -n 's/|exp--smoke--r--a01$//p' | tail -n 1)
 O=$(rsk launch -T fx-slurm -n exp--smoke--r--a01 -g 1 -- python t.py); RC=$?
 [ "$RC" = 4 ] && has "$O" '^not covered: ap-' "...the same configuration planned later: a new card for the user (exit 4)" || bad "M5 later plan (rc=$RC)"
 
-echo "-- review M6: a SUBMIT_UNKNOWN attempt blocks a relaunch even with --same-name-ok --"
+echo "-- review M6: a SUBMIT_UNKNOWN attempt blocks a relaunch even with --same-name-ok, unless a read settles it --"
 R=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\n' "$R" > "$R/.hpc.conf"; CWD=$R
 rsk grant add --quote "run and relaunch the smokes on fx" -T fx-slurm --action launch,relaunch --max-live none --max-launches none --expires 2099-12-31 >/dev/null
 touch "$T/ssh.drop"; O=$(rsk launch -T fx-slurm -n exp--smoke--u--a01 -g 1 -- python t.py); [ "$?" = 5 ] || bad "M6 setup: SUBMIT_UNKNOWN"
-: > "$T/sbatch.log"; O=$(rsk launch --relaunch exp--smoke--u --same-name-ok); RC=$?
-[ "$RC" = 6 ] && has "$O" 'SUBMIT_UNKNOWN attempt' "M6: --relaunch --same-name-ok next to a SUBMIT_UNKNOWN -> exit 6" || bad "M6 (rc=$RC)"; nosub "...nothing submitted"
+touch "$T/ssh.noconnect"; : > "$T/sbatch.log"; O=$(rsk launch --relaunch exp--smoke--u --same-name-ok); RC=$?; rm -f "$T/ssh.noconnect"
+[ "$RC" = 6 ] && has "$O" 'SUBMIT_UNKNOWN attempt' "M6: the target unreadable: --relaunch --same-name-ok next to a SUBMIT_UNKNOWN -> exit 6" || bad "M6 (rc=$RC)"; nosub "...nothing submitted"
+O=$(rsk launch --relaunch exp--smoke--u --same-name-ok); RC=$?
+[ "$RC" = 4 ] && has "$O" 'SUBMIT_UNKNOWN -> submitted' "M6: readable: the re-read settles it from the remote journal (as rsk status does)" \
+  && has "$O" 'is live or its end is unknown' "...a live a01 is no infrastructure end: the user decides (exit 4)" || bad "M6 settled (rc=$RC)"
+nosub "...nothing submitted"
+
+echo "-- 2026-11-06 #4/#5: right after a job FAILED, --relaunch re-reads it and a relaunch_after any grant covers it --"
+R=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\n' "$R" > "$R/.hpc.conf"; CWD=$R
+rsk grant add --quote "fix it and just rerun, don't ask" -T fx-slurm --action launch,relaunch --relaunch-after any --max-live none --max-launches none --expires 2099-12-31 >/dev/null
+O=$(rsk launch -T fx-slurm -n exp--smoke--f--a01 -g 1 -- python t.py); RC=$?; J=$(printf '%s\n' "$O" | sed -n 's/^submitted: .* job \([0-9]*\) on .*/\1/p')
+[ "$RC" = 0 ] && [ -n "$J" ] && ok "#4 setup: a01 submitted under the grant (job $J)" || bad "#4 setup (rc=$RC)"
+awk -F'|' -v OFS='|' -v j="$J" '$1 == j { $4 = "FAILED" } 1' "$T/jobs" > "$T/jobs.x" && mv "$T/jobs.x" "$T/jobs"
+: > "$T/sbatch.log"; O=$(rsk launch --relaunch exp--smoke--f); RC=$?
+[ "$RC" = 0 ] && has "$O" 'a01 on fx-slurm: SUBMITTED -> FAILED (read just now)' "#4: re-read first: a01 FAILED, no rsk status needed" \
+  && has "$O" 'a relaunch after any end too' "#5: covered by the relaunch_after any grant, submitted" || bad "#4/#5 (rc=$RC)"
+has "$(att exp--smoke--f a02)" '^SUBMITTED submitted' "...ledger: a02 submitted"
 
 echo "-- review M7: an ENV_HOOK added after the card -> exit 6, nothing submitted --"
 R=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\n' "$R" > "$R/.hpc.conf"; CWD=$R

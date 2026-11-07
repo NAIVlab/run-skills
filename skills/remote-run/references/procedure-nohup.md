@@ -70,6 +70,7 @@ checkpoint dir even when its attempt suffix changes; confirm that resume behavio
 ```
 rsk launch -T <t> [-d 0,1 [--gpu-busy-ok] | -g <count>] [-N <name>] [--nice N] [--same-name-ok] [--class C] [-- <RUN>]
 rsk launch --plan <id> [--plan <id>]... --approve "<the user's words>"     # the card(s) the user approved: launch
+rsk launch … --check-after 20                                              # + the start milestone: PID alive, or failed at once
 TARGET=<t> bash $ROOT/bin/run-launch [-d 0,1 | -n <count>] [-N <name>] [--same-name-ok] [--gpu-busy-ok] -- <RUN>   # without rsk
 ```
 `rsk launch` runs `run-launch` (with `RS_VIA_RSK=1`) twice: `--rs-mode plan` for the card, then, once a record covers
@@ -87,7 +88,10 @@ attempt's name (`<run>--a02`, or a glob over them such as `<run>--a*`) stands fo
 only after a REBOOT ended the run's latest attempt that ran in the ledger, and only for a plan that repeats that attempt's
 configuration — its bound fields, `launch_cfg` (below) included: an edited launcher config is `not the configuration of
 aNN it resumes: launch_cfg …`, and an attempt recorded before rsk kept `launch_cfg` has none, so a relaunch whose plan
-reads a config needs the user once; the user's approval of the card after any end. Exit as for Slurm (procedure-slurm §4: 0 launched, 1 failed — also a plan whose env would fail the gate —,
+reads a config needs the user once; the user's approval of the card after any end, and a grant with `--relaunch-after
+any` after any end too, judged as a launch, never while an earlier attempt rsk can see may be live (procedure-slurm §4:
+also the re-read before the decision, `--check-after` and recycled `--approve` words). Exit as for Slurm
+(procedure-slurm §4: 0 launched, 1 failed — also a plan whose env would fail the gate —,
 2 usage — also a RUN that picks GPUs, below —, 3 refused, 4 needs the user, 5 reply lost = SUBMIT_UNKNOWN, 6 stale plan /
 drift / a live ledger run of that name / a busy `-d` GPU / `grants unreadable` / `needs: sync`, e.g. a box deployed
 before `info_run_gpu=checked`, `info_launchers=checked` or `launch_cfg=`), plus 8: too few free GPUs now. rsk reads the box's journal before it decides: a launch
@@ -282,6 +286,7 @@ taken (exit 2): retry.
 ## 5. Monitor / manage — start reviews with a bounded digest; cadence, milestones, detect-only: `experiment-conventions.md` §7
 ```
 rsk logs -T <t> logs/<name>-<timestamp>.log [<ckpt-dir>] [-n 40]                             # the same digest as below, from the local project root (rsk status: all of its runs)
+rsk logs -T <t> logs/<name>-<timestamp>.log --grep 'loss|Traceback' [-i] [-n 20]             # only matching lines of the log's last 8 MiB (no pipe of yours)
 ssh <host> "bash ~/<WS_REMOTE_DIR>/.ws/status.sh logs/<name>-<timestamp>.log [<ckpt-dir>]"   # review digest (~2 KB): PID alive/gone/reused, log size/age, hints, last 5 lines, ckpt-dir activity
 ssh <host> "bash ~/<WS_REMOTE_DIR>/.ws/status.sh -n 40 logs/<name>-<timestamp>.log"          # deep read on an anomaly: 40 lines × 200 chars, still byte-bounded
 ssh <host> "nvidia-smi --query-gpu=index,uuid,utilization.gpu,memory.used --format=csv,noheader; nvidia-smi --query-compute-apps=pid,gpu_uuid,used_memory --format=csv,noheader"   # join on the uuid

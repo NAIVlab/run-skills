@@ -18,7 +18,7 @@
 # card's (--rs-warnings ID; default: no warning at all, so -y never passes another one) — else the block, `changed: <keys>`
 # (from the approved plan's own journal, when it is here), ERROR, exit 6; under --rs-expect a failed squeue is exit 1.
 # Envelope info_prior=<n|unknown> (not bound): the run's earlier attempts here (rs_prior) — rsk reads n > 0, or no number, as a
-# relaunch. --rs-chain = a singleton segment.
+# relaunch; info_prior_here: this target's (receipt target=, absent counts; a shared dir holds both). --rs-chain = a singleton.
 # Every time limit sbatch could read (-t, the conf, the policy's or SBATCH_EXTRA's --time / -t in any value form; sbatch
 # keeps the last) must be explicit — never 0, UNLIMITED or INFINITE — and within MaxTime. Parsing uses no here-string or
 # heredoc (bash <= 5.0 writes them to $TMPDIR: a full one would fail a parse silently).
@@ -369,17 +369,17 @@ rs_changed() {   # rs_changed BOUND HASH: `changed: <keys>` against the approved
 rs_prior() {   # PRIOR (R5-4): the run's earlier attempts here, whoever submitted them — this project's journal receipts named the run id
   # (NAME minus a trailing --aNN, as rsk's ledger reads it) or <run id>--aNN, + squeue's rows of such a name with this WorkDir (live,
   # or ended and still listed) that no receipt names; unknown (rsk: a relaunch, fail closed) if squeue failed or a receipt is unreadable
-  local rid=$NAME r l n j w c=0 js=" " _ifs=$IFS; PRIOR=unknown; set +f; shopt -u failglob 2>/dev/null || :   # (a policy's options hide nothing)
+  local rid=$NAME r l n j t w c=0 ch=0 js=" " _ifs=$IFS; PRIOR=unknown; PRIOR_HERE=unknown; set +f; shopt -u failglob 2>/dev/null || :
   [[ $NAME =~ ^(.+)--a[0123456789][0123456789]+$ ]] && rid=${BASH_REMATCH[1]}
   rs_runof() { case "$1" in "$rid") ;; "$rid--a"[0123456789][0123456789]*) case "${1#"$rid--a"}" in *[!0123456789]*) return 1 ;; esac ;; *) return 1 ;; esac; }
   [ "$_sq" = ok ] || return 0
-  for r in "$PROJ"/.rs/attempts/*/receipt; do [ -e "$r" ] || [ -L "$r" ] || continue; n=""; j=""   # plain bash reads, no fork per receipt
-    { while IFS= read -r l || [ -n "$l" ]; do case "$l" in name=*) [ -n "$n" ] || n=${l#name=} ;; job=*) [ -n "$j" ] || j=${l#job=} ;; esac; done < "$r"; } 2>/dev/null || return 0
-    ! rs_runof "$n" || { c=$((c + 1)); js="$js$j "; }; done
+  for r in "$PROJ"/.rs/attempts/*/receipt; do [ -e "$r" ] || [ -L "$r" ] || continue; n=""; j=""; t=""   # plain bash reads, no fork per receipt
+    { while IFS= read -r l || [ -n "$l" ]; do case "$l" in name=*) [ -n "$n" ] || n=${l#name=} ;; job=*) [ -n "$j" ] || j=${l#job=} ;; target=*) [ -n "$t" ] || t=${l#target=} ;; esac; done < "$r"; } 2>/dev/null || return 0
+    ! rs_runof "$n" || { c=$((c + 1)); js="$js$j "; [ -n "$t" ] && [ "$t" != "$CLUSTER" ] || ch=$((ch + 1)); }; done
   set -f; IFS=$'\n'   # squeue's rows split as the duplicate guard does (fields from the right: the Name may hold '|')
   for l in $_q; do j=${l%%|*}; r=${l#*|}; r=${r%|}; w=${r##*|}; r=${r%|*}; r=${r%|*}; r=${r%|*}; r=${r%|*}; n=${r%|*}
-    rs_runof "$n" && [ -n "$w" ] && rs_wd "$w" && case "$js" in *" $j "*) false ;; esac || continue; c=$((c + 1)); js="$js$j "; done
-  IFS=$_ifs; set +f; PRIOR=$c; }
+    rs_runof "$n" && [ -n "$w" ] && rs_wd "$w" && case "$js" in *" $j "*) false ;; esac || continue; c=$((c + 1)); ch=$((ch + 1)); js="$js$j "; done
+  IFS=$_ifs; set +f; PRIOR=$c; PRIOR_HERE=$ch; }   # (this cluster's squeue lists only its own jobs: here)
 rs_plan() {   # plan mode: the block, exit 0. --rs-expect: the SAME rs_bound hash and the approved card's warnings_id (--rs-warnings
   local b h f k v ch="" ok=0  # ID; none given: no warning at all); else the block, `changed:` and ERROR, exit 6
   b=$(rs_bound "$@") && h=$(printf '%s\n' "$b" | rs_sha) && [ "${#h}" = 64 ] \
@@ -392,7 +392,7 @@ rs_plan() {   # plan mode: the block, exit 0. --rs-expect: the SAME rs_bound has
   for f in conf:"$A/conf" profile:"$SELF/profile.sh" policy:"$SELF/policy.sh" policy_local:"$SELF/policy.local.sh"; do
     v=none; [ ! -f "${f#*:}" ] || v=$(rs_sha < "${f#*:}"); printf 'info_%s_sha256=%s\n' "${f%%:*}" "$v"; done
   for k in commit dirty; do v=$(sed -n "s/^$k=//p" "$PROJ/.run-source" 2>/dev/null | head -n 1) || v=""; printf 'info_source_%s=%q\n' "$k" "${v:-none}"; done
-  rs_prior; printf 'info_prior=%s\n' "$PRIOR"   # the run's earlier attempts here (an older submit.sh lacks the line)
+  rs_prior; printf 'info_prior=%s\ninfo_prior_here=%s\n' "$PRIOR" "$PRIOR_HERE"   # (an older submit.sh lacks the lines)
   printf 'warnings=%s\nwarnings_avail=%s\nwarnings_id=%s\nbound_hash=%s\n@@end\n' "$W_N" "$W_AV" "$W_ID" "$h"
   [ "$ok" = 1 ] || { [ -z "$ch" ] || echo "$ch" >&2; }
   [ "$ok" = 1 ] || [ "$h" = "$EXPECT" ] || { echo "ERROR: the resolved submission differs from the approved plan (bound_hash $h, --rs-expect $EXPECT) — nothing submitted; plan it again" >&2; exit 6; }
@@ -416,7 +416,7 @@ cat "$A/sbatch.err" >&2
 jid=$(printf %s "$out" | awk '/Submitted batch job/{print $4; exit} /^[0-9]+(;|$)/{sub(/;.*/, ""); print; exit}')
 if [ "$rc" = 0 ] && [ -n "$jid" ]; then   # the job exists: its receipt is on disk before a single byte is printed about it
   _argv=$(printf ' %q' "${cmd[@]}")
-  printf 'job=%s\nname=%s\npartition=%s\nproj=%s\nnonce=%s\nat=%s\nargv=%s\n' "$jid" "$NAME" "$PART" "$PROJ" "$NONCE" "$(date +%s)" "${_argv# }" > "$A/receipt.tmp" && mv -f "$A/receipt.tmp" "$A/receipt" && RECEIPT=1 \
+  printf 'job=%s\nname=%s\ntarget=%s\npartition=%s\nproj=%s\nnonce=%s\nat=%s\nargv=%s\n' "$jid" "$NAME" "$CLUSTER" "$PART" "$PROJ" "$NONCE" "$(date +%s)" "${_argv# }" > "$A/receipt.tmp" && mv -f "$A/receipt.tmp" "$A/receipt" && RECEIPT=1 \
     || echo "WARNING: job $jid was submitted but its receipt could not be written into $A" >&2
   [ "$RECEIPT" = 0 ] || rs_stage done
 fi

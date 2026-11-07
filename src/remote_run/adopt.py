@@ -15,7 +15,8 @@ submit outcome is unknown — each after ONE ssh (observe.run) that checks it re
                                         NOT_SUBMITTED and gives its grant use back. The words are the user's: the
                                         agent asks; this command cannot tell who typed them.
 Adopted runs are bookkeeping: they use no grant, and `cancel_own` never covers them (they are not the agent's).
-Exit: 0 recorded (or already there), 2 usage, 5 the target could not be read, 6 the identity does not match.
+Exit: 0 recorded (or already there), 2 usage, 4 --approve words that repeat a standing grant's quote (grants.recycled),
+5 the target could not be read, 6 the identity does not match.
 """
 
 from __future__ import annotations
@@ -300,6 +301,8 @@ def cmd_adopt(args: argparse.Namespace) -> int:
     if args.approve and not args.not_submitted:
         raise RskError("--approve belongs to --not-submitted only (adopting is bookkeeping)", USAGE)
     led, place = _place(args)
+    if args.not_submitted:
+        grants.refuse_recycled(args.approve or None, led.state().grants, "this unknown submit")
     if args.job:
         return adopt_job(led, place, args.job, args.run, args.days, args.deadline)
     if args.log:

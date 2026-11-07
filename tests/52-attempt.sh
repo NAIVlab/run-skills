@@ -30,9 +30,10 @@ has "$(cat "$A/result" 2>/dev/null)" '^stage=done rc=0 verdict=submitted at=[0-9
 has "$(cat "$A/stage" 2>/dev/null)" '^done$' "stage file: done"
 R=$(cat "$A/receipt" 2>/dev/null)
 has "$R" '^job=1$' "receipt: job id"; has "$R" '^name=jn$' "receipt: name"; has "$R" '^partition=gpu$' "receipt: partition"
+has "$R" '^target=fx-slurm$' "receipt: target (a project dir two targets share: whose receipt it is, info_prior_here)"
 has "$R" "^proj=$P\$" "receipt: proj"; has "$R" "^nonce=$N\$" "receipt: nonce"; has "$R" '^at=[0-9][0-9]*$' "receipt: at (epoch)"
 has "$R" "^argv=sbatch --job-name=jn .*--comment=rs=$N $P/\.fx-slurm/job\.sbatch echo hi\$" "receipt: argv = the sbatch argv (printf %q, one line)"
-[ "$(wc -l < "$A/receipt")" = 7 ] && ok "receipt: exactly 7 key=value lines" || bad "receipt: 7 lines (got $(wc -l < "$A/receipt"))"
+[ "$(wc -l < "$A/receipt")" = 8 ] && ok "receipt: exactly 8 key=value lines" || bad "receipt: 8 lines (got $(wc -l < "$A/receipt"))"
 has "$(cat "$A/out")" '^log: .*/logs/jn_1\.out' "out = what went to stdout (the log: line)"
 has "$(cat "$A/err")" '^+ sbatch ' "err = what went to stderr (the + sbatch line)"
 cmp -s "$A/conf" "$P/.hpc.conf" && ok "snapshot: conf = .hpc.conf at submit time" || bad "snapshot: conf"
@@ -312,7 +313,7 @@ PP=$(mk_proj fx-slurm "$PC"); printf 'path=/l\ncommit=0123abc\ndirty=2\n' > "$PP
 PA=(-g 2 -t 2:00:00 -m 64G -c 4 -n pj -- python t.py --msg "a b")
 O=$(subo "$PP" --rs-attempt pl1 --rs-mode plan "${PA[@]}"); RC=$?; A=$PP/.rs/attempts/pl1; B=$(blk "$O")
 rc_is 0 "$RC" "plan mode" "$O"; nosub "...sbatch never runs"
-[ "$(printf '%s\n' "$B" | sed 's/=.*//' | tr '\n' ' ')" = "@@plan v1 api kind target partition gres cpus mem time account name extra payload env_kind env_name wandb_mode env_hook venv_dir uv_sync_args conf_extra flags chain info_avail info_conf_sha256 info_profile_sha256 info_policy_sha256 info_policy_local_sha256 info_source_commit info_source_dirty info_prior warnings warnings_avail warnings_id bound_hash @@end " ] \
+[ "$(printf '%s\n' "$B" | sed 's/=.*//' | tr '\n' ' ')" = "@@plan v1 api kind target partition gres cpus mem time account name extra payload env_kind env_name wandb_mode env_hook venv_dir uv_sync_args conf_extra flags chain info_avail info_conf_sha256 info_profile_sha256 info_policy_sha256 info_policy_local_sha256 info_source_commit info_source_dirty info_prior info_prior_here warnings warnings_avail warnings_id bound_hash @@end " ] \
   && ok "ONE block, exactly these keys in this order" || { bad "plan block keys"; printf '%s\n' "$B" | sed 's/^/    | /'; }
 [ "$(printf '%s\n' "$O" | grep -c '^@@plan v1$')" = 1 ] && ok "...printed once, on stdout" || bad "...printed once"
 has "$(PATH="$T/bin:$PATH" bash "$PP/.fx-slurm/submit.sh" --rs-mode plan "${PA[@]}" 2>/dev/null)" '^@@end$' "...(stdout alone carries it)"
@@ -660,6 +661,13 @@ rcp "$IP" x1 r5 101; rcp "$IP" x2 r5--a02 102; rcp "$IP" x3 r5--a1 103; rcp "$IP
 rcp "$IP" x7 'r5--a003' 107; mkdir -p "$IP/.rs/attempts/x8"   # (no receipt: a plan, or never submitted)
 O=$(sq "$IP" --rs-mode plan -n r5 -- echo hi); [ "$(pri "$O")" = 3 ] && ok "receipts named r5, r5--a02, r5--a003 count; r5--a1, r5x, r5--a02x, other and a dir without one do not: info_prior=3" || bad "receipts counted (got '$(pri "$O")')"
 [ "$(bh "$O")" = "$HI" ] && ok "...envelope only: the bound_hash is the same as with no history" || bad "...info_prior changed the bound_hash"
+prh() { printf '%s\n' "$1" | sed -n 's/^info_prior_here=//p'; }
+[ "$(prh "$O")" = 3 ] && ok "info_prior_here=3: receipts without target= (older ones) count as this target's (fail closed)" || bad "untargeted receipts here (got '$(prh "$O")')"
+rcp "$IP" y1 r6 401; printf 'target=fx-slurm\n' >> "$IP/.rs/attempts/y1/receipt"
+rcp "$IP" y2 r6--a02 402; printf 'target=fx-other\n' >> "$IP/.rs/attempts/y2/receipt"   # a dir two targets share
+O=$(sq "$IP" --rs-mode plan -n r6 -- echo hi)
+[ "$(pri "$O")" = 2 ] && [ "$(prh "$O")" = 1 ] && ok "a receipt of another target: in info_prior (2), not in info_prior_here (1)" \
+  || bad "per-target count (info_prior '$(pri "$O")', info_prior_here '$(prh "$O")')"
 O=$(sq "$IP" --rs-mode plan -n r5--a04 -- echo hi); [ "$(pri "$O")" = 3 ] && ok "a plan named r5--a04: the run id r5 (minus --aNN, as rsk's ledger reads it) -> 3" || bad "r5--a04 (got '$(pri "$O")')"
 O=$(sq "$IP" --rs-mode plan -n r5x -- echo hi); [ "$(pri "$O")" = 1 ] && ok "another run (r5x): only its own receipt" || bad "r5x (got '$(pri "$O")')"
 rows "101|r5|RUNNING|None|0|N/A|$IP|" "201|r5--a07|COMPLETED|None|0|N/A|$IP|" "202|r5|PENDING|Priority|0|N/A|/elsewhere|" "203|r5--a08|FAILED|None|0|N/A|$T/iplink|" \
@@ -667,10 +675,12 @@ rows "101|r5|RUNNING|None|0|N/A|$IP|" "201|r5--a07|COMPLETED|None|0|N/A|$IP|" "2
 O=$(sq "$IP" --rs-mode plan -n r5--a09 -- echo hi); RC=$?
 rc_is 0 "$RC" "squeue rows of the run (not the plan's own name: no duplicate)" "$O"
 [ "$(pri "$O")" = 5 ] && ok "+ squeue rows of this WorkDir (also via a symlink, also ended but still listed), none twice: job 101 has a receipt -> 3 + 201 + 203 = 5" || bad "squeue rows counted (got '$(pri "$O")')"
+[ "$(prh "$O")" = 5 ] && ok "...squeue rows are this cluster's own: info_prior_here=5 too" || bad "squeue rows here (got '$(prh "$O")')"
 O=$(sq "$IP" --rs-mode plan --same-name-ok -n r5 -- echo hi); [ "$(pri "$O")" = 5 ] && ok "...also when the duplicate guard is off (--same-name-ok): squeue is still asked" || bad "--same-name-ok plan (got '$(pri "$O")')"
 O=$(sq "$IP" --rs-mode plan --rs-chain -n r5 -- echo hi); [ "$(pri "$O")" = 5 ] && ok "...and for a chain segment (--rs-chain)" || bad "--rs-chain plan (got '$(pri "$O")')"
 touch "$T/squeue.fail"; O=$(sq "$IP" --rs-mode plan --same-name-ok -n r5 -- echo hi); RC=$?
 rc_is 0 "$RC" "squeue failing: the plan goes on" "$O"; [ "$(pri "$O")" = unknown ] && ok "...info_prior=unknown (rsk: a relaunch, fail closed)" || bad "squeue failing -> unknown (got '$(pri "$O")')"
+[ "$(prh "$O")" = unknown ] && ok "...and info_prior_here=unknown" || bad "squeue failing -> here unknown (got '$(prh "$O")')"
 O=$(sq "$IP" --rs-mode plan -n r5 -- echo hi); [ "$(pri "$O")" = unknown ] && ok "...also with the duplicate guard on (its warning, then unknown)" || bad "guard on, squeue failing (got '$(pri "$O")')"
 rm -f "$T/squeue.fail" "$T/squeue.rows"
 if [ "$(id -u)" != 0 ]; then chmod 000 "$IP/.rs/attempts/x6/receipt"

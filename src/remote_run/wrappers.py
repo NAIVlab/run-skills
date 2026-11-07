@@ -15,7 +15,8 @@ run-sync takes -n|--dry-run, -D|--delete, --also PATH (the next word, whatever i
 dry run), --also=PATH and --take-over — anything else it refuses itself (exit 2, nothing done); run-bootstrap is in
 job mode when its first word is --job (any --job word is gated). They run only with --approve "the user's words"
 (non-empty), recorded in the ledger's audit.jsonl with the command line (event `approved_command`) before the script
-starts; without it: `needs user: approval (…)`, exit 4, nothing run. A record is bookkeeping, not proof the user agreed.
+starts; without it — or with words that repeat a standing grant's quote (grants.recycled) — `needs user: …`, exit 4,
+nothing run. A record is bookkeeping, not proof the user agreed.
 """
 
 from __future__ import annotations
@@ -99,7 +100,9 @@ def gate(args: argparse.Namespace, argv: list[str], cwd: Path) -> None:
               "--approve", flush=True)
         raise RskError(f"rsk {args.command} {' '.join(argv[2:])}: {what} — only with the user's words (--approve); "
                        "nothing run", NEEDS_USER)
+    from remote_run import grants
     from remote_run import ledger as L
+    grants.refuse_recycled(words, L.Ledger(cwd).state().grants, f"rsk {args.command} {' '.join(argv[2:])}")
     L.Ledger(cwd).audit("approved_command", command=args.command, target=getattr(args, "target", ""),
                         argv=argv[2:], what=what, quote=words)
 

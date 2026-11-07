@@ -39,7 +39,8 @@ guard rails built in, and gives the agent a short, per-site reference instead of
 - **Your authorisation, checked first — asked only when it is missing.** Every submit, launch and cancel is checked
   against what you already allowed: a plan you approved, a sweep (one approval for the set), or a standing permission
   ("smoke runs on mybox are fine", "auto-resume preemptions up to 3 times" — a resume only after an infrastructure end:
-  a preemption, a node failure, a reboot; never after a cancel, a failure or a timeout) with the limits you set. The
+  a preemption, a node failure, a reboot; never after a cancel, a failure or a timeout, unless your words hand the agent
+  re-runs too: "you decide, don't ask again" → `--relaunch-after any`) with the limits you set. The
   agent asks only outside that — a charged partition, more resources, a wider scope, its own idea that a run should
   stop. Your words are recorded verbatim (`rsk grant`), and a "never" of yours also stops `rsk watch --act` ("never
   relaunch a" stops every launch of a in its scope: rsk cannot see every earlier attempt); "cancel job 123" must name

@@ -14,7 +14,8 @@ kind is missing or damaged, until it is fixed by hand or revoked (a well-formed 
    "scope": {"targets": [..], "partitions": [..], "gpu_types": [..], "classes": [..], "names": [glob..],
              "runs": [bound_hash..], "plans": [plan id..], "jobs": [job id..], "idents": [identity..],
              "max_gpus": int, "max_cpus": int, "max_mem_gb": num, "max_time_s": int,
-             "allow_warnings": "availability"|"any" (a stored true reads as "any", false as none)},
+             "allow_warnings": "availability"|"any" (a stored true reads as "any", false as none),
+             "relaunch_after": "infra"|"any" (a grant with relaunch only; absent = "infra")},
              (every scope key optional: absent = any; a deny takes only the list keys)
    "actions": [⊆ launch relaunch resubmit chain cancel cancel_own] (no command checks `resubmit` — run-watch
               budgets its own resubmits under `#@ allow`, --relaunch is `relaunch` — so `rsk grant add` / import
@@ -62,7 +63,12 @@ The kinds:
             an infrastructure end (INFRA_END: Slurm PREEMPTED / NODE_FAIL / BOOT_FAIL, nohup REBOOT; never
             CANCELLED, COMPLETED, FAILED, TIMEOUT, OUT_OF_MEMORY or an unknown end) AND the plan repeats THAT
             attempt's configuration (same bound fields; the name may differ in --aNN; never an older attempt's the
-            plan is named after). scope.names globs match the plan's name as it is (a glob for the run id alone does
+            plan is named after) — unless scope.relaunch_after is "any" (only when the user's words hand the agent
+            re-runs after any end: "decide yourself, don't ask again", "fix the code and just run it"): then a
+            relaunch is judged as a launch — scope, budgets, warnings, flags, denies — whatever that attempt's end or
+            configuration (another target, a fixed command), but never while an earlier attempt may still be live (a
+            ledger attempt live or SUBMIT_UNKNOWN, or one only the target's journal shows) and only in a grant that
+            allows launch too. scope.names globs match the plan's name as it is (a glob for the run id alone does
             not match its --aNN attempts: fails closed; write 'run*' to cover them). A run's class is its first
             attempt's: a run whose first attempt had none has no class (a classes scope never covers it).
   deny      the user forbade it: a matching deny always wins (exit 3, quote shown), whatever else exists; a plan fact
@@ -145,6 +151,7 @@ import secrets
 import shlex
 import subprocess
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -159,9 +166,11 @@ ACTIONS = ("launch", "relaunch", "resubmit", "chain", "cancel", "cancel_own")
 LAUNCHES = frozenset({"launch", "relaunch", "resubmit", "chain"})
 LISTS = ("targets", "partitions", "gpu_types", "classes", "names", "runs", "plans", "jobs", "idents")
 NUMS = ("max_gpus", "max_cpus", "max_mem_gb", "max_time_s")
-SCOPE_KEYS = LISTS + NUMS + ("allow_warnings",)
+SCOPE_KEYS = LISTS + NUMS + ("allow_warnings", "relaunch_after")
 WARN_KINDS = ("availability", "any")      # scope.allow_warnings: the harness's availability gate only | every -y gate
 INFRA_END = ("PREEMPTED", "NODE_FAIL", "BOOT_FAIL", "REBOOT")   # a relaunch grant resumes only after one of these
+RELAUNCH_AFTER = ("infra", "any")         # scope.relaunch_after: only an INFRA_END (default) | any end (user's words)
+ANY_PLAN_MAX_AGE_S = 600                  # relaunch_after any covers a plan only this fresh (its journal count)
 CANCEL_TTL_S = 3600                       # a cancel approval ("cancel job 123") lives this long
 KEYS = ("id", "kind", "quote", "created_at", "created_via", "source", "scope", "actions", "limits", "used", "revoked")
 CLASSES = ("smoke", "pilot", "train", "eval", "ablate", "bench")       # experiment-conventions.md §1
@@ -734,6 +743,8 @@ def validate(rec: Any) -> dict:
                                                   or scope["allow_warnings"] in WARN_KINDS):
                 errs.append(f"scope.allow_warnings must be one of {', '.join(WARN_KINDS)} (an older record's true "
                             "reads as any)")
+            if "relaunch_after" in scope and scope["relaunch_after"] not in RELAUNCH_AFTER:
+                errs.append(f"scope.relaunch_after must be one of {', '.join(RELAUNCH_AFTER)}")
     else:
         scope = {}
     if "actions" in rec:
@@ -756,9 +767,16 @@ def validate(rec: Any) -> dict:
             if k not in limits:
                 errs.append(f"limits.{k} is required for a standing grant: the user's value, or null (none) when "
                             "their words set no limit — never left out, never made up")
+        if "relaunch_after" in scope and "relaunch" not in acts:
+            errs.append("scope.relaunch_after says which relaunches a grant covers: it needs relaunch in its actions")
+        elif scope.get("relaunch_after") == "any" and "launch" not in acts:
+            errs.append("scope.relaunch_after any judges a relaunch as a launch: the grant allows launch too (actions "
+                        "launch,relaunch) — a relaunch-only grant resumes infrastructure ends")
         for k in sorted(set(limits) - set(GRANT_LIMITS)):
             errs.append(f"unknown limit {k!r}")
     elif kind == "approval":
+        if "relaunch_after" in scope:
+            errs.append("scope.relaunch_after belongs to a standing grant (an approval covers the plans it names)")
         if acts and set(acts) <= LAUNCHES:
             if not scope.get("runs"):
                 errs.append("an approval of plans lists their bound hashes in scope.runs")
@@ -781,7 +799,7 @@ def validate(rec: Any) -> dict:
         for k in sorted(set(limits) - set(GRANT_LIMITS)):
             errs.append(f"unknown limit {k!r}")
     elif kind == "deny":
-        for k in NUMS + ("allow_warnings", "idents"):
+        for k in NUMS + ("allow_warnings", "relaunch_after", "idents"):
             if k in scope:
                 errs.append(f"a deny takes targets/partitions/gpu_types/classes/names/runs/jobs, not {k} (resource "
                             "caps are a grant's scope, or the target's policy.local.sh)")
@@ -890,6 +908,73 @@ def new_cancel_approval(quote: str, target: str, jobs: list[str], *, idents: lis
     return _record("approval", quote, {"jobs": [str(j) for j in jobs], "idents": list(idents),
                                        "targets": [target] if target else []},
                    ["cancel"], {"max_launches": 1, "max_live": None, "expires": _in(ttl_s)}, via, source)
+
+
+RECYCLE_MIN = 24          # weight of a quote worth comparing (a CJK character 2, any other letter or digit 1): about 12
+#                           Chinese characters or 5 English words — "可以", "go ahead", "run it" are fresh answers anywhere
+RECYCLE_AGE_S = 3600      # a grant recorded this recently may hold the very words that answer the card on screen
+
+
+def _norm_words(text: str) -> str:
+    """Words for comparison: NFKC, casefolded, without punctuation, symbols, spaces or control characters (Unicode
+    categories P*, S*, Z*, C*): '“哪里有卡，去哪里训练吧。”' and '哪里有卡,去哪里训练吧' compare equal."""
+    t = unicodedata.normalize("NFKC", text or "").casefold()
+    return "".join(c for c in t if unicodedata.category(c)[0] not in "PSZC")
+
+
+def _weight(norm: str) -> int:
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in norm)
+
+
+def recycled(words: str, records: list, now: float | None = None) -> dict | None:
+    """The standing grant whose quote WORDS repeat, else None. An approval records the user's answer to what is in
+    front of them now (the card, the job named); the words of a standing grant, said earlier, are not that answer:
+    when the grant should cover the action it does so itself — a wider one needs the user's new words — and its
+    words are never written down again as a new approval. Repeat (after _norm_words): the same words, a part of the
+    grant's quote, or the quote inside longer words (an agent's 'the user said: <quote>') — whichever side is
+    compared weighing RECYCLE_MIN or more; grants recorded within RECYCLE_AGE_S are skipped (one thing the user just
+    said may be both). Revoked and expired grants count too: their words are as old. A nudge against copying, not
+    proof — other words still pass."""
+    w = _norm_words(words)
+    if not w:
+        return None
+    t = time.time() if now is None else now
+    for r in records or []:
+        if not isinstance(r, dict) or r.get("kind") != "grant":
+            continue
+        q = _norm_words(str(r.get("quote") or ""))
+        if not q or t - L.epoch(r.get("created_at")) < RECYCLE_AGE_S:
+            continue
+        if (w in q and _weight(w) >= RECYCLE_MIN) or (q in w and _weight(q) >= RECYCLE_MIN):
+            return r
+    return None
+
+
+def recycled_error(r: dict, what: str) -> RskError:
+    return RskError(f"needs user: these words are the quote of standing grant {r['id']} (recorded {r.get('created_at')}), "
+                    f"not the user's answer to {what} — nothing recorded. Ask the user and pass their answer; if that "
+                    "grant should have covered it, rsk says why it does not, and a wider grant takes the user's new "
+                    "words — never its old ones again", NEEDS_USER)
+
+
+def recycled_flags(rec: dict, records: list) -> list[str]:
+    """rsk grant add / import: a new grant whose quote repeats an older grant's (recycled()) is recorded — the user may
+    type their own `rsk grant add` with the words they said before — but flagged: a grant records what the user said
+    for THIS scope; a wider one taken from old words is the stretching this file exists to stop."""
+    if rec.get("kind") != "grant":
+        return []
+    old = recycled(str(rec.get("quote") or ""), [r for r in records if isinstance(r, dict) and r.get("id") != rec.get("id")])
+    return [f"its words repeat grant {old['id']} (recorded {old.get('created_at')}): confirm with the user that they "
+            "said them for this scope — a wider grant takes their new words"] if old else []
+
+
+def refuse_recycled(words: str | None, records: list, what: str) -> None:
+    """Every --approve consumer (launch --plan, cancel, rsk watch, adopt --not-submitted, sync -D, bootstrap --job):
+    exit 4 before anything is recorded when WORDS repeat a standing grant's quote (recycled())."""
+    if words is not None:
+        again = recycled(words, records)
+        if again:
+            raise recycled_error(again, what)
 
 
 def warn_kind(v: Any) -> str:
@@ -1452,6 +1537,39 @@ def _infra_miss(prev: tuple[str, dict] | None) -> list[str]:
             f"({', '.join(INFRA_END)}): anything else is the user's call"]
 
 
+def _any_misses(plan: dict, f: Facts, state: L.LedgerState) -> list[str]:
+    """relaunch_after "any": why a relaunch of F's run may NOT start yet — any earlier attempt of the run that may still
+    hold resources: a ledger attempt that is live or SUBMIT_UNKNOWN (any target), or one only the target's journal
+    shows (its info_prior counts more submissions of the run there than the ledger holds, or cannot say)."""
+    run = L.run_id(f.name or "")
+    prior = prior_attempts(state.runs, run, str(plan.get("plan_id", "")))
+    out = []
+    age = plan.get("plan_age_s")
+    if isinstance(age, (int, float)) and age > ANY_PLAN_MAX_AGE_S:   # its journal count was read when it was planned
+        out.append(f"the plan is {int(age // 60)} min old: what the target's journal held then may have changed — plan "
+                   "it again for a relaunch covered after any end")
+    live = [f"{k} ({L.attempt_state(a)}{', ' + a['target'] if a.get('target') and a['target'] != f.target else ''})"
+            for k, a in prior if L.is_live(a)]
+    if live:
+        out.append(f"earlier attempt(s) of {run} may still be live: {', '.join(live)} — a relaunch covered after any end "
+                   "starts once every earlier one has ended (rsk status; or stop it first)")
+    # the ledger's submissions on this target the journal must hold a receipt of: not unsent ones, not jobs adopted without
+    # a receipt (adopt.py's synthetic nonces) — each of those would hide one receipt the ledger never saw
+    here = sum(1 for _k, a in prior if a.get("target") == f.target for s in a.get("submissions") or []
+               if s.get("submit") != "not_submitted" and not str(s.get("nonce", "")).startswith(("adopt-job-", "adopt-log-")))
+    key = "info_prior_here" if "info_prior_here" in plan else "info_prior"   # submit.sh's count of THIS target's receipts
+    raw = str(plan.get(key, "")).strip()                                      # (a dir two targets share); else all of them
+    if not (raw.isascii() and raw.isdigit()):
+        out.append(f"the target's journal cannot say which earlier attempts of the run it holds (no readable {key}): "
+                   "one the ledger never saw may be live — the user decides")
+    elif int(raw) > here:
+        shared = (" (an older submit.sh counts every target's receipts: rsk sync)" if key == "info_prior" and
+                  f.kind == "slurm" else "")
+        out.append(f"the target's journal holds {raw} earlier submission(s) of {run}, the ledger {here} there: one it "
+                   f"never saw (run-watch's, another checkout's) may be live — the user decides{shared}")
+    return out
+
+
 def _misses(r: dict, plan: dict, f: Facts, action: str, needed: tuple[str, ...], state: L.LedgerState, t: float,
             orig: dict | None, job: str, own: bool, extending: tuple[str, str] | None = None,
             prev: tuple[str, dict] | None = None, ident: str = "") -> list[str]:
@@ -1514,7 +1632,9 @@ def _misses(r: dict, plan: dict, f: Facts, action: str, needed: tuple[str, ...],
         if f.flags:
             miss.append(f"policy flag(s) {' '.join(f.flags)}: what the target's policy makes of them is outside any "
                         "scope — no standing grant covers a plan with policy flags (an approval of this card does)")
-        if {"relaunch", "resubmit"} & set(needed):
+        if "relaunch" in needed and sc.get("relaunch_after") == "any" and "resubmit" not in needed:
+            miss += _any_misses(plan, f, state)    # judged as a launch, but never a second copy beside a live one
+        elif {"relaunch", "resubmit"} & set(needed):
             if not orig or not (orig.get("bound") or orig.get("bound_hash")):
                 miss.append(f"its previous attempt {prev[0]} has no recorded plan (adopted?): the user decides" if prev
                             else "no previous attempt in the ledger to repeat: the user decides")
@@ -1677,7 +1797,10 @@ def describe(rec: dict) -> str:
         warn_kind(sc.get("allow_warnings")), "no plan with warnings")
     if "cancel_own" in acts:
         extra += "; may stop its own runs in scope"
-    if "relaunch" in acts or "resubmit" in acts:
+    if ("relaunch" in acts or "resubmit" in acts) and sc.get("relaunch_after") == "any":
+        extra += ("; a relaunch after any end too, judged as a launch (the user's words; never while an earlier "
+                  "attempt may be live)")
+    elif "relaunch" in acts or "resubmit" in acts:
         extra += f"; a relaunch only after an infrastructure end ({'/'.join(INFRA_END)})"
     return f"{', '.join(a for a in acts if a != 'cancel_own') or 'no launches'}: {where}; {extra}"
 
@@ -1893,6 +2016,8 @@ def _scope_from(args: argparse.Namespace, deny: bool) -> dict:
         sc["max_time_s"] = int(s)
     if args.allow_warnings:
         sc["allow_warnings"] = args.allow_warnings
+    if getattr(args, "relaunch_after", None):
+        sc["relaunch_after"] = args.relaunch_after
     return sc
 
 
@@ -2175,12 +2300,14 @@ def cmd_grant(args: argparse.Namespace) -> int:
                            source=args.source)
         with led.locked():
             doc, _ = load(led)
-            flags = after_deny(rec, doc["records"])
+            flags, again = after_deny(rec, doc["records"]), recycled_flags(rec, doc["records"])
             add(led, rec)
         print(f"{rec['id']}  {rec['kind']}  covers: {describe(rec)}")
         print(f"  {balance(rec, led.state())}")
         for f in flags:
             print(f"  FLAG: {f} — confirm with the user that it replaces the deny")
+        for f in again:
+            print(f"  FLAG: {f}")
         for n in notes:
             print(f"  {n}")
         return OK
@@ -2200,11 +2327,12 @@ def cmd_grant(args: argparse.Namespace) -> int:
                                              unlisted_how=f'"unlisted_ok": true in record #{i}')
                 if r.get("kind") == "deny":
                     notes[r["id"]] += attempt_name_notes((r.get("scope") or {}).get("names") or [])
+        before = list(led.state().grants)
         recs = import_file(led, Path(args.file), check=check)
         st = led.state()
         for r in recs:
             print(f"{r['id']}  {r['kind']}  imported from {r['source']}  covers: {describe(r)}  ({balance(r, st)})")
-            for f in after_deny(r, st.grants):
+            for f in after_deny(r, st.grants) + recycled_flags(r, before):
                 print(f"  FLAG: {f}")
             for n in notes.get(r["id"], []):
                 print(f"  {n}")
@@ -2273,6 +2401,12 @@ def add_parsers(sub) -> None:
                    "policy gates too (a charged partition …) — never a workstation plan's launcher / container / "
                    "env-dropping warnings (warnings_gpu: such a run may use more GPUs than --max-gpus, another user's "
                    "too): only the user's approval of that card covers those")
+    a.add_argument("--relaunch-after", default=None, choices=RELAUNCH_AFTER, metavar="infra|any",
+                   help="which ended runs --action relaunch may re-run: infra (default) = only after an "
+                   "infrastructure end (preempted, node / boot failure, reboot), the same configuration; any = after "
+                   "any end (a bug fixed, a run moved to free GPUs) — only when the user's words hand the agent that "
+                   "decision (\"decide yourself, don't ask again\"); judged as a launch: scope, budgets, warnings and "
+                   "denies still apply, never while an earlier attempt may be live; needs launch in --action too")
     a.add_argument("--max-live", required=True, metavar="N|none")
     a.add_argument("--max-launches", required=True, metavar="N|none")
     a.add_argument("--expires", required=True, metavar="YYYY-MM-DD|none")

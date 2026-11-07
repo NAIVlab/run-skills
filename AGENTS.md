@@ -24,8 +24,8 @@ bash tests/pkg-wheel.sh    # NOT in selftest (uv + network once): wheel contents
 
 `rsk` (`src/remote_run/`): `cli.py`; `install.py` (how it was installed: PEP 610 `direct_url.json` + `uv-receipt.toml`
 → update commands); `packs.py`; `harness.py` calls `lib/common.sh` / `install.sh` (targets, conf → remote dir) — never a
-second implementation in Python; `observe.py` + `status.py` (`rsk status` / `rsk logs`: read-only, one ssh per target,
-discovery by WorkDir / `logs/*.pid`; a failed read is UNOBSERVABLE, never "no jobs"; also the ledger's runs, unledgered jobs,
+second implementation in Python; `observe.py` + `status.py` (`rsk status` / `rsk logs`, `--grep` = `status.grep_body`;
+read-only, one ssh per target, discovery by WorkDir / `logs/*.pid`; a failed read is UNOBSERVABLE, never "no jobs"; also the ledger's runs, unledgered jobs,
 SUBMIT_UNKNOWN reconciled from the remote journal); `ledger.py` + `grants.py` (the per-project ledger and the one authorisation
 record type, below); `launch.py` (`rsk launch`), `cancel.py` (`rsk cancel`), `watch.py` (`rsk watch` = the lease around
 `bin/run-watch`), `adopt.py` (`rsk adopt`), `wrappers.py` (`rsk sync|bootstrap|pull|avail` exec `bin/run-*`, no logic), `legacy.py`
@@ -242,7 +242,13 @@ set only at the run's first attempt (none there: a later one is exit 2). Never g
 policy flag (`flags=`), `--same-name-ok`, a `conf_extra` word outside `grants.EXTRA_ALLOW` (the card's `NO GRANT`; policy
 words never count), a time over `max_time_s` in any limit sbatch could read (0 / UNLIMITED = unlimited), a relaunch whose
 latest attempt that ran did not end in `INFRA_END` (PREEMPTED NODE_FAIL BOOT_FAIL REBOOT) or that does not repeat that
-attempt's configuration (a plan named after an older attempt is the next aNN), a workstation plan on a busy GPU;
+attempt's configuration (a plan named after an older attempt is the next aNN) — unless `scope.relaunch_after` is `any`
+(with `launch` too: the user handed re-runs over): judged as a launch, never while an earlier attempt may be live
+(`grants._any_misses`: `is_live` on any target, or `info_prior_here` above the ledger's count there / unreadable) —, a
+workstation plan on a busy GPU; `--approve` words repeating a standing grant's quote (`grants.recycled`: normalised,
+either inside the other, weight ≥ 24, grant > 1 h old) are exit 4 for every `--approve`, a grant add/import gets a FLAG;
+`rsk launch` first reads every target holding a ledger-live attempt of the run (`launch.refresh`); `--check-after S`
+judges each submission S s later (`launch.check_after`: ended otherwise = exit 1 + the digest);
 `rsk sync -D` (run-sync's grammar: `--also -n` is a path) / `rsk bootstrap --job` (any `--job` word) need `--approve`
 (audited); never at all: someone else's job or process. A provably unsent submit (refused / failed with no receipt, no attempt dir, run-launch
 before its ssh; nohup: the journal decides first — a receipt with gate `go` is launched whatever the exit) is NOT_SUBMITTED:

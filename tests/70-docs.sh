@@ -293,6 +293,17 @@ WP=$(cat "$RS_HOME/src/remote_run/watch.py"); TPL=$(tr '\n' ' ' < "$RS_HOME/targ
 PKT=$(tr '\n' ' ' < "$RS_HOME/docs/packs.md" | tr -s ' '); RT=$(tr '\n' ' ' < "$RS_HOME/README.md" | tr -s ' ')
 DT=$(tr '\n' ' ' < "$RS_HOME/docs/DESIGN.md" | tr -s ' '); AT=$(tr '\n' ' ' < "$RS_HOME/AGENTS.md" | tr -s ' ')
 CKT=$(tr '\n' ' ' < "$RS_HOME/$CKF" | tr -s ' ')
+# 2026-11-06 follow-ups: the numbers and flags the docs now promise, as the code spells them
+for o in 'GREP_BYTES = 8 << 20' 'GREP_MAX_BYTES = 64 << 20' 'GREP_CAP = 1 << 16' 'CHECK_MAX_S = 600' 'RECYCLE_MIN = 24' \
+         'RECYCLE_AGE_S = 3600' 'RELAUNCH_AFTER = ("infra", "any")' '"--check-after"' '"--grep"' '"--relaunch-after"' \
+         'def refuse_recycled(' 'def _any_misses(' 'def refresh(' '"mfsgetquota": ("nhHkmg", "", "", True)' \
+         'ANY_PLAN_MAX_AGE_S = 600'; do
+  has "$CLI" "$o" "the CLI has what the docs promise (2026-11-06): $o"; done
+has "$ST" '--relaunch-after any' "SKILL §3: --relaunch-after any for re-runs the user's words hand over"
+has "$ST" 'never earlier words' "SKILL §3: an --approve is the answer on screen, never earlier words"
+has "$PSLT" "the log's last 8 MiB" "procedure-slurm: --grep searches the last 8 MiB (GREP_BYTES)"
+has "$PSLT" 'reads each submission (every chain segment)' "procedure-slurm: --check-after judges every submission"
+has "$DT" 'weighing 24 or more, a CJK character 2' "DESIGN: the recycled-quote weight (RECYCLE_MIN)"
 # R4-7: acting goes through rsk watch (the steer), and a run-watch whose rsk watch is gone stops (exit 7)
 has "$ST" 'rsk watch <table> --approve "<the user.s words>"' "$F: the table's OK is recorded with rsk watch <table> --approve"
 has "$ST" '--act / --approve go through rsk watch only' "$F: --act / --approve only through rsk watch"
@@ -975,9 +986,10 @@ budget lib/common.sh 141; budget remote/env.sh 170; budget remote/bootstrap.sh 1
 # counts journal receipts named the run id or <run id>--aNN plus this WorkDir's squeue rows no receipt names, says unknown when squeue failed or a
 # receipt is unreadable, and undoes a policy's set -f / failglob (+15); the block line (+1)
 budget remote/status.sh 175   # generous on purpose: every lookup has an explicit failure branch; compressing them hides bugs
-budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 263; budget AGENTS.md 351; budget INSTALL.md 238 # AGENTS +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
+budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 264; budget AGENTS.md 357; budget INSTALL.md 238 # AGENTS +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
 # P3-P7 docs: AGENTS +25 (the rsk modules, tests/62, the authorisation model, the P7 nudge, the new rails); README +10 (what is asked and
 # what is not, the honest limit, the rsk launch step, src/); INSTALL +5 (doctor --legacy-refs, earlier permissions, standing words)
+# 2026-11-06 follow-ups: AGENTS +6 (relaunch_after, recycled quotes, the refresh, --check-after, logs --grep); README +1 (re-runs handed over)
 # P3 review: AGENTS +8 (--rs-warnings, the plan skips launch.sh's env gate, the new bound fields, plan-scoped approvals, the review's never-covered list)
 # round 3: AGENTS +38 (the rs-api=3 marker line, warnings_id / warnings_avail / conf_extra / changed:, the policy probe and side-effect-free
 # t_policy, explicit time limits and the SBATCH_EXTRA getopt refusal, the read-only nohup env gate, busy_ok occupants, grant kinds, the D1
@@ -1005,7 +1017,7 @@ budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget RE
 # _spaced), status --json's INVALID records (+5); cancel words naming the job, cancel.named / unnamed (+2)); README +0
 # NF8: AGENTS +3 (warnings_gpu in the block and never grant-covered, grants.gpu_warn_miss (+1); a .wandb_env naming HF_HOME /
 # ACCELERATE_ (NF7, +1); --asked and ranges in the cancel approval (+1)); README +0
-budget skills/remote-run/SKILL.md 156; budget bin/run-watch 1102   # round 3: SKILL +11 (the -y rule with grant kinds, --allow-warnings availability|any,
+budget skills/remote-run/SKILL.md 161; budget bin/run-watch 1102   # round 3: SKILL +11 (the -y rule with grant kinds, --allow-warnings availability|any,
 # derived actions and the sticky class, relaunch only after an infrastructure end, cancel approvals bound / 1 h / used up, rsk watch --act vs
 # denies (also in §3), `plan <id> is free again`); run-watch +116 lines (881 → 997), D11 — target column and same-target inheritance, sticky unknowns from any state file
 # (foreign/settled/R_FU, the journal hands back the row's own status), fail-stop inherited with rows plus --release of a non-row trigger, pending
@@ -1036,6 +1048,7 @@ budget skills/remote-run/SKILL.md 156; budget bin/run-watch 1102   # round 3: SK
 # round 7: run-watch +5 (1097 → 1102) — R7-7 tbl_ctl: a table holding a NUL byte or a control character other than tab (CR
 # included) is refused in rsk's words (+2), parse_table's refusal at every read (+1), the --approve words checked alike (+1); header +1.
 # P3 review +55: a row's state across renamed/copied tables, fail-stop of a row once its unknown submit is tracked, no --rs-* row words; SKILL: one entry for both kinds (the two it replaced: 62 + 61) + the rsk reads; +20 (P3-P7): the rsk command set, the launch flow (card, exit codes), §3 authorisation (the user's table); run-watch +130 (P3): attempt nonces + the journal read, --adopt and fail-stop identity checks, conf= binding, lock holder, sticky unknowns across tables
+# 2026-11-06: SKILL +5 (--relaunch-after any for handed-over re-runs, never earlier words as --approve, the re-read before a relaunch)
 budget skills/remote-run/references/experiment-conventions.md 140;   # +4: the run-watch exception (§3, §6, §7); +1: a USR1 death is FAILED; +3: the authorised exceptions (§5, §6, §7)
 budget skills/remote-run/references/project-setup.md 100
 for d in hpc-run ws-run; do [ -e "$RS_HOME/$d" ] || [ -e "$RS_HOME/skills/$d" ] && bad "legacy $d/ trees removed" || ok "legacy $d/ trees removed"; done
