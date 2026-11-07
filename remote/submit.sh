@@ -18,7 +18,8 @@
 # card's (--rs-warnings ID; default: no warning at all, so -y never passes another one) — else the block, `changed: <keys>`
 # (from the approved plan's own journal, when it is here), ERROR, exit 6; under --rs-expect a failed squeue is exit 1.
 # Envelope info_prior=<n|unknown> (not bound): the run's earlier attempts here (rs_prior) — rsk reads n > 0, or no number, as a
-# relaunch; info_prior_here: this target's (receipt target=, absent counts; a shared dir holds both). --rs-chain = a singleton.
+# relaunch; info_prior_here: this target's (receipt target=, absent counts; a shared dir holds both); info_wandb_env: does
+# $PROJ/.wandb_env (env.sh sources it after the conf) name WANDB_MODE — none|no|names|unreadable. --rs-chain = a singleton.
 # Every time limit sbatch could read (-t, the conf, the policy's or SBATCH_EXTRA's --time / -t in any value form; sbatch
 # keeps the last) must be explicit — never 0, UNLIMITED or INFINITE — and within MaxTime. Parsing uses no here-string or
 # heredoc (bash <= 5.0 writes them to $TMPDIR: a full one would fail a parse silently).
@@ -366,6 +367,8 @@ rs_changed() {   # rs_changed BOUND HASH: `changed: <keys>` against the approved
   fi
   [ "$W_ID" = "$RS_WARN" ] || k="${k:+$k }warnings"; [ -z "$k" ] || echo "changed: $k"
 }
+rs_wenv() { [ -f "$PROJ/.wandb_env" ] || { echo none; return; }   # env.sh: [ -f ] && . — read-only, never printed; an `if`:
+  if LC_ALL=C grep -a -q WANDB_MODE "$PROJ/.wandb_env" 2>/dev/null; then echo names; else case $? in 1) echo no ;; *) echo unreadable ;; esac; fi; }   # no ERR trap
 rs_prior() {   # PRIOR (R5-4): the run's earlier attempts here, whoever submitted them — this project's journal receipts named the run id
   # (NAME minus a trailing --aNN, as rsk's ledger reads it) or <run id>--aNN, + squeue's rows of such a name with this WorkDir (live,
   # or ended and still listed) that no receipt names; unknown (rsk: a relaunch, fail closed) if squeue failed or a receipt is unreadable
@@ -392,7 +395,7 @@ rs_plan() {   # plan mode: the block, exit 0. --rs-expect: the SAME rs_bound has
   for f in conf:"$A/conf" profile:"$SELF/profile.sh" policy:"$SELF/policy.sh" policy_local:"$SELF/policy.local.sh"; do
     v=none; [ ! -f "${f#*:}" ] || v=$(rs_sha < "${f#*:}"); printf 'info_%s_sha256=%s\n' "${f%%:*}" "$v"; done
   for k in commit dirty; do v=$(sed -n "s/^$k=//p" "$PROJ/.run-source" 2>/dev/null | head -n 1) || v=""; printf 'info_source_%s=%q\n' "$k" "${v:-none}"; done
-  rs_prior; printf 'info_prior=%s\ninfo_prior_here=%s\n' "$PRIOR" "$PRIOR_HERE"   # (an older submit.sh lacks the lines)
+  rs_prior; printf 'info_prior=%s\ninfo_prior_here=%s\ninfo_wandb_env=%s\n' "$PRIOR" "$PRIOR_HERE" "$(rs_wenv)"   # (older: no lines)
   printf 'warnings=%s\nwarnings_avail=%s\nwarnings_id=%s\nbound_hash=%s\n@@end\n' "$W_N" "$W_AV" "$W_ID" "$h"
   [ "$ok" = 1 ] || { [ -z "$ch" ] || echo "$ch" >&2; }
   [ "$ok" = 1 ] || [ "$h" = "$EXPECT" ] || { echo "ERROR: the resolved submission differs from the approved plan (bound_hash $h, --rs-expect $EXPECT) — nothing submitted; plan it again" >&2; exit 6; }

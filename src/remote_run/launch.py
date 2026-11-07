@@ -1,7 +1,8 @@
 """`rsk launch`: plan on the target, then the user's words (or a record that already covers the plan), then the
 submit — every step recorded in the project's ledger (ledger.py) and checked against what the user allowed (grants.py).
 
-    rsk launch -T T [-C DIR] [--class C] [--same-name-ok] [--relaunch RUN] [--deadline S] [--check-after S]
+    rsk launch -T T [-C DIR] [--class C] [--same-name-ok] [--free-name] [--relaunch RUN] [--deadline S]
+               [--check-after S]
                slurm: [-p PART] [-g N] [-G TYPE] [-t TIME] [-m MEM] [-c CPUS] [-n NAME] [--chain N] [--<policy-flag>…]
                       -- CMD…
                nohup: [-g N | -d IDS] [-N NAME] [--nice N] [--gpu-busy-ok] [-- CMD…]
@@ -76,9 +77,25 @@ submit — every step recorded in the project's ledger (ledger.py) and checked a
 7. --approve words that repeat a standing grant's quote (grants.recycled: the same words, or a part of them, or them
    inside longer words, weighing RECYCLE_MIN, of a grant older than an hour) are exit 4, nothing claimed or recorded:
    an approval records the answer to these cards, never earlier words again.
+8. Names and the tracker (experiment-conventions.md §2, §5): a NEW run — no attempt of it in the ledger that may have
+   run (a NOT_SUBMITTED one never ran) and none in the target's journal (info_prior not > 0; unknown counts as none) —
+   whose name (as given, or the conf's JOB_NAME / the dir's name the plan resolved; also as the block prints it) is
+   not <task>--<stage>--<variant>--<origin>--s<seed>[--aNN] (name_problems: lowercase a-z 0-9 and hyphens inside
+   fields, a §1 class, origin scratch | none | fork-… | finetune-…, s<N>) is exit 2, nothing stored; an opaque word
+   (new final best r<N>) is a NOTE; an existing run keeps its name. A name the user chose themselves: --free-name, and
+   then only the user's approval of the card (its NAME line), never a standing grant. A smoke plan is exit 2 — no
+   waiver — unless its command's env words set WANDB_MODE=disabled (env_scan, GNU env's reading: a Slurm argv after
+   `env`, a box line from its first word — the wrapper runs `env "$@"`; -u WANDB_MODE unsets it; an env option but -v
+   --debug -C DIR -u NAME, a box line holding shell operators, a newline or a command substitution, or an expansion in
+   its env words, is unclear) or the Slurm conf binds wandb_mode=disabled and nothing env.sh applies
+   later can undo it (no ENV_HOOK, not conda, the block's info_wandb_env: $PROJ/.wandb_env names no WANDB_MODE). Once a formal run
+   (pilot train eval ablate bench) went out — or may have — with the tracker not known off, a NOTE lists the wandb
+   fields §4 asks for (a run with earlier attempts: resume the same wandb run). Beyond these words, what the command
+   and the trainer do is not rsk's to see.
 A record is bookkeeping, not proof that the user agreed: the card shown and the user's words are what make it theirs.
 The ledger lock is held for each check-then-record step, never across an ssh.
-Exit: 0 submitted · 1 failed on the target (or, --check-after, launched and already failed) · 2 usage · 3 refused
+Exit: 0 submitted · 1 failed on the target (or, --check-after, launched and already failed) · 2 usage (also a new
+run's name outside the convention, a smoke with the tracker on) · 3 refused
 (policy, deny) · 4 needs the user · 5 unknown · 6 conflict (duplicate, stale / used / superseded plan, drift, an old
 deploy) · 8 placement (too few free GPUs).
 """
@@ -110,6 +127,14 @@ OLD_DEPLOY = ("no .ws/launch.sh in the remote dir", "unknown arg", "is not a fla
               "--rs-warnings takes one count", "does not speak rs-api=3")
 FEW_FREE = re.compile(r"only [0-9]+ GPU id\(s\) free")
 CHECK_MAX_S = 600                # --check-after: the longest wait for the first read after a submit
+# experiment-conventions.md §2: <task>--<stage>--<variant>--<origin>--s<seed>, then the attempt's --aNN (ledger.run_id)
+NAME_FIELD = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+NAME_ORIGIN = re.compile(r"scratch|none|(?:fork|finetune)-[a-z0-9]+(?:-[a-z0-9]+)*")
+NAME_SEED = re.compile(r"s[0-9]+")
+NAME_OPAQUE = re.compile(r"new|final|best|r[0-9]+")      # §2: no opaque new / final / best / r2
+NAME_SHAPE = "<task>--<stage>--<variant>--<origin>--s<seed> (e.g. mytask-v3--train--lr-cosine--scratch--s0)"
+FORMAL = ("pilot", "train", "eval", "ablate", "bench")     # §4: the classes that map into wandb
+ENV_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.S)
 
 
 def out(msg: str = "") -> None:
@@ -139,6 +164,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--approve", default=None, metavar="WORDS", help="the user's words approving the --plan card(s)")
     p.add_argument("--class", dest="cls", default="", choices=grants.CLASSES, help="the run class (grant scopes)")
     p.add_argument("--same-name-ok", action="store_true", help="also when a run of this name is live (both wanted)")
+    p.add_argument("--free-name", action="store_true", help="a new run's name the user chose themselves, outside "
+                   "experiment-conventions.md §2: the card shows it, and only the user's approval covers it")
     p.add_argument("--relaunch", default="", metavar="RUN", help="the run's next attempt (aNN), same configuration")
     p.add_argument("--deadline", type=float, default=180.0, help="seconds per ssh (default 180)")
     p.add_argument("--check-after", dest="check_after", type=int, default=0, metavar="S",
@@ -208,6 +235,7 @@ class Request:
     relaunch_of: str = ""
     same_name_ok: bool = False
     gpu_busy_ok: bool = False
+    free_name: bool = False
 
 
 def _slurm_flags(ns: argparse.Namespace, name: str) -> list[str]:
@@ -298,7 +326,7 @@ def build_request(ns: argparse.Namespace, led: L.Ledger, place: harness.Place) -
         sticky_class(led, name, ns.cls)
     action = "chain" if ns.chain else "launch"
     req = Request(place.target, kind, [], list(ns.cmd), name or "", ns.cls, ns.chain, action,
-                  same_name_ok=ns.same_name_ok, gpu_busy_ok=bool(ns.gpu_busy_ok))
+                  same_name_ok=ns.same_name_ok, gpu_busy_ok=bool(ns.gpu_busy_ok), free_name=bool(ns.free_name))
     if ns.relaunch:
         if name:
             raise RskError("--relaunch names the attempt itself (<run>--aNN): no -n / -N", USAGE)
@@ -365,6 +393,236 @@ def sticky_class(led: L.Ledger, name: str, label: str) -> str:
         raise RskError(f"run {run} has no class (its first attempt was recorded without one): this attempt says {new} "
                        "— a run's class is set only at its first attempt (drop --class, or name a new run)", USAGE)
     return first
+
+
+def name_problems(name: str) -> list[str]:
+    """What keeps NAME from experiment-conventions.md §2's shape ([] = nothing): <task>--<stage>--<variant>--<origin>--
+    s<seed>, then an attempt's --aNN or nothing; lowercase ASCII letters, digits, hyphens only inside a field; the
+    stage a §1 class; origin scratch | none | fork-<…> | finetune-<…>. (Opaque words: name_notes — a word is judged
+    by what it means, which a pattern cannot tell: lora-r16 and best-of-16 are fine.)"""
+    p: list[str] = []
+    odd = sorted(set(re.sub(r"[a-z0-9-]", "", name)))
+    if odd:
+        p.append("characters " + " ".join(repr(c) for c in odd) + " (lowercase a-z, 0-9 and hyphens only)")
+    f = L.run_id(name).split("--")
+    if len(f) != 5:
+        p.append(f"{len(f)} field(s) where §2 has 5")
+    low = [x.lower() for x in f]
+    bad = [x for x in f if not NAME_FIELD.fullmatch(x.lower())]
+    if bad:
+        p.append("field(s) " + ", ".join(repr(x) for x in bad) + " (a field is words joined by single hyphens; `--` "
+                 "separates fields)")
+    if len(f) == 5:
+        if low[1] not in grants.CLASSES:
+            p.append(f"stage {f[1]!r} is not a class ({', '.join(grants.CLASSES)})")
+        if not NAME_ORIGIN.fullmatch(low[3]):
+            p.append(f"origin {f[3]!r} (scratch | none | fork-<ckpt> | finetune-<source>: the model's lineage — a "
+                     "dataset or setting belongs in the task or the variant)")
+        if not NAME_SEED.fullmatch(low[4]):
+            p.append(f"seed {f[4]!r} (s0, s1, …)")
+    return p
+
+
+def name_notes(name: str) -> list[str]:
+    """§2's opaque words (new / final / best / r<N>) in the task, variant or origin field: a NOTE, never a refusal."""
+    f = [x.lower() for x in L.run_id(name).split("--")]
+    return sorted({w for i, x in enumerate(f) if i != 1 and (len(f) != 5 or i != 4)
+                   for w in x.split("-") if NAME_OPAQUE.fullmatch(w)})
+
+
+def new_run(led: L.Ledger, block: dict, name: str) -> bool:
+    """A run never launched before as far as rsk can tell: no attempt of it in the ledger that may have run (any
+    target; a provably unsent one — NOT_SUBMITTED — never ran: grants.prior_attempts) and none in the target's journal
+    (the block's info_prior is not above 0; unknown counts as none here — the name is checked)."""
+    run = L.run_id(name)
+    if grants.prior_attempts({run: led.read_run(run).data or {}}, run):
+        return False
+    prior = info_prior(block)
+    return not (prior and prior > 0)
+
+
+def payload_words(rec: dict) -> list[str] | None:
+    """The plan's command as words (Slurm: the argv job.sbatch runs; a box: its command line split as the shell
+    would, quotes only), None when it cannot be read."""
+    b = rec.get("block") or {}
+    try:
+        if rec.get("kind") == "slurm":
+            return grants.qwords(str(b.get("payload", "")))
+        return shlex.split(_dec(b.get("payload", "")))
+    except (RskError, ValueError):
+        return None
+
+
+def _compound(line: str) -> bool:
+    """A box command line that may run more than one command: launch.sh runs `eval "_rw_go $RUN"`, so the env words
+    reach the first command only. Scanned as bash would, quotes and backslashes respected: an unquoted | ; & ( ) —
+    in any run of operator characters (`;<`, `|>`, `&&>`) — a newline, a command substitution ($( or a backquote, also
+    inside double quotes) is one; the redirections >& <& &> >| (2>&1) are not; a # starting a word ends the line.
+    Over-cautious ($(date), <(…): refused), never a pass."""
+    if "\n" in line or "\r" in line:
+        return True
+    q, i, n = "", 0, len(line)
+    while i < n:
+        c = line[i]
+        if q == "'":
+            q = "" if c == "'" else q
+        elif q == '"':
+            if c == "\\":
+                i += 1
+            elif c == '"':
+                q = ""
+            elif c == "`" or line.startswith("$(", i):
+                return True
+        elif c == "\\":
+            i += 1
+        elif c in "'\"":
+            q = c
+        elif c == "`" or (c == "#" and (i == 0 or line[i - 1] in " \t")):
+            return c == "`"
+        elif c in ";|&()":
+            prev, nxt = line[i - 1] if i else "", line[i + 1] if i + 1 < n else ""
+            if not ((c == "&" and (prev in "<>" or nxt == ">")) or (c == "|" and prev == ">")):
+                return True
+        i += 1
+    return False
+
+
+def env_scan(words: list[str], in_env: bool) -> tuple[str, str]:
+    """GNU env's reading of WORDS for WANDB_MODE, as launch.sh's rs_gpuenv reads them for the GPU variables: options
+    first (they end at the first non-option; `--` ends them), then every word holding '=' is NAME=VALUE, then the
+    command — `env` (or …/env) again is read the same way. IN_ENV: WORDS are env's already (a box: the wrapper runs
+    `env "$@"`); else (a Slurm argv) only after a first word `env`. -v --debug -C DIR pass; -u / --unset WANDB_MODE
+    unsets it; any other option is unclear. A box line is eval'd first: a word env reads — up to the command word —
+    holding $ ` { or a glob may expand into other words (rs_runwords stops there too): 'expands'. Returns ('inherit' |
+    'set' | 'unset' | 'unclear' | 'expands', value)."""
+    state, val, i, o = "inherit", "", 0, 1
+    if not in_env:
+        if not words or Path(words[0]).name != "env":
+            return state, val
+        i = 1
+    while i < len(words):
+        w = words[i]
+        i += 1
+        if in_env and re.search(r"[$`{*?\[]", w):
+            return "expands", ""
+        if o == 1:
+            if w == "--":
+                o = 2
+                continue
+            if w in ("-v", "--debug") or w.startswith("--chdir=") or (w.startswith("-C") and len(w) > 2):
+                continue
+            if w in ("-C", "--chdir") or w in ("-u", "--unset"):   # their value word is read (and eval'd) too
+                if i >= len(words) or (in_env and re.search(r"[$`{*?\[]", words[i])):
+                    return ("expands", "") if i < len(words) else ("unclear", "")
+            if w in ("-C", "--chdir"):
+                i += 1
+                continue
+            if w in ("-u", "--unset") or w.startswith("--unset=") or (w.startswith("-u") and len(w) > 2):
+                if w in ("-u", "--unset"):
+                    if i >= len(words):
+                        return "unclear", ""
+                    n, i = words[i], i + 1
+                else:
+                    n = w.split("=", 1)[1] if w.startswith("--unset=") else w[2:]
+                if n == "WANDB_MODE":
+                    state, val = "unset", ""
+                continue
+            if w.startswith("-"):              # '-' (= -i), -i, -S, a bundle, an abbreviation: may set or clear it
+                return "unclear", ""
+            o = 0
+        elif o == 2:
+            o = 0
+            if w == "-":
+                return "unclear", ""
+        if "=" in w:
+            k, v = w.split("=", 1)
+            if k == "WANDB_MODE":
+                state, val = "set", v
+            continue
+        if Path(w).name == "env":
+            o = 1
+            continue
+        break
+    return state, val
+
+
+def tracker_mode(rec: dict) -> tuple[str, str]:
+    """(WANDB_MODE the run starts with, where it is set). The command's env words (env_scan) win over everything
+    env.sh set: a box line is env's from its first word (one command only: else 'compound'), a Slurm argv only after
+    `env`; an unclear env option is 'env-options', an expansion in a box line's env words 'env-expands', `-u
+    WANDB_MODE` 'command-unset'. Else the Slurm conf's bound
+    wandb_mode, but only when nothing env.sh applies after it can change it: no ENV_HOOK, not a conda env (activate
+    applies the env's own variables), and the plan's info_wandb_env (submit.sh: $PROJ/.wandb_env, sourced after the
+    conf) says none / no — anything else, or an older deploy without it, is 'conf-overridable'. A box conf is not on
+    its card ('unknown')."""
+    words = payload_words(rec)
+    if words is None:
+        return "", "unreadable"
+    b = rec.get("block") or {}
+    box = rec.get("kind") != "slurm"
+    if box and _compound(_dec(b.get("payload", ""))):
+        return "", "compound"
+    state, val = env_scan(words, in_env=box)
+    if state == "unclear":
+        return "", "env-options"
+    if state == "expands":
+        return "", "env-expands"
+    if state == "set":
+        return val, "command"
+    if state == "unset":
+        return "", "command-unset"
+    if not box and "wandb_mode" in b:
+        mode = _dec(b["wandb_mode"])
+        if mode == "disabled" and (_dec(b.get("env_hook", "")) or _dec(b.get("env_kind", "")) == "conda"
+                                   or _dec(b.get("info_wandb_env", "")) not in ("none", "no")):
+            return "", "conf-overridable"
+        return mode, "conf"
+    return "", "unknown"
+
+
+def smoke_problem(rec: dict) -> str:
+    """'' unless a smoke plan's run may reach the tracker as far as rsk can read (experiment-conventions.md §5: every
+    smoke goes out with WANDB_MODE=disabled; offline is not enough)."""
+    if rec.get("class") != "smoke":
+        return ""
+    mode, where = tracker_mode(rec)
+    if mode == "disabled":
+        return ""
+    said = {"command": f"its command sets WANDB_MODE={mode}", "conf": f"the conf's WANDB_MODE is {mode or 'unset'}",
+            "unknown": "the conf's WANDB_MODE is not on a workstation's card",
+            "unreadable": "its command cannot be read",
+            "env-options": "its command's env options may unset what the conf set",
+            "command-unset": "its command unsets WANDB_MODE (env -u)",
+            "env-expands": "a word of its command up to the command itself holds an expansion ($ ` { or a glob) the "
+                           "box expands before env reads it: write those words literally",
+            "compound": "its command line holds shell operators or a newline (| ; & ( ) — the env words reach the "
+                        "first command only: wrap the line, env WANDB_MODE=disabled bash -c '…')",
+            "conf-overridable": "the conf's WANDB_MODE=disabled may be undone by what env.sh applies after it (the "
+                                "ENV_HOOK, a conda env, the project's .wandb_env naming WANDB_MODE or unreadable, or "
+                                "a deploy too old to say: rsk sync)"}[where]
+    return (f"smoke {rec['name']}: {said} — every smoke goes out with WANDB_MODE=disabled (experiment-conventions.md "
+            "§5; offline still syncs later): start the command with `env WANDB_MODE=disabled` (plus the trainer's own "
+            "logger-off flag)")
+
+
+def tracker_note(rec: dict) -> None:
+    """After a formal run went out (or may have) with the tracker not known off: what experiment-conventions.md §4
+    asks of its wandb run — the agent sets it before the launch and checks it landed; never rsk's to see."""
+    cls = rec.get("class") or ""
+    if cls not in FORMAL:
+        return
+    mode, _where = tracker_mode(rec)
+    if mode == "disabled":
+        return
+    again = (" A relaunch continues the SAME wandb run (resume its id) when the trainer supports it, never a new one "
+             "(§3)." if rec.get("earlier") else "")
+    out(f"NOTE: {cls} run {rec['run']} — its wandb run per experiment-conventions.md §4: project = the task family, "
+        f"group = the comparison cohort, name = the run name minus --aNN and the project's name, job_type = {cls}, "
+        "notes = the question and the expected change, tags key:value, config run_name="
+        f"{rec['name']} + source_commit, source_dirty, command, run_class, seed, origin, parent_run, parent_checkpoint, "
+        "GPU count / world size — the trainer's own fields, else env WANDB_PROJECT / WANDB_RUN_GROUP / WANDB_JOB_TYPE / "
+        "WANDB_NAME before the command. Once it prints its run URL, check they landed (nothing to check when the "
+        f"project keeps wandb off).{again}")
 
 
 # ================================================================================================ the remote calls
@@ -682,6 +940,9 @@ def render_card(rec: dict) -> str:
         o.append(f"  policy     {' '.join(policy_flags(rec))}  (passed to the target's policy; not bound)")
     if rec.get("same_name_ok"):
         o.append("  same name  --same-name-ok: a live run of this name may share its logs/ckpts")
+    if rec.get("free_name"):
+        o.append(f"  NAME       outside experiment-conventions.md §2 ({'; '.join(rec.get('name_problems') or [])}) — "
+                 "--free-name: only the user's approval of this card")
     if rec.get("chain"):
         o.append(f"  segments   {rec['chain']} (each waits for the one before: --dependency=singleton)")
     wa, wg = str(b.get("warnings_avail", "")), str(b.get("warnings_gpu", ""))
@@ -778,17 +1039,35 @@ def make_plan(led: L.Ledger, src: Path, proj: Path, place: harness.Place, req: R
     name = _dec(block.get("name", ""))
     class_check(req.cls, name)
     cls = sticky_class(led, name, req.cls)
+    fresh = new_run(led, block, name)
+    raw = str(block.get("name", ""))          # a box prints it as is (%s), Slurm %q: what the target names the run
+    problems = (name_problems(name) or (name_problems(raw) if raw != name else [])) if fresh else []
+    if problems and not req.free_name:
+        raise RskError(f"run name {name!r}: {'; '.join(problems)} — a new run is named {NAME_SHAPE} "
+                       "(experiment-conventions.md §2; an existing run keeps its name). A name the user chose "
+                       "themselves: --free-name, then only their approval of the card covers it", USAGE)
+    if req.free_name and not problems:
+        out(f"NOTE: --free-name: {name!r} " + ("is an existing run's (it keeps its name)" if not fresh else
+                                              "follows experiment-conventions.md §2") + " — nothing to waive")
+    vague = name_notes(name) if fresh and not problems else []
+    if vague:
+        out(f"NOTE: run name {name!r}: {', '.join(vague)} — if a version / revision marker (new, final, best, r2), "
+            "experiment-conventions.md §2 asks for what changed instead (a word with a meaning, lora-r16, stays)")
     rec = {"id": new_plan_id(), "created_at": L.now(), "created_ns": time.time_ns(), "target": place.target,
            "kind": place.kind, "host": place.host, "remote_dir": place.remote_dir, "name": name, "run": L.run_id(name),
            "action": req.action, "class": cls, "chain": req.chain,
            "relaunch_of": req.relaunch_of,
            "same_name_ok": req.same_name_ok, "gpu_busy_ok": req.gpu_busy_ok, "flags": req.flags,
+           "free_name": bool(problems), "name_problems": problems, "earlier": not fresh,
            "payload": req.payload, "plan_nonce": nonce, "block": block, "bound_hash": block["bound_hash"],
            "warnings": int(block["warnings"]), "lines": interesting(reply, place.target),
            "references": references(reply) or [r for r in [harness.reference(src, place.target)] if r],
            "local": local_source(proj)}
     acts = plan_actions(led.state().runs, rec)
     rec["action"], rec["actions"] = acts[0], list(acts)
+    smoke = smoke_problem(rec)
+    if smoke:
+        raise RskError(smoke, USAGE)
     rec["card"] = render_card(rec)
     return rec
 
@@ -848,8 +1127,8 @@ def decide(source: L.Ledger | L.LedgerState, rec: dict, need: int | None = None,
            extending: tuple[str, str] | None = None) -> grants.Decision:
     """grants.check() plus what only a whole request shows: N chain segments need N launches (NEED: the segments
     still to send; EXTENDING: the attempt they join, which holds its own max_live slot), and a standing grant never
-    covers a workstation plan that lands on a GPU in use, a user-asked policy flag or --same-name-ok. The actions are
-    derived from the ledger now (plan_actions): every one that applies is checked."""
+    covers a workstation plan that lands on a GPU in use, a user-asked policy flag, --same-name-ok or --free-name. The
+    actions are derived from the ledger now (plan_actions): every one that applies is checked."""
     st = source.state() if isinstance(source, L.Ledger) else source
     acts = plan_actions(st.runs, rec)
     d = grants.check(st, acts[0], plan=check_plan(rec, st.runs), run=rec["run"], extending=extending, also=acts[1:])
@@ -868,6 +1147,9 @@ def decide(source: L.Ledger | L.LedgerState, rec: dict, need: int | None = None,
         why.append(f"{' '.join(asked)} is the user's own OK for a policy gate, per submit — never a standing grant's call")
     if rec.get("same_name_ok") and d.record.get("kind") == "grant":
         why.append("--same-name-ok (a second live copy sharing logs/ckpts) is never a standing grant's call")
+    if rec.get("free_name") and d.record.get("kind") == "grant":
+        why.append("--free-name (a new run named outside experiment-conventions.md §2) is the user's own call, per "
+                   "card — never a standing grant's")
     if why:
         return grants.Decision(False, None, [f"{d.record['id']}: {'; '.join(why)}"],
                                f"approval — no record covers {'/'.join(acts)} of {rec['name']} (show the card and ask "
@@ -1197,6 +1479,8 @@ def submit_plan(led: L.Ledger, src: Path, proj: Path, place: harness.Place, rec:
                 out(f"not covered any more{done}: " + "; ".join(d.reasons))
                 out(f"needs user: approval — plan {rec['id']}" if not seg else
                     f"needs user: approval — the remaining {n - seg} segment(s) of {rec['name']}")
+                if seg:                            # earlier segments went out: their wandb run
+                    tracker_note(rec)
                 return REFUSED if d.denied else NEEDS_USER
             action = plan_actions(st.runs, rec)[0]
             if seg == 0 and not claimed:
@@ -1216,8 +1500,17 @@ def submit_plan(led: L.Ledger, src: Path, proj: Path, place: harness.Place, rec:
         if code != OK:
             if seg + 1 < n:
                 out(f"the chain stops: {n - seg - 1} later segment(s) not sent")
+            if seg or maybe_sent(led, run, aid, nonce):   # a segment went out, or this one may have
+                tracker_note(rec)
             return code
+    tracker_note(rec)
     return OK
+
+
+def maybe_sent(led: L.Ledger, run: str, aid: str, nonce: str) -> bool:
+    """Whether the ledger counts submission NONCE of RUN's attempt AID as sent or maybe sent (not NOT_SUBMITTED)."""
+    att = ((led.read_run(run).data or {}).get("attempts") or {}).get(aid) or {}
+    return any(s.get("nonce") == nonce and s.get("submit") != "not_submitted" for s in att.get("submissions") or [])
 
 
 def _seen(o: observe.Observation, kind: str, sub: dict) -> tuple[str, observe.Job | None]:
@@ -1335,7 +1628,7 @@ def cmd_new(ns: argparse.Namespace, led: L.Ledger, src: Path, proj: Path) -> int
 def cmd_plans(ns: argparse.Namespace, led: L.Ledger, src: Path, proj: Path) -> int:
     asked = [x for x in (ns.target, ns.relaunch, ns.cls, ns.cmd, ns.policy_flags) if x] + \
         [x for x in (ns.part, ns.gpus, ns.gtype, ns.time, ns.mem, ns.cpus, ns.name, ns.ids, ns.wsname, ns.nice)
-         if x not in (None, "")] + [x for x in (ns.chain, ns.same_name_ok, ns.gpu_busy_ok, ns.y) if x]
+         if x not in (None, "")] + [x for x in (ns.chain, ns.same_name_ok, ns.gpu_busy_ok, ns.y, ns.free_name) if x]
     if asked:
         raise RskError("--plan submits a stored plan as it was planned: no -T / flags / command beside it", USAGE)
     words = ns.approve

@@ -443,7 +443,29 @@ project, ten relaunch approvals quoting two old sentences); so `--approve` words
 new grant that repeats an older one's words: an approval is the answer to what is on screen. A nudge against copying, not proof: other
 words still pass. Before deciding, `rsk launch` re-reads every target where the ledger counts an attempt of the run as
 live (`launch.refresh`: the read `rsk status` makes), since the ledger learns of an end only from such a read — a job
-that just failed was refused as a live duplicate and gave a relaunch grant no end to rely on. A run's class is the one its name carries (`--class` only labels a name
+that just failed was refused as a live duplicate and gave a relaunch grant no end to rely on. Run names and the tracker
+follow `experiment-conventions.md`, and reading it was not enough (seen: `…--eval--<method>-final`, an origin field
+holding a dataset, wandb runs with no group or job type): `rsk launch` refuses a NEW run — no ledger attempt that may
+have run (a NOT_SUBMITTED one never did), no receipt in the target's journal (`info_prior` not above 0; unknown counts as
+new) — whose name, as rsk resolved it and as the block prints it, is not `<task>--<stage>--<variant>--<origin>--s<seed>[--aNN]`
+(exit 2, each reason named, nothing stored: renaming is the agent's own cheap fix; an existing run keeps its name, so
+its grants, lineage and resume stay whole). An opaque word (new, final, best, r2) is only a NOTE: whether `r16` is a
+revision or a LoRA rank is a meaning no pattern sees. `--free-name` takes a name the user chose only through their
+approval of the card (never a standing grant: a flag the agent could add would undo the check). A smoke is refused
+unless its command's env words set `WANDB_MODE=disabled`, read as GNU env reads them (`launch.env_scan`, the rules of
+launch.sh's `rs_gpuenv`: options first — `-v`, `-C DIR` pass, `-u WANDB_MODE` unsets it, any other is unclear —, then
+every word holding `=`, then the command, `env` again read alike): a Slurm payload is an argv, so only after a first
+word `env` (a bare `NAME=VALUE` there is a program name); a box line is `env`'s words from its first (launch.sh runs
+`eval "_rw_go $RUN"`, `_rw_go` = `env "$@"`), and one command only — shell operators or a newline split the line before
+env runs, so such a line is refused (`$(…)` too: over-cautious, never a pass; scanned as bash reads it, so `;<` or
+`|>` count and a quoted `'|'` does not), and so is an expansion in env's words (`$` `` ` `` `{` a glob: the eval expands it
+first) — or the Slurm conf's bound `wandb_mode`
+is `disabled` and nothing env.sh applies after it can undo that: no ENV_HOOK, not conda, and the block's
+`info_wandb_env` (submit.sh's read-only look at `$PROJ/.wandb_env`, which env.sh sources after the conf) says none or
+no — an older deploy without it does not count; a box's conf is not on its card, so there the command says it. A wrapper before `env` or the
+payload's own code can still change it: rsk reads words, not runs. What a formal run logs is the trainer's business,
+never visible to rsk: once it went out (or may have) rsk sums §4's fields up (for a run with earlier attempts:
+resume the same wandb run) as a NOTE — a reminder, not a check; the fields are set before the launch. A run's class is the one its name carries (`--class` only labels a name
 without one) and is set only at its first attempt: another one later is exit 2, and so is any class for a run whose
 first attempt had none (a grant scoped by class never covers that run); a deny of `launch` stops relaunches and chains
 too, and its name globs also match the run id. A run's attempts carry the job name `<run>--aNN`, which is what squeue,

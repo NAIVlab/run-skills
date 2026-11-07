@@ -313,7 +313,7 @@ PP=$(mk_proj fx-slurm "$PC"); printf 'path=/l\ncommit=0123abc\ndirty=2\n' > "$PP
 PA=(-g 2 -t 2:00:00 -m 64G -c 4 -n pj -- python t.py --msg "a b")
 O=$(subo "$PP" --rs-attempt pl1 --rs-mode plan "${PA[@]}"); RC=$?; A=$PP/.rs/attempts/pl1; B=$(blk "$O")
 rc_is 0 "$RC" "plan mode" "$O"; nosub "...sbatch never runs"
-[ "$(printf '%s\n' "$B" | sed 's/=.*//' | tr '\n' ' ')" = "@@plan v1 api kind target partition gres cpus mem time account name extra payload env_kind env_name wandb_mode env_hook venv_dir uv_sync_args conf_extra flags chain info_avail info_conf_sha256 info_profile_sha256 info_policy_sha256 info_policy_local_sha256 info_source_commit info_source_dirty info_prior info_prior_here warnings warnings_avail warnings_id bound_hash @@end " ] \
+[ "$(printf '%s\n' "$B" | sed 's/=.*//' | tr '\n' ' ')" = "@@plan v1 api kind target partition gres cpus mem time account name extra payload env_kind env_name wandb_mode env_hook venv_dir uv_sync_args conf_extra flags chain info_avail info_conf_sha256 info_profile_sha256 info_policy_sha256 info_policy_local_sha256 info_source_commit info_source_dirty info_prior info_prior_here info_wandb_env warnings warnings_avail warnings_id bound_hash @@end " ] \
   && ok "ONE block, exactly these keys in this order" || { bad "plan block keys"; printf '%s\n' "$B" | sed 's/^/    | /'; }
 [ "$(printf '%s\n' "$O" | grep -c '^@@plan v1$')" = 1 ] && ok "...printed once, on stdout" || bad "...printed once"
 has "$(PATH="$T/bin:$PATH" bash "$PP/.fx-slurm/submit.sh" --rs-mode plan "${PA[@]}" 2>/dev/null)" '^@@end$' "...(stdout alone carries it)"
@@ -683,6 +683,20 @@ rc_is 0 "$RC" "squeue failing: the plan goes on" "$O"; [ "$(pri "$O")" = unknown
 [ "$(prh "$O")" = unknown ] && ok "...and info_prior_here=unknown" || bad "squeue failing -> here unknown (got '$(prh "$O")')"
 O=$(sq "$IP" --rs-mode plan -n r5 -- echo hi); [ "$(pri "$O")" = unknown ] && ok "...also with the duplicate guard on (its warning, then unknown)" || bad "guard on, squeue failing (got '$(pri "$O")')"
 rm -f "$T/squeue.fail" "$T/squeue.rows"
+# info_wandb_env (envelope): does $PROJ/.wandb_env — env.sh sources it after the conf — name WANDB_MODE (rsk: a smoke's conf key)
+pwe() { printf '%s\n' "$1" | sed -n 's/^info_wandb_env=//p'; }
+O=$(sq "$IP" --rs-mode plan -n r7 -- echo hi); [ "$(pwe "$O")" = none ] && ok "info_wandb_env=none: no .wandb_env in the project" || bad "wandb_env none (got '$(pwe "$O")')"
+printf 'export WANDB_API_KEY=k1secret\n' > "$IP/.wandb_env"; O=$(sq "$IP" --rs-mode plan -n r7 -- echo hi)
+[ "$(pwe "$O")" = no ] && ok "...=no: a key only" || bad "wandb_env no (got '$(pwe "$O")')"; hasnt "$O" 'k1secret' "...the file is read, never printed"
+[ "$(bh "$O")" = "$(bh "$(rm -f "$IP/.wandb_env"; sq "$IP" --rs-mode plan -n r7 -- echo hi)")" ] && ok "...envelope only: the bound_hash does not change" || bad "...info_wandb_env changed the bound_hash"
+printf 'export WANDB_API_KEY=k1secret\nexport WANDB_MODE=online\n' > "$IP/.wandb_env"; O=$(sq "$IP" --rs-mode plan -n r7 -- echo hi)
+[ "$(pwe "$O")" = names ] && ok "...=names: it sets WANDB_MODE (the conf's disabled may be undone)" || bad "wandb_env names (got '$(pwe "$O")')"
+if [ "$(id -u)" != 0 ]; then chmod 000 "$IP/.wandb_env"; O=$(sq "$IP" --rs-mode plan -n r7 -- echo hi)
+  [ "$(pwe "$O")" = unreadable ] && ok "...=unreadable: it cannot be read" || bad "wandb_env unreadable (got '$(pwe "$O")')"; chmod 600 "$IP/.wandb_env"
+else echo "  SKIP: root reads any file: the unreadable .wandb_env case is not testable"; fi
+rm -f "$IP/.wandb_env"; mkdir "$IP/.wandb_env"; O=$(sq "$IP" --rs-mode plan -n r7 -- echo hi)
+[ "$(pwe "$O")" = none ] && ok "...a directory named .wandb_env: none (env.sh sources only a file: [ -f ])" || bad "wandb_env dir (got '$(pwe "$O")')"
+rmdir "$IP/.wandb_env"
 if [ "$(id -u)" != 0 ]; then chmod 000 "$IP/.rs/attempts/x6/receipt"
   O=$(sq "$IP" --rs-mode plan -n r5 -- echo hi); [ "$(pri "$O")" = unknown ] && ok "a receipt that cannot be read: info_prior=unknown" || bad "unreadable receipt (got '$(pri "$O")')"
   chmod 644 "$IP/.rs/attempts/x6/receipt"; else echo "  SKIP: root reads any receipt: the unreadable-receipt case is not testable"; fi

@@ -69,8 +69,10 @@ summary of it is in context) and wait for the user's words ("go" / "确认" / "�
 Never submit on implicit consent: a description of a run is not an approval of it. Installed without rsk: the same
 check against the user's words in the conversation; outside them, print a one-line plan ending `ref: <reference path>`
 and wait. A charged partition, more resources or a wider scope than the user authorised always goes back to them.
-Classify and name the run per `experiment-conventions.md` (run class, structured `-n` name, wandb mapping). A smoke
-goes out with `WANDB_MODE=disabled` (prepend `env WANDB_MODE=disabled` to the payload). For a pilot/train/ablate,
+Classify and name the run per `experiment-conventions.md` (run class, structured `-n` name, wandb mapping; `rsk
+launch` refuses a new run's name outside its §2, exit 2). A smoke goes out with `WANDB_MODE=disabled` (prepend `env
+WANDB_MODE=disabled` to the payload, or the conf's key when no ENV_HOOK, conda env or wandb_env naming WANDB_MODE can
+undo it: rsk refuses a smoke with neither). For a pilot/train/ablate,
 confirm the command checkpoints AND auto-resumes — jobs are submitted `--requeue`, so a requeued job re-runs the
 same command; if it cannot resume, say so in the plan (`SBATCH_EXTRA="--no-requeue"` opts it out). Longer than the
 partition's MaxTime → a singleton segment chain (conventions §6): the plan states the segment count and walltime.

@@ -152,7 +152,8 @@ config / container WARNINGs and the `env -i` / `exec -c` / `APPTAINERENV_` refus
 would cover it), which rsk requires — a block without either, or `launch_cfg=`, or a slurm one without `flags=`, is
 `needs: sync`, a stored nohup plan without them fails `--plan`; `info_prior=<n|unknown>`, slurm after `info_source_dirty`, nohup after `info_run_gpu`: `rs_prior`, the run's earlier attempts
 = journal receipts named the run id or `<run id>--aNN`, slurm + this WorkDir's squeue rows no receipt names, `unknown` when
-squeue failed or a receipt is unreadable — rsk derives `relaunch` from n > 0 or no number, never `needs: sync`),
+squeue failed or a receipt is unreadable — rsk derives `relaunch` from n > 0 or no number, never `needs: sync`; slurm then
+`info_wandb_env=none|no|names|unreadable`: does `$PROJ/.wandb_env` name WANDB_MODE — a smoke's conf key counts only at none / no),
 `warnings=` (the distinct `WARNING:` lines in out+err, not `WARNING (lint)`), `warnings_avail=` (the availability gate's
 share), nohup `warnings_gpu=` (`rs_launchers`' share, `LAUNCH_WARN`; NF8), `warnings_id=` (sha256 of those lines, sorted, digit runs → `#`, + a silent policy gate's probe output, below),
 `bound_hash=` (sha256 of the lines `kind=` … the last bound field, each + newline); it stops before the snapshots / the
@@ -237,7 +238,11 @@ cancel and watch `--act`/`--approve`, and while it is recovered or missing every
 (`rsk grant recount` restores those denies and the revocations; a lost grant or approval needs the user's words again). The action
 is derived (`launch.plan_actions`): a run with attempts that may have run (not only NOT_SUBMITTED, not the plan's own) in
 the ledger, or `info_prior` > 0, or no readable `info_prior` (`launch.info_prior`) → relaunch, `chain=1` → chain; every one applies (a deny of any matches, a record must allow all). The class is the name's,
-set only at the run's first attempt (none there: a later one is exit 2). Never grant-covered: warnings the grant's
+set only at the run's first attempt (none there: a later one is exit 2). A NEW run (no ledger attempt that may have run, `info_prior`
+not > 0) named outside experiment-conventions §2's shape is exit 2 (`launch.name_problems`, opaque words a NOTE; a name the user chose:
+`--free-name`, never grant-covered), and so is a smoke whose command's env words (`launch.env_scan`, GNU env's reading: a box line
+from its first word, one command) or Slurm conf (bound `wandb_mode`; not beside an ENV_HOOK / conda / `info_wandb_env` names) do not turn the tracker off
+(`launch.smoke_problem`); a formal launch with it on prints §4's wandb fields (`launch.tracker_note`). Never grant-covered: warnings the grant's
 `allow_warnings` kind does not cover (`-y` is sent only for a card that showed warnings, under a record that covers them), a
 policy flag (`flags=`), `--same-name-ok`, a `conf_extra` word outside `grants.EXTRA_ALLOW` (the card's `NO GRANT`; policy
 words never count), a time over `max_time_s` in any limit sbatch could read (0 / UNLIMITED = unlimited), a relaunch whose

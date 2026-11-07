@@ -23,9 +23,11 @@ mytask-v3--train--lr-cosine--scratch--s0--a01
 - `variant`: the ONE hypothesis or change being tried (`lr-cosine`) — not a serialized hyperparameter dump.
 - `origin`: model lineage — `scratch` | `fork-<ckpt>` | `finetune-<source>` | `none` (no lineage applies).
 - `seed`: `s0`, `s1`, …  `attempt`: `a01`, `a02`, … — separately approved launches of the SAME logical run (§3).
-Lowercase ASCII; hyphens inside a field, `--` between fields; the same word for the same concept everywhere;
+Lowercase letters, digits, hyphens only (no `.` `_`); hyphens inside a field, `--` between fields; one word per concept;
 no opaque `new`/`final`/`best`/`r2`, no bare checkpoint number without its origin role. No timestamp field:
 the harness already makes logs unique (slurm `logs/<name>_<jobid>.out`, nohup `logs/<name>-<timestamp>.log`).
+`rsk launch` refuses a NEW run's name outside this shape (exit 2, each reason named; an opaque word: a NOTE; an existing
+run keeps its name); a name the user chose themselves goes out with `--free-name`, then only their approval of the card covers it.
 
 ## 3. Lineage: restart vs fork
 - Same task, config, seed and objective → the SAME logical run; resume the same wandb run when supported.
@@ -52,11 +54,13 @@ Prefer the trainer's native fields; when it exposes none, prepend wandb's standa
 `env WANDB_PROJECT=mytask WANDB_RUN_GROUP=v3-lr-sweep WANDB_JOB_TYPE=ablate WANDB_NAME=… <cmd>` (they win
 over env.sh's exports). If a required field cannot be set without a code change, report the gap instead of
 encoding the metadata into the name. After init, open the printed run URL once and check project / group /
-name / tags actually landed — metrics arriving is not verification.
+name / tags actually landed — metrics arriving is not verification (`rsk launch` sums this list up after a formal
+run's launch with the tracker on: set the fields before it; what the trainer logs is never rsk's to see).
 
 ## 5. Smoke runs never reach the tracker
 Every smoke goes out with `WANDB_MODE=disabled`: prepend `env WANDB_MODE=disabled` to the payload (or set the
-conf key while smoking), plus the trainer's own logger-off flag when it has one. `offline` is NOT enough — it
+conf key while smoking: Slurm only, without an ENV_HOOK, a conda env or a wandb_env naming WANDB_MODE — env.sh applies
+those after it), plus the trainer's own logger-off flag when it has one; `rsk launch` refuses a smoke without either (exit 2). `offline` is NOT enough — it
 creates a syncable local run; never `wandb sync` a smoke dir later. Disable any other remote tracker the
 project uses the same way. If the startup log still prints a wandb URL / run id, report it, get the OK to
 stop it (or act on a `cancel_own` grant the user gave), fix the isolation, rerun. Smoke evidence lives in the log file, not on the experiment dashboard.
