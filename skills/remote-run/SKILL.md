@@ -60,10 +60,10 @@ whatever ssh's own words were (a fallback route of a session that ran can print 
 Slurm: `references/procedure-slurm.md` (sync → bootstrap → plan → submit → monitor, the storage model, what `submit.sh`
 checks). Workstation: `references/procedure-nohup.md` (sync → bootstrap → GPUs → plan → launch → monitor). Conf keys:
 `references/conf-keys.md`. Naming, run classes, wandb, checkpoint/resume: `references/experiment-conventions.md` — read
-it before naming, submitting or launching any real experiment: `rsk launch` refuses a NEW run named outside its §2 and a
-smoke whose command's env words do not set WANDB_MODE=disabled (start it with `env WANDB_MODE=disabled`, one command —
-wrap several in `bash -c`; a plain Slurm conf's key counts too) — exit 2: fix it; `--free-name` only for a name the user
-chose, then their card. Set §4's wandb fields before a formal launch; the NOTE after it: check they landed. Installed without rsk (no uv): `TARGET=<t> bash
+it before naming, submitting or launching any real experiment. `rsk launch` NOTEs a NEW run named outside its §2
+(rename it; a name the user chose: `--free-name`), refuses a smoke it can see reaching wandb (exit 2) and WARNs on the
+card where it cannot tell: start a smoke's command with `env WANDB_MODE=disabled` (one command; several: `bash -c`).
+Set §4's wandb fields before a formal launch; the NOTE after it: check they landed. Installed without rsk (no uv): `TARGET=<t> bash
 $ROOT/bin/run-{avail,sync,bootstrap,pull,watch}`, Slurm `ssh <host> 'bash <REMOTE_DIR>/.<t>/submit.sh … -- <RUN>'`, box
 `TARGET=<t> bash $ROOT/bin/run-launch … -- <RUN>` (procedures §4–§5); no ledger: check the user's words the same way,
 and for anything they do not cover print a one-line plan and wait for their go.

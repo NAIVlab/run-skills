@@ -77,25 +77,26 @@ submit — every step recorded in the project's ledger (ledger.py) and checked a
 7. --approve words that repeat a standing grant's quote (grants.recycled: the same words, or a part of them, or them
    inside longer words, weighing RECYCLE_MIN, of a grant older than an hour) are exit 4, nothing claimed or recorded:
    an approval records the answer to these cards, never earlier words again.
-8. Names and the tracker (experiment-conventions.md §2, §5): a NEW run — no attempt of it in the ledger that may have
-   run (a NOT_SUBMITTED one never ran) and none in the target's journal (info_prior not > 0; unknown counts as none) —
-   whose name (as given, or the conf's JOB_NAME / the dir's name the plan resolved; also as the block prints it) is
-   not <task>--<stage>--<variant>--<origin>--s<seed>[--aNN] (name_problems: lowercase a-z 0-9 and hyphens inside
-   fields, a §1 class, origin scratch | none | fork-… | finetune-…, s<N>) is exit 2, nothing stored; an opaque word
-   (new final best r<N>) is a NOTE; an existing run keeps its name. A name the user chose themselves: --free-name, and
-   then only the user's approval of the card (its NAME line), never a standing grant. A smoke plan is exit 2 — no
-   waiver — unless its command's env words set WANDB_MODE=disabled (env_scan, GNU env's reading: a Slurm argv after
-   `env`, a box line from its first word — the wrapper runs `env "$@"`; -u WANDB_MODE unsets it; an env option but -v
-   --debug -C DIR -u NAME, a box line holding shell operators, a newline or a command substitution, or an expansion in
-   its env words, is unclear) or the Slurm conf binds wandb_mode=disabled and nothing env.sh applies
-   later can undo it (no ENV_HOOK, not conda, the block's info_wandb_env: $PROJ/.wandb_env names no WANDB_MODE). Once a formal run
-   (pilot train eval ablate bench) went out — or may have — with the tracker not known off, a NOTE lists the wandb
-   fields §4 asks for (a run with earlier attempts: resume the same wandb run). Beyond these words, what the command
-   and the trainer do is not rsk's to see.
+8. Names and the tracker (experiment-conventions.md §2, §5) — hints, refusing only what is certain: a NEW run (no
+   attempt of it in the ledger that may have run, none in the target's journal: info_prior not > 0, unknown counts as
+   none) whose name — as resolved, also as the block prints it — is not <task>--<stage>--<variant>--<origin>--s<seed>
+   [--aNN] (name_problems: lowercase a-z 0-9 and hyphens inside fields, a §1 class, origin scratch | none | fork-… |
+   finetune-…, s<N>), or holds an opaque word (new final best r<N>), gets a NOTE (and a card line) and is launched as
+   named; an existing run is not checked; --free-name = the user's own name: not checked, the card says so, a grant
+   covers it as any plan. A smoke plan is exit 2 only when rsk can see its run reach the tracker: its command's env
+   words (env_scan, GNU env's reading: a Slurm argv after `env`, a box line from its first word — the wrapper runs
+   `env "$@"`) set another WANDB_MODE or unset it, or the Slurm conf binds one that is not disabled, the command
+   leaves it and nothing applied later can change it. What it cannot tell — a box's conf, a line of several commands,
+   an expansion in env's words, an env option, a conf value that an ENV_HOOK, a conda env or $PROJ/.wandb_env (the
+   block's info_wandb_env; none on an older deploy) may change either way — is a WARNING on the card, and the plan
+   goes on. Once a formal run (pilot train eval
+   ablate bench) went out — or may have — with the tracker not known off, a NOTE lists the wandb fields §4 asks for
+   (a run with earlier attempts: resume the same wandb run). Beyond these words, what the command and the trainer do
+   is not rsk's to see.
 A record is bookkeeping, not proof that the user agreed: the card shown and the user's words are what make it theirs.
 The ledger lock is held for each check-then-record step, never across an ssh.
-Exit: 0 submitted · 1 failed on the target (or, --check-after, launched and already failed) · 2 usage (also a new
-run's name outside the convention, a smoke with the tracker on) · 3 refused
+Exit: 0 submitted · 1 failed on the target (or, --check-after, launched and already failed) · 2 usage (also a smoke
+that would reach the tracker) · 3 refused
 (policy, deny) · 4 needs the user · 5 unknown · 6 conflict (duplicate, stale / used / superseded plan, drift, an old
 deploy) · 8 placement (too few free GPUs).
 """
@@ -164,8 +165,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--approve", default=None, metavar="WORDS", help="the user's words approving the --plan card(s)")
     p.add_argument("--class", dest="cls", default="", choices=grants.CLASSES, help="the run class (grant scopes)")
     p.add_argument("--same-name-ok", action="store_true", help="also when a run of this name is live (both wanted)")
-    p.add_argument("--free-name", action="store_true", help="a new run's name the user chose themselves, outside "
-                   "experiment-conventions.md §2: the card shows it, and only the user's approval covers it")
+    p.add_argument("--free-name", action="store_true", help="the run's name is the user's own: experiment-"
+                   "conventions.md §2 not checked (no NOTE); the card says so")
     p.add_argument("--relaunch", default="", metavar="RUN", help="the run's next attempt (aNN), same configuration")
     p.add_argument("--deadline", type=float, default=180.0, help="seconds per ssh (default 180)")
     p.add_argument("--check-after", dest="check_after", type=int, default=0, metavar="S",
@@ -551,10 +552,10 @@ def tracker_mode(rec: dict) -> tuple[str, str]:
     env.sh set: a box line is env's from its first word (one command only: else 'compound'), a Slurm argv only after
     `env`; an unclear env option is 'env-options', an expansion in a box line's env words 'env-expands', `-u
     WANDB_MODE` 'command-unset'. Else the Slurm conf's bound
-    wandb_mode, but only when nothing env.sh applies after it can change it: no ENV_HOOK, not a conda env (activate
-    applies the env's own variables), and the plan's info_wandb_env (submit.sh: $PROJ/.wandb_env, sourced after the
-    conf) says none / no — anything else, or an older deploy without it, is 'conf-overridable'. A box conf is not on
-    its card ('unknown')."""
+    wandb_mode — sure only when nothing env.sh applies after it can change it, in either direction: no ENV_HOOK, not a
+    conda env (activate applies the env's own variables), and the plan's info_wandb_env (submit.sh: $PROJ/.wandb_env,
+    sourced after the conf) says none / no; anything else, or an older deploy without it, is (the conf's mode,
+    'conf-overridable'). A box conf is not on its card ('unknown')."""
     words = payload_words(rec)
     if words is None:
         return "", "unreadable"
@@ -573,36 +574,45 @@ def tracker_mode(rec: dict) -> tuple[str, str]:
         return "", "command-unset"
     if not box and "wandb_mode" in b:
         mode = _dec(b["wandb_mode"])
-        if mode == "disabled" and (_dec(b.get("env_hook", "")) or _dec(b.get("env_kind", "")) == "conda"
-                                   or _dec(b.get("info_wandb_env", "")) not in ("none", "no")):
-            return "", "conf-overridable"
+        if (_dec(b.get("env_hook", "")) or _dec(b.get("env_kind", "")) == "conda"
+                or _dec(b.get("info_wandb_env", "")) not in ("none", "no")):
+            return mode, "conf-overridable"          # either way: what env.sh applies after the conf may change it
         return mode, "conf"
     return "", "unknown"
 
 
-def smoke_problem(rec: dict) -> str:
-    """'' unless a smoke plan's run may reach the tracker as far as rsk can read (experiment-conventions.md §5: every
-    smoke goes out with WANDB_MODE=disabled; offline is not enough)."""
+def smoke_problem(rec: dict) -> tuple[str, bool]:
+    """('', False) unless a smoke plan's run may reach the tracker (experiment-conventions.md §5: every smoke goes out
+    with WANDB_MODE=disabled; offline is not enough). certain=True — exit 2 — only when rsk can see it does: the
+    command sets another WANDB_MODE or unsets it, or the Slurm conf's bound one is not disabled, the command leaves it
+    and nothing applied later can change it; whatever rsk cannot tell (a box's conf, a line of several commands, an
+    expansion, an env option, a conf value something applied later may change) is a WARNING on the card, and the
+    launch goes on."""
     if rec.get("class") != "smoke":
-        return ""
+        return "", False
     mode, where = tracker_mode(rec)
-    if mode == "disabled":
-        return ""
+    if mode == "disabled" and where in ("command", "conf"):
+        return "", False
+    certain = where in ("command", "command-unset", "conf")
     said = {"command": f"its command sets WANDB_MODE={mode}", "conf": f"the conf's WANDB_MODE is {mode or 'unset'}",
             "unknown": "the conf's WANDB_MODE is not on a workstation's card",
             "unreadable": "its command cannot be read",
             "env-options": "its command's env options may unset what the conf set",
             "command-unset": "its command unsets WANDB_MODE (env -u)",
             "env-expands": "a word of its command up to the command itself holds an expansion ($ ` { or a glob) the "
-                           "box expands before env reads it: write those words literally",
-            "compound": "its command line holds shell operators or a newline (| ; & ( ) — the env words reach the "
-                        "first command only: wrap the line, env WANDB_MODE=disabled bash -c '…')",
-            "conf-overridable": "the conf's WANDB_MODE=disabled may be undone by what env.sh applies after it (the "
-                                "ENV_HOOK, a conda env, the project's .wandb_env naming WANDB_MODE or unreadable, or "
-                                "a deploy too old to say: rsk sync)"}[where]
+                           "box expands before env reads it",
+            "compound": "its command line holds shell operators or a newline (| ; & ( ): the env words reach the "
+                        "first command only (env WANDB_MODE=disabled bash -c '…' covers them all)",
+            "conf-overridable": f"the conf's WANDB_MODE is {mode or 'unset'}, but what env.sh applies after it may "
+                                "change that (the ENV_HOOK, a conda env, the project's .wandb_env naming WANDB_MODE or "
+                                "unreadable, or a deploy too old to say: rsk sync)"}[where]
+    if not certain:
+        return (f"smoke {rec['name']}: rsk cannot tell WANDB_MODE is disabled — {said}; make sure it is (experiment-"
+                "conventions.md §5: `env WANDB_MODE=disabled` first in the command), and that the start log prints "
+                "no wandb URL", False)
     return (f"smoke {rec['name']}: {said} — every smoke goes out with WANDB_MODE=disabled (experiment-conventions.md "
             "§5; offline still syncs later): start the command with `env WANDB_MODE=disabled` (plus the trainer's own "
-            "logger-off flag)")
+            "logger-off flag)", True)
 
 
 def tracker_note(rec: dict) -> None:
@@ -611,8 +621,8 @@ def tracker_note(rec: dict) -> None:
     cls = rec.get("class") or ""
     if cls not in FORMAL:
         return
-    mode, _where = tracker_mode(rec)
-    if mode == "disabled":
+    mode, where = tracker_mode(rec)
+    if mode == "disabled" and where in ("command", "conf"):
         return
     again = (" A relaunch continues the SAME wandb run (resume its id) when the trainer supports it, never a new one "
              "(§3)." if rec.get("earlier") else "")
@@ -941,8 +951,15 @@ def render_card(rec: dict) -> str:
     if rec.get("same_name_ok"):
         o.append("  same name  --same-name-ok: a live run of this name may share its logs/ckpts")
     if rec.get("free_name"):
-        o.append(f"  NAME       outside experiment-conventions.md §2 ({'; '.join(rec.get('name_problems') or [])}) — "
-                 "--free-name: only the user's approval of this card")
+        o.append("  NAME       the user's own (--free-name): experiment-conventions.md §2 not checked")
+    elif rec.get("name_problems"):
+        o.append(f"  NAME       outside experiment-conventions.md §2 ({'; '.join(rec['name_problems'])}) — launched as "
+                 "named")
+    elif rec.get("name_notes"):
+        o.append(f"  NAME       {', '.join(rec['name_notes'])}: an opaque word if a version marker (experiment-"
+                 "conventions.md §2) — launched as named")
+    if rec.get("tracker_warning"):
+        o.append(f"  TRACKER    WARNING: {rec['tracker_warning']}")
     if rec.get("chain"):
         o.append(f"  segments   {rec['chain']} (each waits for the one before: --dependency=singleton)")
     wa, wg = str(b.get("warnings_avail", "")), str(b.get("warnings_gpu", ""))
@@ -1042,14 +1059,12 @@ def make_plan(led: L.Ledger, src: Path, proj: Path, place: harness.Place, req: R
     fresh = new_run(led, block, name)
     raw = str(block.get("name", ""))          # a box prints it as is (%s), Slurm %q: what the target names the run
     problems = (name_problems(name) or (name_problems(raw) if raw != name else [])) if fresh else []
-    if problems and not req.free_name:
-        raise RskError(f"run name {name!r}: {'; '.join(problems)} — a new run is named {NAME_SHAPE} "
-                       "(experiment-conventions.md §2; an existing run keeps its name). A name the user chose "
-                       "themselves: --free-name, then only their approval of the card covers it", USAGE)
-    if req.free_name and not problems:
-        out(f"NOTE: --free-name: {name!r} " + ("is an existing run's (it keeps its name)" if not fresh else
-                                              "follows experiment-conventions.md §2") + " — nothing to waive")
-    vague = name_notes(name) if fresh and not problems else []
+    vague = name_notes(name) if fresh else []
+    if req.free_name:                         # the user's own name: not checked, said on the card (and so in the ledger)
+        problems, vague = [], []
+    if problems:
+        out(f"NOTE: run name {name!r} is outside experiment-conventions.md §2 ({'; '.join(problems)}) — a new run is "
+            f"named {NAME_SHAPE}: rename it unless the user chose it (then --free-name); it is launched as named")
     if vague:
         out(f"NOTE: run name {name!r}: {', '.join(vague)} — if a version / revision marker (new, final, best, r2), "
             "experiment-conventions.md §2 asks for what changed instead (a word with a meaning, lora-r16, stays)")
@@ -1058,16 +1073,17 @@ def make_plan(led: L.Ledger, src: Path, proj: Path, place: harness.Place, req: R
            "action": req.action, "class": cls, "chain": req.chain,
            "relaunch_of": req.relaunch_of,
            "same_name_ok": req.same_name_ok, "gpu_busy_ok": req.gpu_busy_ok, "flags": req.flags,
-           "free_name": bool(problems), "name_problems": problems, "earlier": not fresh,
+           "free_name": bool(req.free_name), "name_problems": problems, "name_notes": vague, "earlier": not fresh,
            "payload": req.payload, "plan_nonce": nonce, "block": block, "bound_hash": block["bound_hash"],
            "warnings": int(block["warnings"]), "lines": interesting(reply, place.target),
            "references": references(reply) or [r for r in [harness.reference(src, place.target)] if r],
            "local": local_source(proj)}
     acts = plan_actions(led.state().runs, rec)
     rec["action"], rec["actions"] = acts[0], list(acts)
-    smoke = smoke_problem(rec)
-    if smoke:
+    smoke, certain = smoke_problem(rec)
+    if certain:
         raise RskError(smoke, USAGE)
+    rec["tracker_warning"] = smoke
     rec["card"] = render_card(rec)
     return rec
 
@@ -1127,8 +1143,8 @@ def decide(source: L.Ledger | L.LedgerState, rec: dict, need: int | None = None,
            extending: tuple[str, str] | None = None) -> grants.Decision:
     """grants.check() plus what only a whole request shows: N chain segments need N launches (NEED: the segments
     still to send; EXTENDING: the attempt they join, which holds its own max_live slot), and a standing grant never
-    covers a workstation plan that lands on a GPU in use, a user-asked policy flag, --same-name-ok or --free-name. The
-    actions are derived from the ledger now (plan_actions): every one that applies is checked."""
+    covers a workstation plan that lands on a GPU in use, a user-asked policy flag or --same-name-ok. The actions are
+    derived from the ledger now (plan_actions): every one that applies is checked."""
     st = source.state() if isinstance(source, L.Ledger) else source
     acts = plan_actions(st.runs, rec)
     d = grants.check(st, acts[0], plan=check_plan(rec, st.runs), run=rec["run"], extending=extending, also=acts[1:])
@@ -1147,9 +1163,6 @@ def decide(source: L.Ledger | L.LedgerState, rec: dict, need: int | None = None,
         why.append(f"{' '.join(asked)} is the user's own OK for a policy gate, per submit — never a standing grant's call")
     if rec.get("same_name_ok") and d.record.get("kind") == "grant":
         why.append("--same-name-ok (a second live copy sharing logs/ckpts) is never a standing grant's call")
-    if rec.get("free_name") and d.record.get("kind") == "grant":
-        why.append("--free-name (a new run named outside experiment-conventions.md §2) is the user's own call, per "
-                   "card — never a standing grant's")
     if why:
         return grants.Decision(False, None, [f"{d.record['id']}: {'; '.join(why)}"],
                                f"approval — no record covers {'/'.join(acts)} of {rec['name']} (show the card and ask "

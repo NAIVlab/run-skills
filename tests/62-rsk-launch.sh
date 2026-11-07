@@ -12,8 +12,8 @@
 # F-unknown, grants#1/3/4, H1-owner/msg, G-space), the round-4 ones (R4-1 R4-2 R4-4 R4-6 R4-8 R4-15) and the round-5 ones
 # (R5-1 R5-4 R5-5 R5-8 R5-9), the round-6 ones (R6-1 R6-4 R6-5 R6-7 R6-8 R6-9), the round-7 ones (R7-1 R7-2 R7-5 R7-6
 # R7-7), the round-8 ones (R8-1 R8-2 R8-3) and NF8 (cancel --asked and ranges, a box's launcher WARNINGs never grant-covered,
-# the card's unknown source) and the run-name / tracker checks (a new run's name, a smoke's WANDB_MODE, --free-name,
-# the formal run's wandb NOTE), each end to end.
+# the card's unknown source) and the run-name / tracker hints (a new run's name: a NOTE; a smoke refused only when it
+# would reach wandb, else a WARNING; --free-name; the formal run's wandb NOTE), each end to end.
 # Run by selftest.sh with RS_HOME set:  bash tests/62-rsk-launch.sh
 set -u
 . "$RS_HOME/tests/lib.sh"
@@ -712,38 +712,36 @@ for r in exp--ablate--sw4--scratch--s0 exp--ablate--sw5--scratch--s0; do O=$(rsk
 [ "$(tr '\n' ' ' < "$T/scancel.log")" = "$S4 $S5 " ] && ok "NF8: 'cancel jobs $S4-$S5' names both ids in the range -> both cancelled" || bad "NF8 range ($(cat "$T/scancel.log"))"
 CWD=$P
 
-echo "-- names and the tracker (experiment-conventions.md §2 / §5 / §4): a new run's name, a smoke's WANDB_MODE, --free-name, the formal run's NOTE --"
+echo "-- names and the tracker (experiment-conventions.md §2 / §5 / §4): hints, refusing only a smoke that would reach wandb --"
 RN=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\n' "$RN" > "$RN/.hpc.conf"; CWD=$RN   # no WANDB_MODE: bound online
 O=$(rsk launch -T fx-slurm -n foo -g 1 -- python t.py); RC=$?
-[ "$RC" = 2 ] && has "$O" "run name 'foo'" "names: a new run named foo -> exit 2" || { bad "names foo (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
-has "$O" 'experiment-conventions.md §2' "...the refusal points at the convention"
-[ -z "$(pid_of "$O")" ] && [ -z "$(ls "$(pyl 'print(L.Ledger(sys.argv[2]).dir)' "$RN")/plans" 2>/dev/null)" ] && ok "...nothing stored (no plan in the ledger)" || bad "...nothing stored"
+[ "$RC" = 4 ] && has "$O" "^NOTE: run name 'foo' is outside experiment-conventions.md §2 (1 field(s) where §2 has 5)" "names: a new run named foo -> a NOTE, planned as named (exit 4: no grant yet)" || { bad "names foo (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
+has "$O" '^  NAME       outside experiment-conventions.md §2 (1 field(s) where §2 has 5) — launched as named$' "...and a NAME line on the card"
 O=$(rsk launch -T fx-slurm -n exp--smoke--t--none--s0 -g 1 -- python t.py); RC=$?
-[ "$RC" = 2 ] && has "$O" 'every smoke goes out with WANDB_MODE=disabled' "tracker: a smoke under the conf's WANDB_MODE online -> exit 2" || { bad "smoke online (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
+[ "$RC" = 2 ] && has "$O" 'every smoke goes out with WANDB_MODE=disabled' "tracker: a smoke under the conf's WANDB_MODE online -> exit 2 (certain: nothing turns it off)" || { bad "smoke online (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
 has "$O" "the conf's WANDB_MODE is online" "...it says where the mode comes from (the bound wandb_mode)"
 O=$(rsk launch -T fx-slurm -n exp--smoke--t--none--s0 -g 1 -- env WANDB_MODE=disabled python t.py); RC=$?
 [ "$RC" = 4 ] && has "$O" '^  payload    env WANDB_MODE=disabled python t.py$' "tracker: the same smoke starting with env WANDB_MODE=disabled -> planned (exit 4), the card shows it" || { bad "smoke disabled (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
-O=$(rsk launch -T fx-slurm --free-name -n foo -g 1 -- python t.py); RC=$?
-[ "$RC" = 4 ] && has "$O" '^  NAME       outside experiment-conventions.md §2 (' "--free-name: planned, the card's NAME line says what is outside the convention" || { bad "free-name card (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
+hasnt "$O" 'TRACKER' "...known off: no WARNING"
 rsk grant add --quote "run anything on fx" -T fx-slurm --action launch --max-live none --max-launches none --expires none >/dev/null
-O=$(rsk launch -T fx-slurm --free-name -n foo -g 1 -- python t.py); RC=$?; PFN=$(pid_of "$O")
-[ "$RC" = 4 ] && has "$O" "--free-name (a new run named outside experiment-conventions.md §2) is the user's own call" "--free-name under a covering grant: still the user's card (exit 4)" || { bad "free-name grant (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
-O=$(rsk launch --plan "$PFN" --approve "call it foo"); RC=$?
-[ "$RC" = 0 ] && has "$O" '^submitted: foo a01 job ' "...their approval of that card -> submitted" || { bad "free-name approved (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
+O=$(rsk launch -T fx-slurm --free-name -n foo2 -g 1 -- python t.py); RC=$?
+[ "$RC" = 0 ] && has "$O" "^  NAME       the user's own (--free-name): experiment-conventions.md §2 not checked$" "--free-name: the user's own name, unchecked, on the card; the grant covers it (exit 0)" || { bad "free-name (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
+hasnt "$O" "NOTE: run name" "...no name NOTE"
 O=$(rsk launch -T fx-slurm -n exp--train--t--scratch--s0 -g 1 -- python t.py); RC=$?
 [ "$RC" = 0 ] && has "$O" 'NOTE: train run exp--train--t--scratch--s0 — its wandb run per experiment-conventions.md §4' "a formal run launched with the tracker on -> a NOTE lists the wandb fields to set and check" || { bad "formal NOTE (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
 printf 'REMOTE_DIR=%s\nENV_KIND=none\nWANDB_MODE=disabled\n' "$RN" > "$RN/.hpc.conf"
 O=$(rsk launch -T fx-slurm -n exp--train--t2--scratch--s0 -g 1 -- python t.py); RC=$?
 [ "$RC" = 0 ] && hasnt "$O" 'its wandb run per experiment-conventions.md §4' "...under the conf's WANDB_MODE=disabled: no NOTE" || bad "formal disabled (rc=$RC)"
-# the conf's WANDB_MODE=disabled counts only when nothing env.sh applies after it can undo it (the deployed submit.sh binds env_hook)
+# the conf's WANDB_MODE=disabled is certain only when nothing env.sh applies after it can undo it (the deployed submit.sh binds env_hook)
 echo 'export WANDB_MODE=online' > "$RN/hook.sh"; printf 'REMOTE_DIR=%s\nENV_KIND=none\nWANDB_MODE=disabled\nENV_HOOK=hook.sh\n' "$RN" > "$RN/.hpc.conf"
 O=$(rsk launch -T fx-slurm -n exp--smoke--hk--none--s0 -g 1 -- python t.py); RC=$?
-[ "$RC" = 2 ] && has "$O" 'may be undone by what env.sh applies after it' "tracker: the conf's disabled beside an ENV_HOOK -> a smoke is exit 2" || { bad "smoke hook (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
-O=$(rsk launch -T fx-slurm -n exp--smoke--hk--none--s0 -g 1 -- env WANDB_MODE=disabled python t.py); RC=$?
-[ "$RC" = 0 ] && ok "...the command's own env WANDB_MODE=disabled (applied last) -> covered and submitted" || bad "smoke hook + env (rc=$RC)"
+[ "$RC" = 0 ] && has "$O" '^  TRACKER    WARNING: smoke exp--smoke--hk--none--s0: rsk cannot tell WANDB_MODE is disabled' "tracker: the conf's disabled beside an ENV_HOOK -> a WARNING on the card, launched" || { bad "smoke hook (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
+has "$O" 'but what env.sh applies after it may change that' "...the WARNING says why"
+O=$(rsk launch -T fx-slurm -n exp--smoke--hk2--none--s0 -g 1 -- env WANDB_MODE=disabled python t.py); RC=$?
+[ "$RC" = 0 ] && hasnt "$O" 'TRACKER' "...the command's own env WANDB_MODE=disabled (applied last): no WARNING" || bad "smoke hook + env (rc=$RC)"
 printf 'REMOTE_DIR=%s\nENV_KIND=none\nWANDB_MODE=disabled\n' "$RN" > "$RN/.hpc.conf"; printf 'export WANDB_API_KEY=k0\nexport WANDB_MODE=online\n' > "$RN/.wandb_env"
 O=$(rsk launch -T fx-slurm -n exp--smoke--we--none--s0 -g 1 -- python t.py); RC=$?
-[ "$RC" = 2 ] && has "$O" "the project's .wandb_env naming WANDB_MODE" "tracker: a .wandb_env naming WANDB_MODE (sourced after the conf; the block's info_wandb_env) -> exit 2" || bad "smoke wandb_env (rc=$RC)"
+[ "$RC" = 0 ] && has "$O" "the project's .wandb_env naming WANDB_MODE" "tracker: a .wandb_env naming WANDB_MODE (sourced after the conf; the block's info_wandb_env) -> a WARNING, launched" || bad "smoke wandb_env (rc=$RC)"
 hasnt "$O" 'k0' "...the key file is read, never printed"; rm -f "$RN/.wandb_env"
 # the facts the smoke check stands on: job.sbatch runs its payload as "$@" (an argv); launch.sh runs a box RUN as
 # `eval "_rw_go $RUN"` with _rw_go = `env "$@"` (its words are env's from the first; shell operators split the line first)

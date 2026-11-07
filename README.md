@@ -52,9 +52,8 @@ guard rails built in, and gives the agent a short, per-site reference instead of
   reads. The agent reviews often while a run is young or odd and backs off while it is healthy.
 - **Experiment conventions.** Smoke / pilot / train / eval / ablate run classes, structured run names, a fixed
   wandb project/group/name mapping, and a checkpoint + auto-resume contract (Slurm jobs go out with `--requeue`;
-  runs longer than the walltime cap become `--dependency=singleton` segment chains). `rsk launch` enforces the parts
-  it can see: a new run named outside the shape (one you chose yourself passes with your OK), or a smoke that neither
-  its command nor a plain Slurm conf turns wandb off, is refused.
+  runs longer than the walltime cap become `--dependency=singleton` segment chains). `rsk launch` points out a new run
+  named outside the shape, refuses a smoke it can see reaching wandb and warns where it cannot tell.
 - **Sites are data, not code.** A cluster or workstation is one directory: `profile.sh` (facts), `policy.sh` (Slurm
   partitions and limits), `reference.md` (what the agent reads), `tests.sh`. Keep yours private, or share a whole
   lab's worth as a **target pack**.

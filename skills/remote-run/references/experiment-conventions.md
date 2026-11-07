@@ -26,8 +26,8 @@ mytask-v3--train--lr-cosine--scratch--s0--a01
 Lowercase letters, digits, hyphens only (no `.` `_`); hyphens inside a field, `--` between fields; one word per concept;
 no opaque `new`/`final`/`best`/`r2`, no bare checkpoint number without its origin role. No timestamp field:
 the harness already makes logs unique (slurm `logs/<name>_<jobid>.out`, nohup `logs/<name>-<timestamp>.log`).
-`rsk launch` refuses a NEW run's name outside this shape (exit 2, each reason named; an opaque word: a NOTE; an existing
-run keeps its name); a name the user chose themselves goes out with `--free-name`, then only their approval of the card covers it.
+`rsk launch` NOTEs a NEW run's name outside this shape, or an opaque word (a hint: it launches as named; an existing run
+is not checked); a name the user chose themselves goes out with `--free-name` (unchecked, said on the card).
 
 ## 3. Lineage: restart vs fork
 - Same task, config, seed and objective → the SAME logical run; resume the same wandb run when supported.
@@ -58,12 +58,13 @@ name / tags actually landed — metrics arriving is not verification (`rsk launc
 run's launch with the tracker on: set the fields before it; what the trainer logs is never rsk's to see).
 
 ## 5. Smoke runs never reach the tracker
-Every smoke goes out with `WANDB_MODE=disabled`: prepend `env WANDB_MODE=disabled` to the payload (or set the
-conf key while smoking: Slurm only, without an ENV_HOOK, a conda env or a wandb_env naming WANDB_MODE — env.sh applies
-those after it), plus the trainer's own logger-off flag when it has one; `rsk launch` refuses a smoke without either (exit 2). `offline` is NOT enough — it
-creates a syncable local run; never `wandb sync` a smoke dir later. Disable any other remote tracker the
-project uses the same way. If the startup log still prints a wandb URL / run id, report it, get the OK to
-stop it (or act on a `cancel_own` grant the user gave), fix the isolation, rerun. Smoke evidence lives in the log file, not on the experiment dashboard.
+Every smoke goes out with `WANDB_MODE=disabled`: prepend `env WANDB_MODE=disabled` to the payload (or set the conf key
+while smoking: Slurm only, without an ENV_HOOK, a conda env or a wandb_env naming WANDB_MODE — env.sh applies those
+after it), plus the trainer's own logger-off flag when it has one; `rsk launch` refuses a smoke it can see reaching
+wandb (exit 2), a WARNING on the card where it cannot tell. `offline` is NOT enough — it creates a syncable local run;
+never `wandb sync` a smoke dir later. Disable any other remote tracker the project uses the same way. If the startup log
+still prints a wandb URL / run id, report it, get the OK to stop it (or act on a `cancel_own` grant the user gave), fix
+the isolation, rerun. Smoke evidence lives in the log file, not on the experiment dashboard.
 
 ## 6. Checkpoint + resume (every pilot / train / ablate)
 The run must write periodic checkpoints under the project dir (`ckpts/` or the trainer's own dir) AND resume

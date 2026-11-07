@@ -62,9 +62,9 @@ sibling) anywhere, or empties the whole environment, is refused, and a launcher 
 container runtime that picks GPUs, or a tool that starts the command without this launch's environment or elsewhere
 (`tmux new`, `docker exec`, `sudo` without `-E`, `ssh`, `srun` …), is a WARNING on the card (§4).
 Classify and name the run per `experiment-conventions.md` (run class, structured `-N` name, wandb mapping; `rsk
-launch` refuses a new run's name outside its §2, exit 2). A smoke goes out with `WANDB_MODE=disabled` (prepend `env
+launch` NOTEs a new run's name outside its §2). A smoke goes out with `WANDB_MODE=disabled` (prepend `env
 WANDB_MODE=disabled` to the payload, one command — wrap several in `bash -c`: a box's conf is not on its card, so rsk
-refuses a smoke whose command lacks it).
+WARNs on the card for a smoke whose command lacks it).
 A pilot/train/ablate must checkpoint and resume: nothing restarts a nohup run after a crash or reboot. A relaunch
 must use the logical run's checkpoint dir even when its attempt suffix changes; confirm that resume behavior
 before the first long launch.

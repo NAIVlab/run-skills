@@ -24,7 +24,7 @@ from remote_run.errors import CONFLICT, FAILED, NEEDS_USER, OK, PLACEMENT, REFUS
 
 
 WID = (hashlib.sha256(b"").hexdigest(), hashlib.sha256(b"WARNING: only # free\n").hexdigest())   # warnings_id: none, one
-BOX = "box--train--r--scratch--s0"     # a new run's name follows experiment-conventions.md §2 (rsk launch refuses others)
+BOX = "box--train--r--scratch--s0"     # a new run's name follows experiment-conventions.md §2 (rsk launch NOTEs others)
 
 
 def block(kind="slurm", target="fx", name="exp--train--a--scratch--s0--a01", warnings=0, payload="python t.py",
@@ -417,10 +417,10 @@ class ReviewFixes(Fixture):
         self.assertIn("contradicts the name", text)
         self.assertEqual(self.led.plans(), [])
         self.answers = [self.plan_reply(name="exp-plain--a01", wandb_mode="disabled")]
-        rc, text = self.cli("launch", "-T", "fx", "--class", "smoke", "--free-name", "--", "c")
+        rc, text = self.cli("launch", "-T", "fx", "--class", "smoke", "--", "c")
         self.assertEqual(rc, NEEDS_USER, text)
         self.assertIn("class smoke", text)                            # a label for a name without a class
-        self.assertIn("  NAME       outside experiment-conventions.md §2 (", text)   # (one the user chose: their card)
+        self.assertIn("  NAME       outside experiment-conventions.md §2 (", text)   # (a NOTE, not a refusal)
 
     def test_h1_gpu_busy_ok_names_the_gpus(self):
         rc, text = self.cli("launch", "-T", "ws", "-g", "1", "--gpu-busy-ok", "--", "c")
@@ -601,12 +601,8 @@ class Round3(Fixture):
 
     def test_d5_g2_5_a_runs_class_is_sticky(self):
         self.grant(actions=("launch", "relaunch"))
-        self.answers = [self.plan_reply(name="bigrun")]               # a name the user chose: --free-name, their card
-        rc, text = self.cli("launch", "-T", "fx", "--class", "train", "--free-name", "-n", "bigrun", "--", "c")
-        self.assertEqual(rc, NEEDS_USER, text)                   # never a standing grant's call
-        self.assertIn("--free-name (a new run named outside experiment-conventions.md §2) is the user's own call", text)
-        self.answers = [self.submitted("101")]
-        self.assertEqual(self.cli("launch", "--plan", self.plan_id(text), "--approve", "call it bigrun")[0], OK)
+        self.answers = [self.plan_reply(name="bigrun"), self.submitted("101")]   # (outside §2: a NOTE, launched)
+        self.assertEqual(self.cli("launch", "-T", "fx", "--class", "train", "-n", "bigrun", "--", "c")[0], OK)
         self.led.observe("bigrun", "a01", "101", "PREEMPTED", "sacct", end={"state": "PREEMPTED", "rc": "",
                                                                             "evidence": "sacct"})
         n = len(self.calls)
@@ -813,11 +809,8 @@ class Round4(Fixture):
         """NEW-class-unlabelled: bigrun's a01 carried no class; `--relaunch bigrun --class smoke` (or -n bigrun with
         --class) made a smoke-only grant cover it and a train deny miss. Now exit 2, before any ssh."""
         self.grant(actions=("launch", "relaunch"))
-        self.answers = [self.plan_reply(name="bigrun")]                # a name the user chose (their card)
-        rc, text = self.cli("launch", "-T", "fx", "--free-name", "-n", "bigrun", "--", "c")
-        self.assertEqual(rc, NEEDS_USER, text)
-        self.answers = [self.submitted("101")]
-        self.assertEqual(self.cli("launch", "--plan", self.plan_id(text), "--approve", "call it bigrun")[0], OK)
+        self.answers = [self.plan_reply(name="bigrun"), self.submitted("101")]   # (outside §2: a NOTE, launched)
+        self.assertEqual(self.cli("launch", "-T", "fx", "-n", "bigrun", "--", "c")[0], OK)
         self.led.observe("bigrun", "a01", "101", "PREEMPTED", "sacct", end={"state": "PREEMPTED", "rc": "",
                                                                             "evidence": "sacct"})
         n = len(self.calls)
@@ -1653,10 +1646,11 @@ class Followups(Fixture):
 
 class Conventions(Fixture):
     """2026-11-07: agents named runs like `t1--eval--m1-final` or `…--dset2--s100` (origin = a dataset) and launched
-    wandb runs without group / job_type: experiment-conventions.md was read, not followed. rsk launch now refuses a
-    NEW run's name outside §2's shape (exit 2; opaque words: a NOTE; a name the user chose: --free-name, then only
-    their card), a smoke whose run may reach the tracker as far as rsk can read (§5), and tells a formal launch what §4
-    asks of its wandb run."""
+    wandb runs without group / job_type: experiment-conventions.md was read, not followed. rsk launch now says so —
+    hints, refusing only what is certain (conventions are hints, not gates): a NEW run's name outside §2 gets a
+    NOTE and a card line and is launched as named (--free-name: the user's own name, unchecked, a grant covers it); a
+    smoke is exit 2 only when rsk can see its run reach the tracker, else a WARNING on the card; a formal launch is
+    told what §4 asks of its wandb run."""
 
     def grant(self, actions=("launch",)):
         return G.add(self.led, G.new_grant("run what the paper needs", {"targets": ["fx", "ws"]}, list(actions),
@@ -1667,11 +1661,17 @@ class Conventions(Fixture):
         return X.Reply(0, "[ws] started PID 4242 on GPU(s) 1 ; log /h/projects/proj/logs/x-20261107-120000.log ; "
                           "pid file /h/x.pid\n", "")
 
+    def box(self, name, pay, *more):
+        q = ("$'" + pay.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n") + "'" if "\n" in pay
+             else shlex.quote(pay))                              # launch.sh: payload=%q (a newline as $'…\n…')
+        self.answers = [self.plan_reply(kind="nohup", target="ws", name=name, payload=pay, payload_q=q), *more]
+        return self.cli("launch", "-T", "ws", "-N", name, "--", pay)
+
     def test_name_problems_spell_out_section_2(self):
         for n in ("mytask-v3--train--lr-cosine--scratch--s0", "mytask-v3--train--lr-cosine--scratch--s0--a01",
                   "x--eval--a--fork-step20k--s1", "x--bench--a--finetune-llama3--s12", "x--smoke--a--none--s0",
                   "r2d2--pilot--newton-lr--none--s3", "llama3--train--lora-r16--finetune-llama3--s0",
-                  "x--ablate--r1-shard0--scratch--s0", "x--train--a--fork-best--s0"):   # opaque words: a NOTE only
+                  "x--ablate--r1-shard0--scratch--s0", "x--train--a--fork-best--s0"):   # opaque words: name_notes
             self.assertEqual(X.name_problems(n), [], n)
         self.assertEqual([X.name_notes(n) for n in ("x--ablate--r1-shard0--scratch--s0", "x--train--a--fork-best--s0",
                                                     "r2d2--pilot--newton-lr--none--s3", "t1--eval--m1-final")],
@@ -1689,59 +1689,79 @@ class Conventions(Fixture):
             for w in want:
                 self.assertIn(w, got, n)
 
-    def test_a_new_runs_name_is_refused_an_existing_run_keeps_its_own(self):
+    def test_a_new_runs_name_outside_section_2_is_a_note_and_launched_as_named(self):
         self.grant(("launch", "relaunch"))
-        self.answers = [self.plan_reply(name="t1--eval--m1-final")]
+        self.answers = [self.plan_reply(name="t1--eval--m1-final"), self.submitted("101")]
         rc, text = self.cli("launch", "-T", "fx", "-n", "t1--eval--m1-final", "--", "c")
-        self.assertEqual(rc, USAGE, text)
-        self.assertIn("run name 't1--eval--m1-final': 3 field(s) where §2 has 5", text)
-        self.assertIn("experiment-conventions.md §2", text)
-        self.assertEqual(self.led.plans(), [])                        # nothing stored
-        self.answers = [self.plan_reply(name="proj")]                 # the conf's JOB_NAME / the dir: after the plan
-        rc, text = self.cli("launch", "-T", "fx", "--", "c")
-        self.assertEqual(rc, USAGE, text)
-        self.assertIn("run name 'proj'", text)
-        for kw in ({"drop": ("info_prior",)}, {"prior": "x"}):          # a journal that cannot say: checked too
-            self.answers = [self.plan_reply(name="legacy", **kw)]
-            self.assertEqual(self.cli("launch", "-T", "fx", "-n", "legacy", "--", "c")[0], USAGE, kw)
+        self.assertEqual(rc, OK, text)                                # launched as named, under the grant
+        self.assertIn("NOTE: run name 't1--eval--m1-final' is outside experiment-conventions.md §2 (3 field(s) where "
+                      "§2 has 5) — a new run is named <task>--<stage>--<variant>--<origin>--s<seed>", text)
+        self.assertIn("  NAME       outside experiment-conventions.md §2 (3 field(s) where §2 has 5) — launched as "
+                      "named", text)                                   # on the card, so in the ledger too
+        self.assertIn("NOTE: run name 't1--eval--m1-final': final — if a version / revision marker", text)
+        self.answers = [self.plan_reply(name="proj"), self.submitted("105")]   # the conf's JOB_NAME / the dir
+        rc, text = self.cli("launch", "-T", "fx", "--class", "train", "--", "c")
+        self.assertEqual(rc, OK, text)
+        self.assertIn("NOTE: run name 'proj' is outside", text)
         self.answers = [self.plan_reply(name="legacy", prior="1")]   # run-watch's / another checkout's run: its name
         rc, text = self.cli("launch", "-T", "fx", "-n", "legacy", "--", "c")
-        self.assertEqual(rc, NEEDS_USER, text)                        # (a relaunch the ledger cannot judge)
-        self.assertNotIn("run name", text)
-        self.answers = [self.plan_reply(name="oldrun")]               # a ledger run named before the check …
-        pid = self.plan_id(self.cli("launch", "-T", "fx", "--free-name", "-n", "oldrun", "--", "c")[1])
-        self.answers = [self.submitted("101")]
-        self.assertEqual(self.cli("launch", "--plan", pid, "--approve", "call it oldrun")[0], OK)
-        self.led.observe("oldrun", "a01", "101", "PREEMPTED", "sacct", end={"state": "PREEMPTED", "rc": "",
-                                                                            "evidence": "sacct"})
-        self.answers = [self.plan_reply(name="oldrun--a02"), self.submitted("102")]
-        rc, text = self.cli("launch", "--relaunch", "oldrun")         # … keeps its name, under the grant
+        self.assertNotIn("NOTE: run name", text)
+        self.led.observe("t1--eval--m1-final", "a01", "101", "PREEMPTED", "sacct",
+                         end={"state": "PREEMPTED", "rc": "", "evidence": "sacct"})
+        self.answers = [self.plan_reply(name="t1--eval--m1-final--a02"), self.submitted("102")]
+        rc, text = self.cli("launch", "--relaunch", "t1--eval--m1-final")   # an existing run: not checked again
         self.assertEqual(rc, OK, text)
-        self.assertNotIn("NAME ", text)
-
-    def test_free_name_is_the_users_card_never_a_grants(self):
-        self.grant()
-        self.answers = [self.plan_reply(name="foo")]
-        rc, text = self.cli("launch", "-T", "fx", "--free-name", "-n", "foo", "--", "c")
-        self.assertEqual(rc, NEEDS_USER, text)
-        self.assertIn("  NAME       outside experiment-conventions.md §2 (1 field(s) where §2 has 5) — --free-name: "
-                      "only the user's approval of this card", text)
-        self.assertIn("--free-name (a new run named outside experiment-conventions.md §2) is the user's own call", text)
-        self.answers = [self.submitted("101")]
-        self.assertEqual(self.cli("launch", "--plan", self.plan_id(text), "--approve", "call it foo")[0], OK)
-        self.answers = [self.plan_reply(name="exp--train--q--scratch--s0"), self.submitted("102")]
-        rc, text = self.cli("launch", "-T", "fx", "--free-name", "-n", "exp--train--q--scratch--s0", "--", "c")
-        self.assertEqual(rc, OK, text)                                # a conforming name: nothing waived, the grant's
-        self.assertIn("NOTE: --free-name: 'exp--train--q--scratch--s0' follows experiment-conventions.md §2 — nothing "
-                      "to waive", text)
+        self.assertNotIn("NOTE: run name", text)
         self.assertNotIn("  NAME  ", text)
-        self.answers = [self.plan_reply(name="bar")]
-        pid = self.plan_id(self.cli("launch", "-T", "fx", "--free-name", "-n", "bar", "--", "c")[1])
+
+    def test_free_name_is_the_users_own_unchecked_and_a_grant_covers_it(self):
+        self.grant()
+        self.answers = [self.plan_reply(name="foo"), self.submitted("101")]
+        rc, text = self.cli("launch", "-T", "fx", "--free-name", "-n", "foo", "--", "c")
+        self.assertEqual(rc, OK, text)
+        self.assertNotIn("NOTE: run name", text)
+        self.assertIn("  NAME       the user's own (--free-name): experiment-conventions.md §2 not checked", text)
+        self.assertTrue(self.led.read_run("foo").data["attempts"]["a01"]["request"]["card"].count("--free-name"))
+        self.answers = [self.plan_reply(name="bar")]                 # a stored plan (--same-name-ok: the user's card)
+        pid = self.plan_id(self.cli("launch", "-T", "fx", "--free-name", "-n", "bar", "--same-name-ok", "--", "c")[1])
         rc, text = self.cli("launch", "--plan", pid, "--free-name")
         self.assertEqual(rc, USAGE, text)                             # a stored plan: nothing beside it
         self.assertIn("--plan submits a stored plan as it was planned", text)
 
-    def test_a_smoke_never_reaches_the_tracker(self):
+    def test_r1_a_never_sent_attempt_leaves_the_run_new(self):
+        """A run whose only attempt was refused on the target (NOT_SUBMITTED: it never ran) is still new: its name is
+        still checked (round 1 [1])."""
+        self.answers = [self.plan_reply(name="foo-final")]
+        pid = self.plan_id(self.cli("launch", "-T", "fx", "-n", "foo-final", "--", "c")[1])
+        self.answers = [X.Reply(3, "", "REFUSED: policy", api="api=3", result={"verdict": "refused", "stage": "policy"})]
+        self.assertEqual(self.cli("launch", "--plan", pid, "--approve", "call it foo-final")[0], REFUSED)
+        self.assertEqual(L.attempt_state(self.led.read_run("foo-final").data["attempts"]["a01"]), "NOT_SUBMITTED")
+        self.answers = [self.plan_reply(name="foo-final")]
+        rc, text = self.cli("launch", "-T", "fx", "-n", "foo-final", "--", "c")
+        self.assertEqual(rc, NEEDS_USER, text)                        # (no grant here: the card)
+        self.assertIn("NOTE: run name 'foo-final' is outside", text)
+
+    def test_an_opaque_word_alone_is_a_note_and_a_card_line(self):
+        self.grant()
+        run = "x--ablate--r1-shard0--scratch--s0"
+        self.answers = [self.plan_reply(name=run), self.submitted("101")]
+        rc, text = self.cli("launch", "-T", "fx", "-n", run, "--", "c")
+        self.assertEqual(rc, OK, text)
+        self.assertIn(f"NOTE: run name '{run}': r1 — if a version / revision marker (new, final, best, r2)", text)
+        self.assertIn("  NAME       r1: an opaque word if a version marker (experiment-conventions.md §2) — launched "
+                      "as named", text)
+        self.assertNotIn("is outside", text)
+
+    def test_r3_a_box_name_is_checked_as_the_box_prints_it(self):
+        """launch.sh prints name=%s (as is) and accepts " and \\ in -N; rsk's decoding drops them: the NOTE reads the
+        name the box uses."""
+        for raw in ('x--train--v"2"--scratch--s0', 'x--tr\\ain--v--scratch--s0'):
+            self.answers = [X.Reply(0, block(kind="nohup", target="ws", name=raw), "")]
+            rc, text = self.cli("launch", "-T", "ws", "-N", raw, "--", "c")
+            self.assertEqual(rc, NEEDS_USER, (raw, text))
+            self.assertIn("is outside experiment-conventions.md §2 (characters", text, raw)
+
+    def test_a_smoke_is_refused_only_when_its_run_would_reach_the_tracker(self):
         self.grant()
         for kw, said in (({}, "the conf's WANDB_MODE is online"), ({"wandb_mode": "offline"}, "is offline"),
                          ({"payload": "env WANDB_MODE=online python t.py", "wandb_mode": "disabled"},
@@ -1749,8 +1769,12 @@ class Conventions(Fixture):
                          ({"payload": "WANDB_MODE=disabled python t.py"}, "is online"),    # Slurm: an argv, no shell
                          ({"payload": "env -u WANDB_MODE python t.py", "wandb_mode": "disabled"},
                           "its command unsets WANDB_MODE (env -u)"),
-                         ({"payload": "env -i python t.py", "wandb_mode": "disabled"},
-                          "its command's env options may unset what the conf set")):
+                         ({"payload": "env WANDB_MODE=disabled A-B=1 WANDB_MODE=online python t.py"},
+                          "sets WANDB_MODE=online"),                       # GNU env: every word holding '='
+                         ({"payload": "env WANDB_MODE=disabled env WANDB_MODE=online python t.py"},
+                          "sets WANDB_MODE=online"),                       # env again, read alike
+                         ({"payload": "env --unset=WANDB_MODE python t.py", "wandb_mode": "disabled"},
+                          "unsets WANDB_MODE")):
             self.answers = [self.plan_reply(name="exp--smoke--a--none--s0", **kw)]
             rc, text = self.cli("launch", "-T", "fx", "-n", "exp--smoke--a--none--s0", "--", "c")
             self.assertEqual(rc, USAGE, (kw, text))
@@ -1758,26 +1782,65 @@ class Conventions(Fixture):
             self.assertIn("every smoke goes out with WANDB_MODE=disabled (experiment-conventions.md §5", text)
             self.assertEqual(self.led.plans(), [], kw)
         for i, kw in enumerate(({"wandb_mode": "disabled"}, {"payload": "env WANDB_MODE=disabled python t.py"},
-                                {"payload": "/usr/bin/env A=1 WANDB_MODE=disabled python t.py"})):
+                                {"payload": "/usr/bin/env A=1 WANDB_MODE=disabled python t.py"},
+                                {"payload": "env -u WANDB_MODE WANDB_MODE=disabled python t.py"},
+                                {"payload": "env -v -C sub WANDB_MODE=disabled x"},
+                                {"wandb_mode": "disabled", "wandb_env": "no"})):
             name = f"exp--smoke--ok{i}--none--s0"
             self.answers = [self.plan_reply(name=name, **kw), self.submitted(str(101 + i))]
             rc, text = self.cli("launch", "-T", "fx", "-n", name, "--", "c")
             self.assertEqual(rc, OK, (kw, text))
+            self.assertNotIn("TRACKER", text, kw)                     # known off: nothing to warn about
             self.assertNotIn("its wandb run", text)                    # a smoke: no §4 NOTE
-        self.answers = [self.plan_reply(kind="nohup", target="ws", name="box--smoke--e--none--s0")]
-        rc, text = self.cli("launch", "-T", "ws", "-N", "box--smoke--e--none--s0", "--", "c")
-        self.assertEqual(rc, USAGE, text)                             # a box's conf is not on its card
-        self.assertIn("the conf's WANDB_MODE is not on a workstation's card", text)
-        pay = "WANDB_MODE=disabled env -u WANDB_MODE python t.py"        # set, then unset by env's option
-        self.answers = [self.plan_reply(kind="nohup", target="ws", name="box--smoke--u--none--s0", payload=pay)]
-        rc, text = self.cli("launch", "-T", "ws", "-N", "box--smoke--u--none--s0", "--", pay)
+        rc, text = self.box("box--smoke--r--none--s0", "WANDB_MODE=disabled A-B=1 WANDB_MODE=online python t.py")
+        self.assertEqual(rc, USAGE, text)                             # env "$@": A-B=1 is an assignment too
+        rc, text = self.box("box--smoke--u--none--s0", "WANDB_MODE=disabled env -u WANDB_MODE python t.py")
         self.assertEqual(rc, USAGE, text)
         self.assertIn("its command unsets WANDB_MODE (env -u)", text)
-        for name, pay in (("box--smoke--f--none--s0", "WANDB_MODE=disabled python t.py"),       # a shell line
-                          ("box--smoke--g--none--s0", "env WANDB_MODE=disabled python t.py")):
-            self.answers = [self.plan_reply(kind="nohup", target="ws", name=name, payload=pay), self.started]
-            rc, text = self.cli("launch", "-T", "ws", "-N", name, "--", pay)
-            self.assertEqual(rc, OK, (name, text))
+        for name, pay in (("box--smoke--f--none--s0", "WANDB_MODE=disabled python t.py"),
+                          ("box--smoke--g--none--s0", "env WANDB_MODE=disabled python t.py"),
+                          ("box--smoke--w--none--s0", "A-B=1 WANDB_MODE=disabled python t.py"),
+                          ("box--smoke--s--none--s0", "env WANDB_MODE=disabled bash -c 'python a.py | python t.py'"),
+                          ("box--smoke--t--none--s0", "WANDB_MODE=disabled python t.py 2>&1"),
+                          ("box--smoke--z--none--s0", "WANDB_MODE=disabled python t.py --sep '|' --out $HOME/x"),
+                          ("box--smoke--e--none--s0", "WANDB_MODE=disabled find . -exec python {} \;")):
+            rc, text = self.box(name, pay, self.started)
+            self.assertEqual(rc, OK, (pay, text))
+            self.assertNotIn("TRACKER", text, pay)
+
+    def test_what_rsk_cannot_tell_is_a_warning_on_the_card_and_the_launch_goes_on(self):
+        self.grant()
+        cases = [({"payload": "env -SWANDB_MODE=online python t.py", "wandb_mode": "disabled"}, "env options"),
+                 ({"payload": "env -i WANDB_MODE=disabled python t.py", "wandb_mode": "disabled"}, "env options"),
+                 ({"wandb_mode": "disabled", "hook": "env/hook.sh:" + "a" * 64}, "may change that"),
+                 ({"wandb_mode": "disabled", "env_kind": "conda"}, "may change that"),
+                 ({"wandb_mode": "disabled", "wandb_env": "names"}, "the project's .wandb_env naming WANDB_MODE"),
+                 ({"wandb_mode": "disabled", "wandb_env": "unreadable"}, "or unreadable"),
+                 ({"wandb_mode": "disabled", "drop": ("info_wandb_env",)}, "a deploy too old to say"),
+                 ({"hook": "env/hook.sh:" + "a" * 64}, "the conf's WANDB_MODE is online, but what env.sh applies"),
+                 ({"env_kind": "conda"}, "may change that"),
+                 ({"wandb_env": "names"}, "the project's .wandb_env naming WANDB_MODE"),   # (it may set disabled)
+                 ({"drop": ("info_wandb_env",)}, "a deploy too old to say")]          # either direction: unsure
+        for i, (kw, why) in enumerate(cases):
+            name = f"exp--smoke--w{i}--none--s0"
+            self.answers = [self.plan_reply(name=name, **kw), self.submitted(str(101 + i))]
+            rc, text = self.cli("launch", "-T", "fx", "-n", name, "--", "c")
+            self.assertEqual(rc, OK, (kw, text))                      # covered and launched …
+            self.assertIn(f"  TRACKER    WARNING: smoke {name}: rsk cannot tell WANDB_MODE is disabled", text)
+            self.assertIn(why, text, kw)                              # … with the reason on the card
+        for i, (pay, why) in enumerate((("WANDB_MODE=disabled python a.py | python t.py", "shell operators"),
+                                        ("WANDB_MODE=disabled python a.py; python t.py", "shell operators"),
+                                        ("WANDB_MODE=disabled true\npython t.py", "or a newline"),
+                                        ("WANDB_MODE=disabled python a.py --tag=a#b | python t.py", "shell operators"),
+                                        ("WANDB_MODE=disabled python prep.py;<cfg.yaml python t.py", "shell operators"),
+                                        ('WANDB_MODE=disabled python t.py --run "$(date)"', "shell operators"),
+                                        ("WANDB_MODE=disabled $TRAIN", "holds an expansion"),
+                                        ("WANDB_MODE=disabled {env,-u,WANDB_MODE} python t.py", "holds an expansion"),
+                                        ("python t.py", "not on a workstation's card"))):
+            rc, text = self.box(f"box--smoke--x{i}--none--s0", pay, self.started)
+            self.assertEqual(rc, OK, (pay, text))
+            self.assertIn("  TRACKER    WARNING:", text, pay)
+            self.assertIn(why, text, pay)
 
     def test_a_formal_launch_is_told_what_its_wandb_run_needs(self):
         self.grant(("launch", "relaunch"))
@@ -1810,118 +1873,6 @@ class Conventions(Fixture):
         rc, text = self.cli("launch", "-T", "fx", "-n", "exp--ablate--no--scratch--s0", "--", "c")
         self.assertEqual(rc, REFUSED, text)
         self.assertNotIn("its wandb run", text)                        # nothing launched: nothing to check
-
-    # ---- review fixes (2026-11-07) ----
-    def test_r1_a_never_sent_attempt_leaves_the_run_new(self):
-        """A --free-name card approved, the submit refused on the target (NOT_SUBMITTED: it never ran): planning the
-        same name again without --free-name was taken for an existing run — no NAME line, a grant covered it."""
-        self.grant()
-        self.answers = [self.plan_reply(name="foo-final")]
-        pid = self.plan_id(self.cli("launch", "-T", "fx", "--free-name", "-n", "foo-final", "--", "c")[1])
-        self.answers = [X.Reply(3, "", "REFUSED: policy", api="api=3", result={"verdict": "refused", "stage": "policy"})]
-        self.assertEqual(self.cli("launch", "--plan", pid, "--approve", "call it foo-final")[0], REFUSED)
-        self.assertEqual(L.attempt_state(self.led.read_run("foo-final").data["attempts"]["a01"]), "NOT_SUBMITTED")
-        self.answers = [self.plan_reply(name="foo-final")]
-        rc, text = self.cli("launch", "-T", "fx", "-n", "foo-final", "--", "c")
-        self.assertEqual(rc, USAGE, text)                             # still a new run: its name is checked
-        self.assertIn("run name 'foo-final'", text)
-        self.answers = [self.plan_reply(name="foo-final")]
-        rc, text = self.cli("launch", "-T", "fx", "--free-name", "-n", "foo-final", "--", "c")
-        self.assertEqual(rc, NEEDS_USER, text)                        # and only the user's card covers it again
-        self.assertIn("  NAME       outside", text)
-
-    def test_r2_an_opaque_word_is_a_note_and_the_launch_goes_on(self):
-        self.grant()
-        run = "x--ablate--r1-shard0--scratch--s0"
-        self.answers = [self.plan_reply(name=run), self.submitted("101")]
-        rc, text = self.cli("launch", "-T", "fx", "-n", run, "--", "c")
-        self.assertEqual(rc, OK, text)
-        self.assertIn(f"NOTE: run name '{run}': r1 — if a version / revision marker (new, final, best, r2), "
-                      "experiment-conventions.md §2 asks for what changed instead", text)
-        self.answers = [self.plan_reply(name="llama3--train--lora-r16--finetune-llama3--s0"), self.submitted("102")]
-        rc, text = self.cli("launch", "-T", "fx", "-n", "llama3--train--lora-r16--finetune-llama3--s0", "--", "c")
-        self.assertEqual(rc, OK, text)                                # a rank, not a revision: the NOTE asks, no more
-
-    def test_r3_a_box_name_is_checked_as_the_box_prints_it(self):
-        """launch.sh prints name=%s (as is) and accepts " and \\ in -N; rsk's decoding dropped them, so the check (and
-        the ledger) saw a conforming name the box never used."""
-        self.grant()
-        for raw in ('x--train--v"2"--scratch--s0', 'x--tr\\ain--v--scratch--s0'):
-            self.answers = [X.Reply(0, block(kind="nohup", target="ws", name=raw), "")]
-            rc, text = self.cli("launch", "-T", "ws", "-N", raw, "--", "c")
-            self.assertEqual(rc, USAGE, (raw, text))
-            self.assertIn("characters", text, raw)
-            self.assertEqual(self.led.plans(), [], raw)
-
-    def test_r4_the_conf_counts_only_when_nothing_env_sh_applies_later_can_undo_it(self):
-        self.grant()
-        run = "exp--smoke--h--none--s0"
-        for kw in ({"hook": "env/hook.sh:" + "a" * 64}, {"env_kind": "conda"}):
-            self.answers = [self.plan_reply(name=run, wandb_mode="disabled", **kw)]
-            rc, text = self.cli("launch", "-T", "fx", "-n", run, "--", "c")
-            self.assertEqual(rc, USAGE, (kw, text))
-            self.assertIn("may be undone by what env.sh applies after it", text)
-        for kw in ({"wandb_env": "names"}, {"wandb_env": "unreadable"}, {"drop": ("info_wandb_env",)}):
-            self.answers = [self.plan_reply(name=run, wandb_mode="disabled", **kw)]   # $PROJ/.wandb_env, read there
-            rc, text = self.cli("launch", "-T", "fx", "-n", run, "--", "c")
-            self.assertEqual(rc, USAGE, (kw, text))                   # (no info_wandb_env: a deploy too old to say)
-            self.assertIn("the project's .wandb_env naming WANDB_MODE or unreadable, or a deploy too old", text)
-        self.answers = [self.plan_reply(name=run, wandb_mode="disabled", hook="env/hook.sh:" + "a" * 64,
-                                        payload="env WANDB_MODE=disabled python t.py"), self.submitted("101")]
-        rc, text = self.cli("launch", "-T", "fx", "-n", run, "--", "c")
-        self.assertEqual(rc, OK, text)                                # the command's own env wins over all of them
-        self.answers = [self.plan_reply(name="exp--smoke--k--none--s0", wandb_mode="disabled", wandb_env="no"),
-                        self.submitted("102")]
-        self.assertEqual(self.cli("launch", "-T", "fx", "-n", "exp--smoke--k--none--s0", "--", "c")[0], OK)
-
-    def test_r5_env_words_as_gnu_env_reads_them_and_a_box_line_of_several_commands(self):
-        """The box wrapper runs `env "$@"` (launch.sh: eval "_rw_go $RUN"), a Slurm payload an argv: rsk reads the env
-        words as GNU env does (launch.sh's rs_gpuenv rules) — options first, every word holding '=', env again."""
-        self.grant()
-        for i, (pay, why) in enumerate((("env WANDB_MODE=disabled A-B=1 WANDB_MODE=online python t.py", "sets WANDB_MODE=online"),
-                                        ("env WANDB_MODE=disabled env WANDB_MODE=online python t.py", "sets WANDB_MODE=online"),
-                                        ("env --unset=WANDB_MODE python t.py", "unsets WANDB_MODE"),
-                                        ("env -u WANDB_MODE python t.py", "unsets WANDB_MODE"),
-                                        ("env -SWANDB_MODE=online python t.py", "env options"),
-                                        ("env -i WANDB_MODE=disabled python t.py", "env options"))):
-            name = f"exp--smoke--g{i}--none--s0"
-            self.answers = [self.plan_reply(name=name, payload=pay, wandb_mode="disabled")]
-            rc, text = self.cli("launch", "-T", "fx", "-n", name, "--", "c")
-            self.assertEqual(rc, USAGE, (pay, text))
-            self.assertIn(why, text, pay)
-        for i, pay in enumerate(("env -u WANDB_MODE WANDB_MODE=disabled python t.py", "env -v -C sub WANDB_MODE=disabled x")):
-            name = f"exp--smoke--h{i}--none--s0"                       # options first, then the assignment: disabled
-            self.answers = [self.plan_reply(name=name, payload=pay), self.submitted(str(110 + i))]
-            self.assertEqual(self.cli("launch", "-T", "fx", "-n", name, "--", "c")[0], OK, pay)
-        for name, pay, why in (("box--smoke--p--none--s0", "WANDB_MODE=disabled python a.py | python t.py", "shell operators"),
-                               ("box--smoke--q--none--s0", "WANDB_MODE=disabled python a.py; python t.py", "shell operators"),
-                               ("box--smoke--n--none--s0", "WANDB_MODE=disabled true\npython t.py", "or a newline"),
-                               ("box--smoke--c--none--s0", "WANDB_MODE=disabled python a.py --tag=a#b | python t.py",
-                                "shell operators"),                    # bash: no comment inside a word
-                               ("box--smoke--r--none--s0", "WANDB_MODE=disabled A-B=1 WANDB_MODE=online python t.py",
-                                "sets WANDB_MODE=online"),             # env "$@": A-B=1 is an assignment too
-                               ("box--smoke--o--none--s0", "WANDB_MODE=disabled python prep.py;<cfg.yaml python t.py",
-                                "shell operators"),                    # an operator merged with a redirection
-                               ("box--smoke--d--none--s0", "WANDB_MODE=disabled python t.py --run \"$(date)\"",
-                                "shell operators"),                    # a command substitution, even quoted
-                               ("box--smoke--x--none--s0", "WANDB_MODE=disabled $TRAIN", "holds an expansion"),
-                               ("box--smoke--y--none--s0", "WANDB_MODE=disabled {env,-u,WANDB_MODE} python t.py",
-                                "holds an expansion")):                 # the box evals the line before env reads it
-            q = ("$'" + pay.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n") + "'" if "\n" in pay
-                 else shlex.quote(pay))                          # bash's printf %q: a newline as $'…\n…'
-            self.answers = [self.plan_reply(kind="nohup", target="ws", name=name, payload=pay, payload_q=q)]
-            rc, text = self.cli("launch", "-T", "ws", "-N", name, "--", pay)
-            self.assertEqual(rc, USAGE, (pay, text))
-            self.assertIn(why, text, pay)
-        for name, pay in (("box--smoke--s--none--s0", "env WANDB_MODE=disabled bash -c 'python a.py | python t.py'"),
-                          ("box--smoke--t--none--s0", "WANDB_MODE=disabled python t.py 2>&1"),
-                          ("box--smoke--w--none--s0", "A-B=1 WANDB_MODE=disabled python t.py"),
-                          ("box--smoke--z--none--s0", "WANDB_MODE=disabled python t.py --sep '|' --out $HOME/x"),
-                          ("box--smoke--e--none--s0", "WANDB_MODE=disabled find . -exec python {} \\;")):
-            self.answers = [self.plan_reply(kind="nohup", target="ws", name=name, payload=pay,
-                                            payload_q=shlex.quote(pay)), self.started]   # launch.sh: payload=%q
-            rc, text = self.cli("launch", "-T", "ws", "-N", name, "--", pay)
-            self.assertEqual(rc, OK, (pay, text))
 
     def test_r6_the_note_once_anything_went_out_and_resume_only_for_a_run_with_attempts(self):
         self.grant(("launch", "chain"))

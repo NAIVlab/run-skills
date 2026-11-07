@@ -380,22 +380,23 @@ has "$ET" 'the exceptions are what the user authorised and a tool checks first: 
 has "$ET" 'your own judgment that a run should stop is the user.s call unless they authorised that kind of decision (`cancel_own`)' "conventions: the agent's own stop needs the user"
 # 2026-11-07: names and the tracker — what the docs say rsk launch enforces, beside the code that does it
 for o in 'def name_problems(' 'def name_notes(' 'def new_run(' 'def smoke_problem(' 'def tracker_note(' '"--free-name"' \
-         'def env_scan(' 'def maybe_sent(' 'def _compound(' 'return "", "conf-overridable"' 'return "", "env-options"' \
+         'def env_scan(' 'def maybe_sent(' 'def _compound(' 'return mode, "conf-overridable"' 'return "", "env-options"' \
+         'certain = where in ("command", "command-unset", "conf")' 'def smoke_problem(rec: dict) -> tuple' \
          'NAME_OPAQUE = re.compile(r"new|final|best|r' 'FORMAL = ("pilot", "train", "eval", "ablate", "bench")'; do
   has "$LP" "$o" "launch.py has what the docs promise (2026-11-07): $o"; done
-has "$ET" '`rsk launch` refuses a NEW run.s name outside this shape (exit 2' "conventions §2: rsk launch refuses a new run's name outside it"
-has "$ET" 'a name the user chose themselves goes out with `--free-name`, then only their approval of the card covers it' "conventions §2: --free-name, then only the user's card"
-has "$ET" '`rsk launch` refuses a smoke without either (exit 2)' "conventions §5: a smoke with the tracker on is refused"
+has "$ET" '`rsk launch` NOTEs a NEW run.s name outside this shape, or an opaque word (a hint: it launches as named' "conventions §2: a new run's name outside it is a NOTE"
+has "$ET" 'a name the user chose themselves goes out with `--free-name` (unchecked, said on the card)' "conventions §2: --free-name, unchecked"
+has "$ET" '`rsk launch` refuses a smoke it can see reaching wandb (exit 2), a WARNING on the card where it cannot tell' "conventions §5: a smoke refused only when certain, else a WARNING"
 has "$ET" 'Slurm only, without an ENV_HOOK, a conda env or a wandb_env naming WANDB_MODE' "conventions §5: when the conf's key counts"
 has "$ET" '`rsk launch` sums this list up after a formal run.s launch with the tracker on: set the fields before it' "conventions §4: the NOTE after a formal launch, the fields set before"
-has "$ST" '`rsk launch` refuses a NEW run named outside its §2 and a smoke whose command.s env words do not set WANDB_MODE=disabled (start it with `env WANDB_MODE=disabled`, one command' "SKILL: the name and smoke refusals, as checked"
-has "$ST" '`--free-name` only for a name the user chose, then their card' "SKILL: --free-name only for the user's own name"
-has "$PSLT" 'refuses a new run.s name outside its §2, exit 2' "procedure-slurm: the name refusal"; has "$PNOT" 'refuses a new run.s name outside its §2, exit 2' "procedure-nohup: the name refusal"
-has "$PNOT" 'so rsk refuses a smoke whose command lacks it' "procedure-nohup: a box smoke says WANDB_MODE=disabled in its command"
-has "$DT" 'a flag the agent could add would undo the check' "DESIGN: why --free-name is never a grant's call"
-has "$AT" 'A NEW run (no ledger attempt that may have run, `info_prior` not > 0) named outside experiment-conventions §2.s shape is exit 2' "AGENTS: the name refusal"
+has "$ST" '`rsk launch` NOTEs a NEW run named outside its §2 (rename it; a name the user chose: `--free-name`), refuses a smoke it can see reaching wandb (exit 2) and WARNs on the card where it cannot tell' "SKILL: names a NOTE, a smoke refused only when certain"
+has "$ST" 'start a smoke.s command with `env WANDB_MODE=disabled` (one command; several: `bash -c`)' "SKILL: how a smoke turns wandb off"
+has "$PSLT" 'NOTEs a new run.s name outside its §2' "procedure-slurm: the name NOTE"; has "$PNOT" 'NOTEs a new run.s name outside its §2' "procedure-nohup: the name NOTE"
+has "$PNOT" 'so rsk WARNs on the card for a smoke whose command lacks it' "procedure-nohup: a box smoke says WANDB_MODE=disabled in its command"
+has "$DT" 'refusing only what is certain (conventions are hints, not gates)' "DESIGN: hints, refusing only what is certain"
+has "$AT" 'A NEW run (no ledger attempt that may have run, `info_prior` not > 0) named outside experiment-conventions §2.s shape, or with an opaque word, gets a NOTE and a card line, launched as named' "AGENTS: the name NOTE"
 has "$DT" 'whether `r16` is a revision or a LoRA rank is a meaning no pattern sees' "DESIGN: opaque words are a NOTE, and why"
-has "$DT" 'submit.sh.s read-only look at `$PROJ/.wandb_env`, which env.sh sources after the conf' "DESIGN: when the conf's WANDB_MODE counts for a smoke (info_wandb_env)"
+has "$DT" 'the block.s `info_wandb_env`, submit.sh.s read-only look' "DESIGN: when the conf's WANDB_MODE is sure for a smoke (info_wandb_env)"
 has "$DT" 'launch.sh runs `eval "_rw_go $RUN"`, `_rw_go` = `env "$@"`' "DESIGN: a box line is env's words from its first"
 has "$ET" 'Lowercase letters, digits, hyphens only (no `.` `_`)' "conventions §2: the character set rsk checks"
 has "$(cat "$RS_HOME/remote/submit.sh")" "info_wandb_env=%s" "submit.sh prints info_wandb_env (DESIGN, AGENTS)"
@@ -1009,12 +1010,12 @@ budget lib/common.sh 141; budget remote/env.sh 170; budget remote/bootstrap.sh 1
 # receipt is unreadable, and undoes a policy's set -f / failglob (+15); the block line (+1)
 # 2026-11-07: submit.sh +3 (426 → 429) — rs_wenv: info_wandb_env, does $PROJ/.wandb_env name WANDB_MODE (a smoke's conf key) (+2); its header line (+1)
 budget remote/status.sh 175   # generous on purpose: every lookup has an explicit failure branch; compressing them hides bugs
-budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 266; budget AGENTS.md 362; budget INSTALL.md 238 # AGENTS +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
+budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 266; budget AGENTS.md 363; budget INSTALL.md 238 # AGENTS +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
 # P3-P7 docs: AGENTS +25 (the rsk modules, tests/62, the authorisation model, the P7 nudge, the new rails); README +10 (what is asked and
 # what is not, the honest limit, the rsk launch step, src/); INSTALL +5 (doctor --legacy-refs, earlier permissions, standing words)
 # 2026-11-06 follow-ups: AGENTS +6 (relaunch_after, recycled quotes, the refresh, --check-after, logs --grep); README +1 (re-runs handed over)
-# 2026-11-07: AGENTS +5 (a new run's name outside §2 / --free-name / opaque words a NOTE, a smoke with the tracker on and when the conf
-# counts, the §4 NOTE, info_wandb_env in the block); README +2 (what rsk enforces, the user's own name)
+# 2026-11-07: AGENTS +6 (a new run's name outside §2 / opaque words: a NOTE, --free-name; a smoke refused only when certain, else a
+# card WARNING, and when the conf is sure; the §4 NOTE; info_wandb_env in the block); README +2 (what rsk points out, refuses, warns)
 # P3 review: AGENTS +8 (--rs-warnings, the plan skips launch.sh's env gate, the new bound fields, plan-scoped approvals, the review's never-covered list)
 # round 3: AGENTS +38 (the rs-api=3 marker line, warnings_id / warnings_avail / conf_extra / changed:, the policy probe and side-effect-free
 # t_policy, explicit time limits and the SBATCH_EXTRA getopt refusal, the read-only nohup env gate, busy_ok occupants, grant kinds, the D1
@@ -1074,8 +1075,9 @@ budget skills/remote-run/SKILL.md 164; budget bin/run-watch 1102   # round 3: SK
 # included) is refused in rsk's words (+2), parse_table's refusal at every read (+1), the --approve words checked alike (+1); header +1.
 # P3 review +55: a row's state across renamed/copied tables, fail-stop of a row once its unknown submit is tracked, no --rs-* row words; SKILL: one entry for both kinds (the two it replaced: 62 + 61) + the rsk reads; +20 (P3-P7): the rsk command set, the launch flow (card, exit codes), §3 authorisation (the user's table); run-watch +130 (P3): attempt nonces + the journal read, --adopt and fail-stop identity checks, conf= binding, lock holder, sticky unknowns across tables
 # 2026-11-06: SKILL +5 (--relaunch-after any for handed-over re-runs, never earlier words as --approve, the re-read before a relaunch)
-# 2026-11-07: SKILL +3 (rsk launch refuses a new run named outside §2 and a smoke with the tracker on; --free-name; the §4 fields after a launch)
-budget skills/remote-run/references/experiment-conventions.md 143;   # +4: the run-watch exception (§3, §6, §7); +1: a USR1 death is FAILED; +3: the authorised exceptions (§5, §6, §7)
-# 2026-11-07: conventions +3 (rsk launch refuses a new run's name outside §2 / --free-name; the §4 NOTE; a smoke without WANDB_MODE=disabled)
+# 2026-11-07: SKILL +3 (rsk launch on a new run's name outside §2 and a smoke's tracker; --free-name; the §4 fields after a launch) —
+# the same day made hints ("hints, not gates"): a name a NOTE, a smoke refused only when certain (+0)
+budget skills/remote-run/references/experiment-conventions.md 144;   # +4: the run-watch exception (§3, §6, §7); +1: a USR1 death is FAILED; +3: the authorised exceptions (§5, §6, §7)
+# 2026-11-07: conventions +4 (a new run's name outside §2 a NOTE / --free-name; the §4 NOTE; a smoke refused only when certain, else a WARNING)
 budget skills/remote-run/references/project-setup.md 100
 for d in hpc-run ws-run; do [ -e "$RS_HOME/$d" ] || [ -e "$RS_HOME/skills/$d" ] && bad "legacy $d/ trees removed" || ok "legacy $d/ trees removed"; done
