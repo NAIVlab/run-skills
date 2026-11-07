@@ -65,6 +65,9 @@ OPTS = {
     "date": ("uR", "d", "utc universal rfc-email iso-8601 debug date= rfc-3339=", True),   # operands: +FORMAT only
     "id": ("agGnruzZ", "", "context group groups name real user zero", True),
     "quota": ("glqsuvw", "", "group local-only quiet human-readable user verbose no-wrap", True),
+    # a distributed filesystem's directory quota (a group dir's usage vs its soft / hard limits, which `quota` cannot
+    # show): only the number formats (-n plain, -h/-H IEC/SI, -k/-m/-g units); operands = directories (mfssetquota sets)
+    "mfsgetquota": ("nhHkmg", "", "", True),
 }
 PS_BSD = ("acfjlLmnrsSTuvwxXH", "kOopqtU")            # BSD-style ps letters: never `e` (prints each environment)
 SCONTROL_SHOW = {"job", "jobs", "node", "nodes", "partition", "partitions", "reservation", "reservations", "step",
@@ -136,16 +139,21 @@ def _operands(cmd: str, args: list[str], spec: tuple, bsd: tuple | None = None, 
     return out
 
 
+def project_file(cmd: str, p: str, after: str = " (and no further options after -c N)") -> None:
+    """P names a file under the project dir by a relative path without '..', and no credential file (on the words)."""
+    parts = [x for x in p.split("/") if x not in ("", ".")]
+    if p.startswith(("-", "/", "~")) or not parts or ".." in parts:
+        raise RskError(f"{cmd}: {p!r}: only files under the project dir, by a relative path without '..'{after}",
+                       USAGE)
+    if CREDENTIALS & set(parts) or "/.config/gh/" in f"/{'/'.join(parts)}/":
+        raise RskError(f"{cmd}: {p!r} is a credential file: rsk never prints one", USAGE)
+
+
 def _read(cmd: str, args: list[str]) -> None:
     if len(args) < 3 or args[0] != "-c" or not re.fullmatch(r"[0-9]+", args[1]) or int(args[1]) > MAX_READ:
         raise RskError(f"{cmd}: only `{cmd} -c <bytes ≤ {MAX_READ}> <file>…` (byte-bounded reads)", USAGE)
     for p in args[2:]:
-        parts = [x for x in p.split("/") if x not in ("", ".")]
-        if p.startswith(("-", "/", "~")) or not parts or ".." in parts:
-            raise RskError(f"{cmd}: {p!r}: only files under the project dir, by a relative path without '..' "
-                           "(and no further options after -c N)", USAGE)
-        if CREDENTIALS & set(parts) or "/.config/gh/" in f"/{'/'.join(parts)}/":
-            raise RskError(f"{cmd}: {p!r} is a credential file: rsk exec never prints one", USAGE)
+        project_file(cmd, p)
 
 
 def check(argv: list[str]) -> None:

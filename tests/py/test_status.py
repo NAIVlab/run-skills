@@ -153,6 +153,127 @@ class Slurm(Base):
         self.assertIn("re-sync only with the user's OK", text)
         self.assertNotIn("sync the project first", text)
 
+    def test_logs_grep_is_rsks_own_bounded_pipeline(self):   # #2: no pipe of the caller's; tail -c | grep | tail -n
+        logs = self.remote / "logs"
+        logs.mkdir()
+        (logs / "exp--a01_101.out").write_text("step 1 loss=3.0\nWARNING: lr\nstep 2 loss=2.5\nTraceback (most recent "
+                                                "call last)\nstep 3 loss=2.0\n")
+        (self.remote / ".wandb_env").write_text("WANDB_API_KEY=secret\n")
+        rc, text = self._logs("-T", "fx-slurm", "--grep", "loss=[0-9.]+", "-n", "2", "101")
+        self.assertEqual(rc, OK, text)
+        self.assertEqual(text.splitlines(), ["step 2 loss=2.5", "step 3 loss=2.0"])      # the LAST two matches
+        rc, text = self._logs("-T", "fx-slurm", "--grep", "traceback", "--grep", "warning", "-i",
+                              "logs/exp--a01_101.out")
+        self.assertEqual((rc, text.splitlines()), (OK, ["WARNING: lr", "Traceback (most recent call last)"]))
+        rc, text = self._logs("-T", "fx-slurm", "--grep", "loss", "--bytes", "16", "101")   # the window: the last 16 B
+        self.assertEqual((rc, text.splitlines()), (OK, ["step 3 loss=2.0"]))
+        rc, text = self._logs("-T", "fx-slurm", "--grep", "$(touch pwned)", "-F", "101")    # one -e word, never shell
+        self.assertEqual(rc, OK, text)
+        self.assertIn("no line matches", text)
+        self.assertFalse((self.remote / "pwned").exists())
+        self.assertEqual(self._logs("-T", "fx-slurm", "--grep", "(", "101")[0], USAGE)      # grep refuses the pattern
+        self.assertEqual(self._logs("-T", "fx-slurm", "--grep", "x", "202")[0], USAGE)      # no log of that job
+        for bad in (".wandb_env", "/etc/passwd", "../x", "logs/../.wandb_env"):
+            with self.subTest(bad=bad):
+                rc, text = self._logs("-T", "fx-slurm", "--grep", "KEY", bad)
+                self.assertEqual(rc, USAGE, text)
+                self.assertNotIn("secret", text)
+        for flags in (("-i",), ("-F",), ("--bytes", "10"), ("--bytes", "8388608")):        # they go with --grep
+            rc, text = self._logs("-T", "fx-slurm", *flags, "101")
+            self.assertEqual(rc, USAGE, text)
+            self.assertIn("go with --grep", text)
+        for argv in (("--grep", "x", "101", "ckpts"), ("--grep", "x", "-n", "0", "101"), ("--grep", "x", "--bytes", "0",
+                                                                                            "101")):
+            with self.subTest(argv=argv):
+                self.assertEqual(self._logs("-T", "fx-slurm", *argv)[0], USAGE)
+
+    def test_logs_grep_reads_as_status_sh_does(self):
+        logs = self.remote / "logs"
+        logs.mkdir()
+        (logs / "tq.log").write_bytes(b"epoch 1\rstep 1 loss=3.0\rstep 2 loss=2.0\rstep 3 loss=1.0\n\x1b[32mok\x1b[0m\n"
+                                      b"nul\x00 loss=0.5 here\n")
+        rc, text = self._logs("-T", "fx-slurm", "--grep", "loss", "-n", "2", "logs/tq.log")   # CR = a new line
+        self.assertEqual((rc, text.splitlines()), (OK, ["step 3 loss=1.0", "nul loss=0.5 here"]))  # NUL dropped
+        (logs / "dots.log").write_text("abc\na.c\n")
+        self.assertEqual(self._logs("-T", "fx-slurm", "--grep", "a.c", "-F", "logs/dots.log")[1].splitlines(), ["a.c"])
+        self.assertEqual(self._logs("-T", "fx-slurm", "--grep", "a.c", "logs/dots.log")[1].splitlines(), ["abc", "a.c"])
+        (logs / "big.log").write_text(("x" * 100 + " match\n") * 2000)
+        rc, text = self._logs("-T", "fx-slurm", "--grep", "match", "-n", "1000", "logs/big.log")
+        self.assertEqual(rc, OK, text)
+        self.assertIn("[rsk logs: output cut at 65536 bytes", text)
+        self.assertLess(len(text.encode()), 65536 + 300)
+        hdr = "[Fri Nov  6 09:00:00 AM PST 2026] target={} job=303 restart=0 node=n1\nstep 7 loss=9\n"
+        (logs / "a_303.out").write_text(hdr.format("fx-other"))      # two targets share the dir: the header decides
+        (logs / "b_303.out").write_text(hdr.format("fx-slurm").replace("loss=9", "loss=1"))
+        rc, text = self._logs("-T", "fx-slurm", "--grep", "loss", "0303")
+        self.assertEqual((rc, text.splitlines()), (OK, ["step 7 loss=1"]))                   # leading zeros dropped
+        (logs / "c_303.out").write_text(hdr.format("fx-slurm"))
+        rc, text = self._logs("-T", "fx-slurm", "--grep", "loss", "303")
+        self.assertEqual(rc, USAGE, text)
+        self.assertIn("more than one names fx-slurm — pass the log path", text)
+        (logs / "d_404.out").write_text(hdr.format("fx-other").replace("job=303", "job=404"))
+        rc, text = self._logs("-T", "fx-slurm", "--grep", "loss", "404")
+        self.assertEqual(rc, USAGE, text)
+        self.assertIn("belongs to target fx-other, not fx-slurm", text)
+        os.environ["SSH_FAIL"] = "1"                                  # ssh's own failure: unknown, never 'no match'
+        try:
+            rc, text = self._logs("-T", "fx-slurm", "--grep", "loss", "logs/tq.log")
+        finally:
+            os.environ.pop("SSH_FAIL", None)
+        self.assertEqual(rc, UNKNOWN, text)
+        self.assertIn("rsk logs: ssh failed", text)
+        if os.geteuid() != 0:                                         # root reads anything
+            (logs / "locked.log").write_text("loss=1\n")
+            (logs / "locked.log").chmod(0)
+            rc, text = self._logs("-T", "fx-slurm", "--grep", "loss", "logs/locked.log")
+            self.assertEqual(rc, USAGE, text)
+            self.assertIn("cannot read logs/locked.log", text)
+            self.assertNotIn("no line matches", text)
+
+    def test_logs_grep_edges(self):
+        logs = self.remote / "logs"
+        logs.mkdir()
+        (logs / "x_505.out").mkdir()                                   # a directory is no candidate
+        (logs / "y_505.out").write_text("\x1b[31mERROR\x1b[0m boom\n")
+        rc, text = self._logs("-T", "fx-slurm", "--grep", "ERROR boom", "505")            # ANSI escapes out
+        self.assertEqual((rc, text.splitlines()), (OK, ["ERROR boom"]))
+        (logs / "u8.log").write_bytes(b"loss=1 \xff end\n")
+        os.environ["LC_ALL"] = "C.UTF-8"                              # grep -a: invalid UTF-8 is still a text line
+        try:
+            rc, text = self._logs("-T", "fx-slurm", "--grep", "loss", "logs/u8.log")
+        finally:
+            os.environ.pop("LC_ALL", None)
+        self.assertEqual(rc, OK, text)
+        self.assertIn("loss=1", text)
+        self.assertNotIn("binary file matches", text)
+        (logs / "huge.log").write_text("step loss=1\n" * 400000)          # grep refuses '(' at once: the stages
+        rc, text = self._logs("-T", "fx-slurm", "--grep", "(", "--bytes", str(4 << 20), "logs/huge.log")   # still writing
+        self.assertEqual(rc, USAGE, text)                                  # die of SIGPIPE — a pattern error, not 'unknown'
+        self.assertNotIn("could not be normalised", text)
+        (logs / "long.log").write_text("x" * 10000 + "loss END\n")
+        rc, text = self._logs("-T", "fx-slurm", "--grep", "loss", "logs/long.log")         # one long line: its END
+        line = text.splitlines()[0]
+        self.assertEqual((rc, line[:3], line[-8:], len(line)), (OK, "...", "loss END", 3 + status_mod.GREP_LINE))
+        if os.geteuid() != 0:
+            (logs / "a_606.out").write_text("x\n")
+            (logs / "b_606.out").write_text("x\n")
+            (logs / "b_606.out").chmod(0)
+            rc, text = self._logs("-T", "fx-slurm", "--grep", "x", "606")
+            self.assertEqual(rc, USAGE, text)
+            self.assertIn("could not be read — pass the log path", text)
+        for argv in (("--grep", "x", "-n", "1001", "logs/long.log"),
+                     ("--grep", "x", "--bytes", str(status_mod.GREP_MAX_BYTES + 1), "logs/long.log"),
+                     ("--grep", "x", "0"), ("--grep", "x", "000")):
+            with self.subTest(argv=argv):
+                self.assertEqual(self._logs("-T", "fx-slurm", *argv)[0], USAGE)
+        class Box:                                                       # a workstation run is named by its log path
+            remote_dir, target, kind = str(self.remote), "fx-box", "nohup"
+        with self.assertRaises(status_mod.RskError):
+            status_mod.grep_body(Box, "123", ["x"], 5, 100, False, False)
+        (self.remote / ".fx-slurm").mkdir()
+        (self.remote / ".fx-slurm" / "status.sh").write_text('echo "digest args: $*"\n')
+        self.assertIn("digest args: -n 0 101", self._logs("-T", "fx-slurm", "-n", "0", "101")[1])   # passed through
+
     def test_logs_exit_codes_keep_one_meaning(self):
         (self.remote / ".fx-slurm").mkdir()
         sh = self.remote / ".fx-slurm" / "status.sh"

@@ -19,7 +19,7 @@ resubmit, chain, cancel — whatever its `#@ allow` line says (--release launche
 SBATCH_EXTRA singleton makes a launch a chain); only a deny scoped by job ids ("do not cancel job 555": cancels only)
 counts just for a table whose `#@ allow` line has fail-stop, the one cancel run-watch makes (R6-7; there the row's job
 is not known here, so it matches): a match → exit 3 with the deny's quote, nothing started (--approve: no
-`#@ ok` written); and again on every lease refresh — a new matching deny → run-watch gets TERM, exit 3. What a row
+`#@ ok` written; --approve words that repeat a standing grant's quote, grants.recycled: exit 4, nothing written); and again on every lease refresh — a new matching deny → run-watch gets TERM, exit 3. What a row
 cannot show counts as matching (fail closed): its GPU type (the partition's policy may force one: a GPU-type deny
 matches every row of its target), its partition (the target's t_policy may rewrite -p: a partition deny matches every
 Slurm row of its target), its plan (no bound hash: a deny of plans matches every row in its scope). A row's target is
@@ -406,6 +406,10 @@ def cmd_watch(args: argparse.Namespace) -> int:
         env.pop(k, None)
     check_tables(proj, argv)       # R7-7: a table that is not plain text is refused by both, in every mode
     led = L.Ledger(proj)
+    words = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--approve"] + \
+        [a.split("=", 1)[1] for a in argv if a.startswith("--approve=")]
+    for w in words:
+        grants.refuse_recycled(w, led.state().grants, "this table's rows")
     guard = None
     if "--act" in argv or "--approve" in argv:
         kinds = {t.name: t.kind for t in harness.targets(src)}

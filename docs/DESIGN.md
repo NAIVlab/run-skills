@@ -426,7 +426,24 @@ evidence of an infrastructure end — Slurm `PREEMPTED` / `NODE_FAIL` / `BOOT_FA
 `OUT_OF_MEMORY` or an unknown end, and only when the plan repeats THAT attempt's bound fields (the attempt whose end it
 relies on, never an older one the plan happens to be named after: such a plan is recorded as the next attempt); the
 user's approval of the card covers any — so it never resumes a run only the target's journal shows: the ledger holds no
-end of it to rely on (`the ledger has no earlier attempt of the run that ran`), and that is the user's call. A run's class is the one its name carries (`--class` only labels a name
+end of it to rely on (`the ledger has no earlier attempt of the run that ran`), and that is the user's call. That
+default is auto-recovery; a user who hands the agent re-runs ("you decide, don't ask again", "fix the code and just
+run it") says more, and a grant recorded with `scope.relaunch_after: "any"` (`rsk grant add --relaunch-after any`)
+carries it (in a grant that allows `launch` too): a relaunch is then judged as a launch — scope, budgets, warnings,
+flags, denies — whatever the end and the configuration (a fixed command, another target), but never while an earlier
+attempt may still be live: a ledger attempt live or SUBMIT_UNKNOWN on any target, or one only the target's journal
+shows (its `info_prior_here` — submit.sh's count of receipts whose `target=` is this target or absent, else
+`info_prior` — counts more submissions of the run than the ledger holds there, or cannot say; the plan at most 10 min
+old). Without it the
+agent asked after every fixed bug, or wrote the standing grant's words down again as a card's approval (seen: one
+project, ten relaunch approvals quoting two old sentences); so `--approve` words that repeat a standing grant's quote
+(the same words, a part of them or them inside longer words — compared without punctuation, case or spaces, weighing
+24 or more, a CJK character 2 — of a grant older than an hour: `grants.recycled`) are exit 4 for every `--approve`
+(launch, cancel, `rsk watch`, `adopt --not-submitted`, `sync -D`, `bootstrap --job`), and `rsk grant add|import` FLAG a
+new grant that repeats an older one's words: an approval is the answer to what is on screen. A nudge against copying, not proof: other
+words still pass. Before deciding, `rsk launch` re-reads every target where the ledger counts an attempt of the run as
+live (`launch.refresh`: the read `rsk status` makes), since the ledger learns of an end only from such a read — a job
+that just failed was refused as a live duplicate and gave a relaunch grant no end to rely on. A run's class is the one its name carries (`--class` only labels a name
 without one) and is set only at its first attempt: another one later is exit 2, and so is any class for a run whose
 first attempt had none (a grant scoped by class never covers that run); a deny of `launch` stops relaunches and chains
 too, and its name globs also match the run id. A run's attempts carry the job name `<run>--aNN`, which is what squeue,

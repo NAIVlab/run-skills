@@ -111,12 +111,13 @@ and the next check time for re-invocation. Do not promise unattended monitoring 
   For expected transitions (start, resume, segment boundary, smoke completion), set a deadline;
   without event notifications, check around that time using the available wake-up mechanism.
   A missed transition deadline is a finding; a routine review time merely schedules a check.
-- **Milestones beat the clock:** start (job `R` / PID alive; slurm: the header + `RUN:`, nohup: the trainer's own
-  first lines; first steps, the requested GPUs, a formal ONLINE run's wandb URL — offline = none, self-hosted = your
-  base URL — and a smoke's absence of one); the first checkpoint written AND resumable — check the trainer's
-  save/resume evidence: `ckpt_entry` is only directory activity, possibly a temporary file (`resume=unverified`).
-  Then the first eval; every restart or segment boundary (resumed from the LATEST checkpoint, the step matches);
-  for multi-day runs a daily audit (throughput → ETA, ckpt age within its interval, segments left, disk, wandb curves).
+- **Milestones beat the clock:** start (job `R` / PID alive — `rsk launch --check-after S` reads it once in the same
+  call, for a run expected to start at once; slurm: the header + `RUN:`, nohup: the trainer's own first lines; first
+  steps, the requested GPUs, a formal ONLINE run's wandb URL — offline = none, self-hosted = your base URL — and a
+  smoke's absence of one); the first checkpoint written AND resumable — check the trainer's save/resume evidence:
+  `ckpt_entry` is only directory activity, possibly a temporary file (`resume=unverified`). Then the first eval; every
+  restart or segment boundary (resumed from the LATEST checkpoint, the step matches); for multi-day runs a daily audit
+  (throughput → ETA, ckpt age within its interval, segments left, disk, wandb curves).
 - **Every finding is reported** promptly, nothing filtered: state changes, hints, stalls, resource trouble,
   a URL on a smoke, or a missed expected transition. Healthy = one line: progress and the next review,
   without repeating the plan. Record new findings when observed; choose how urgently to notify the user

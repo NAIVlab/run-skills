@@ -36,6 +36,8 @@ def block(kind="slurm", target="fx", name="exp--train--a--scratch--s0--a01", war
                  ("flags", kw.get("flags", "")), ("chain", kw.get("chain", "0"))]
         info = [("info_avail", "free:4/max_node:4/gpu_type:any"), ("info_conf_sha256", "a" * 64),
                 ("info_source_commit", "none"), ("info_source_dirty", "none"), ("info_prior", kw.get("prior", "0"))]
+        if "prior_here" in kw:                     # submit.sh's count of this target's own receipts (a shared dir)
+            info.append(("info_prior_here", kw["prior_here"]))
     else:
         bound = [("kind", "nohup"), ("target", target), ("name", name), ("gpus_req", kw.get("gpus_req", "n=1")),
                  ("exclude", ""), ("nice", ""), ("launch_cfg", kw.get("launch_cfg", "")),
@@ -1179,6 +1181,458 @@ class Nohup(Fixture):
         rc, text = self.cli("launch", "--plan", pid, "--approve", "go")
         self.assertEqual(rc, PLACEMENT, text)
         self.assertEqual(L.attempt_state(self.led.read_run("r").data["attempts"]["a01"]), "NOT_SUBMITTED")
+
+
+def seen(place, state: str, job: str = "101", rc: str = "") -> observe.Observation:
+    """A good read of PLACE: Slurm job JOB in STATE (rc = its exit code), or a box run's log ended with rc."""
+    if place.kind == "slurm":
+        j = observe.Job(id=job, name="x", state=state, exit_code=rc, source="sacct" if state in observe.TERMINAL
+                        else "squeue")
+    else:
+        j = observe.Job(id="", name="r", state=state, log="logs/r-20261104-120000.log", source="pid",
+                        rc={"rc": rc, "term": "0"} if rc else {})
+    return observe.Observation(place, ok=True, jobs=[j], attempts_ok=True, observed_at=time.time())
+
+
+class Followups(Fixture):
+    """2026-11-06: the ledger refreshed before a launch (#4), relaunch_after any (#5), recycled quotes, --check-after."""
+
+    RUN = "exp--train--a--scratch--s0"
+
+    def submit_a01(self) -> None:
+        self.answers = [self.plan_reply()]
+        rc, text = self.cli("launch", "-T", "fx", "-n", f"{self.RUN}--a01", "--", "python", "t.py")
+        self.answers = [self.submitted()]
+        self.assertEqual(self.cli("launch", "--plan", self.plan_id(text), "--approve", "go ahead")[0], OK)
+
+    def reads(self, *states):
+        """observe.observe answering each call with the next state of job 101 (None: unobservable)."""
+        todo = list(states)
+
+        def obs(places, *a, **k):
+            st = todo.pop(0) if todo else None
+            return [observe.Observation(p, why="x") if st is None else seen(p, *st) for p in places]
+        return mock.patch.object(observe, "observe", obs)
+
+    def test_a_job_that_ended_since_the_last_read_is_not_live(self):
+        self.submit_a01()
+        self.answers = [self.plan_reply(name=f"{self.RUN}--a02", prior="1")]
+        rc, text = self.cli("launch", "-T", "fx", "-n", f"{self.RUN}--a02", "--", "python", "t.py")
+        self.assertEqual(rc, CONFLICT, text)                 # the target cannot be read: the ledger's state stands
+        self.assertIn("could not be read now", text)
+        self.assertIn("is live on fx in the ledger", text)
+        with self.reads(("FAILED", "101", "2:0")):
+            rc, text = self.cli("launch", "-T", "fx", "-n", f"{self.RUN}--a02", "--", "python", "t.py")
+        self.assertEqual(rc, NEEDS_USER, text)               # planned: a card, no 'live in the ledger'
+        self.assertIn(f"ledger: {self.RUN} a01 on fx: SUBMITTED -> FAILED (read just now)", text)
+        self.assertNotIn("is live on fx", text)
+        self.assertEqual(L.attempt_state(self.led.read_run(self.RUN).data["attempts"]["a01"]), "FAILED")
+
+    def test_a_running_job_stays_a_duplicate(self):
+        self.submit_a01()
+        with self.reads(("RUNNING",)):
+            rc, text = self.cli("launch", "-T", "fx", "-n", f"{self.RUN}--a02", "--", "python", "t.py")
+        self.assertEqual(rc, CONFLICT, text)
+        self.assertIn("is live on fx in the ledger: a01 (RUNNING)", text)
+
+    def test_relaunch_after_any_covers_a_fixed_relaunch_and_infra_does_not(self):
+        self.submit_a01()
+        G.add(self.led, G.new_grant("decide yourself, don't ask again", {"targets": ["fx"]}, ["launch", "relaunch"],
+                                    max_live=None, max_launches=None, expires=None))
+        with self.reads(("FAILED", "101", "2:0")):
+            self.answers = [self.plan_reply(name=f"{self.RUN}--a02", prior="1", payload="python t.py --fixed")]
+            rc, text = self.cli("launch", "-T", "fx", "-n", f"{self.RUN}--a02", "--", "python", "t.py", "--fixed")
+        self.assertEqual(rc, NEEDS_USER, text)               # default infra: a FAILED end is the user's call
+        self.assertIn("a relaunch grant resumes only an infrastructure end", text)
+        G.add(self.led, G.new_grant("fix the code and just run it, don't ask again", {"targets": ["fx"],
+                                    "relaunch_after": "any"}, ["launch", "relaunch"], max_live=None, max_launches=3,
+                                    expires=None))
+        self.answers = [self.plan_reply(name=f"{self.RUN}--a02", prior="1", payload="python t.py --fixed"),
+                        self.submitted("102")]
+        rc, text = self.cli("launch", "-T", "fx", "-n", f"{self.RUN}--a02", "--", "python", "t.py", "--fixed")
+        self.assertEqual(rc, OK, text)                       # another command (the fix), after a FAILED end
+        self.assertIn("a relaunch after any end too", text)
+        att = self.led.read_run(self.RUN).data["attempts"]["a02"]
+        self.assertEqual((att["request"]["action"], att["submissions"][0]["job"]), ("relaunch", "102"))
+
+    def test_relaunch_after_any_never_beside_a_live_attempt(self):
+        rec = G.new_grant("decide yourself", {"relaunch_after": "any"}, ["launch", "relaunch"], max_live=None,
+                          max_launches=None, expires=None)
+        live = {"name": f"{self.RUN}--a01", "target": "other", "kind": "slurm", "created_at": L.now(),
+                "request": {"plan": "p-old", "bound": {}}, "observed": None, "result": None,
+                "submissions": [{"nonce": "n1", "submit": "submitted", "job": "7", "seen": {"state": "RUNNING"}}]}
+        st = L.LedgerState(grants=[rec], runs={self.RUN: {"attempts": {"a01": live}}})
+        plan = X.check_plan({"block": G.parse_plan(block(name=f"{self.RUN}--a02", prior="1")), "run": self.RUN,
+                             "id": "p-new"}, st.runs)
+        d = G.check(st, "relaunch", plan=plan, run=self.RUN)
+        self.assertFalse(d.covered)
+        self.assertIn(f"earlier attempt(s) of {self.RUN} may still be live: a01 (SUBMITTED, other)", " ".join(d.reasons))
+
+    def any_state(self, *atts, prior="1", age=None, **kw):
+        rec = G.new_grant("decide yourself", {"relaunch_after": "any"}, ["launch", "relaunch"], max_live=None,
+                          max_launches=None, expires=None)
+        st = L.LedgerState(grants=[rec], runs={self.RUN: {"attempts": dict(atts)}})
+        plan = X.check_plan({"block": G.parse_plan(block(name=f"{self.RUN}--a09", prior=prior, **kw)), "run": self.RUN,
+                             "id": "p-new"}, st.runs)
+        if age is not None:
+            plan["plan_age_s"] = age
+        return G.check(st, "relaunch", plan=plan, run=self.RUN)
+
+    @staticmethod
+    def att(target, state, sub="submitted", job="7"):
+        seen = {"state": state} if state else None
+        end = {"state": state, "rc": "1:0"} if state in observe.TERMINAL else None
+        return {"name": "x", "target": target, "kind": "slurm", "created_at": L.now(),
+                "request": {"plan": "p-old", "bound": {}}, "observed": None,
+                "result": {"state": state, "rc": "1:0"} if end else None,
+                "submissions": [{"nonce": f"n{job}", "submit": sub, "job": job, "seen": seen, "end": end}]}
+
+    def test_relaunch_after_any_needs_every_earlier_attempt_ended(self):
+        # an older attempt live (or SUBMIT_UNKNOWN) on another target behind a FAILED latest one: not yet
+        d = self.any_state(("a01", self.att("other", "RUNNING", job="5")), ("a02", self.att("fx", "FAILED", job="6")))
+        self.assertIn("a01 (SUBMITTED, other)", " ".join(d.reasons))     # (attempt_state: never observed)
+        d = self.any_state(("a01", self.att("other", "", sub="unknown", job="5")), ("a02", self.att("fx", "FAILED", job="6")))
+        self.assertIn("a01 (SUBMIT_UNKNOWN, other)", " ".join(d.reasons))
+        d = self.any_state(("a01", self.att("fx", "FAILED", job="6")))
+        self.assertTrue(d.covered, d.reasons)                      # every earlier one ended, the journal agrees: covered
+
+    def test_relaunch_after_any_never_on_attempts_only_the_journal_shows(self):
+        for prior, why in (("2", "the target's journal holds 2 earlier submission(s)"),
+                           ("unknown", "cannot say which earlier attempts")):
+            with self.subTest(prior=prior):
+                d = self.any_state(("a01", self.att("fx", "FAILED", job="6")), prior=prior)
+                self.assertFalse(d.covered)
+                self.assertIn(why, " ".join(d.reasons))
+        d = self.any_state(prior="1")                               # nothing in the ledger, one in the journal
+        self.assertIn("the ledger 0 there", " ".join(d.reasons))
+
+    def test_relaunch_after_any_counts_the_journal_per_target(self):
+        why = " ".join(self.any_state(("a01", self.att("other", "FAILED", job="6")), prior="1").reasons)
+        self.assertIn("the ledger 0 there", why)                  # another target's submission is not this journal's
+        adopted = self.att("fx", "FAILED", job="5")
+        adopted["submissions"][0]["nonce"] = "adopt-job-5"         # adopted without a receipt: the journal lacks it
+        d = self.any_state(("a01", adopted), ("a02", self.att("fx", "FAILED", job="6")), prior="2")
+        self.assertIn("holds 2 earlier submission(s)", " ".join(d.reasons))   # so it never hides run-watch's resubmit
+        d = self.any_state(("a01", self.att("fx", "FAILED", job="6")), prior="5", prior_here="1")
+        self.assertTrue(d.covered, d.reasons)                      # a dir two targets share: this target's own count
+        d = self.any_state(("a01", self.att("fx", "FAILED", job="6")), prior="２")
+        self.assertIn("no readable info_prior", " ".join(d.reasons))        # a non-ASCII digit fails closed
+        d = self.any_state(("a01", self.att("fx", "FAILED", job="6")), age=G.ANY_PLAN_MAX_AGE_S + 60)
+        self.assertIn("min old", " ".join(d.reasons))              # a stale plan's journal count: plan again
+        self.assertTrue(self.any_state(("a01", self.att("fx", "FAILED", job="6")), age=30).covered)
+
+    def test_relaunch_after_any_keeps_the_budgets_of_a_launch(self):
+        rec = G.new_grant("decide yourself", {"relaunch_after": "any"}, ["launch", "relaunch"], max_live=None,
+                          max_launches=1, expires=None)
+        rec["used"] = [{"nonce": "n0", "action": "launch", "hash": "", "job": "", "at": L.now()}]
+        st = L.LedgerState(grants=[rec], runs={self.RUN: {"attempts": {"a01": self.att("fx", "FAILED", job="6")}}})
+        plan = X.check_plan({"block": G.parse_plan(block(name=f"{self.RUN}--a02", prior="1")), "run": self.RUN,
+                             "id": "p-new"}, st.runs)
+        d = G.check(st, "relaunch", plan=plan, run=self.RUN)
+        self.assertIn("used 1 of 1 launches", " ".join(d.reasons))
+
+    def test_relaunch_after_is_validated(self):
+        ok = G.new_grant("q", {"relaunch_after": "any"}, ["launch", "relaunch"], max_live=None, max_launches=None,
+                         expires=None)
+        for change, why in (({"actions": ["launch"]}, "needs relaunch in its actions"),
+                            ({"actions": ["relaunch"]}, "the grant allows launch too"),
+                            ({"scope": {"relaunch_after": "always"}}, "must be one of infra, any"),
+                            ({"kind": "deny", "id": "d-x1", "limits": {}}, "a deny takes"),
+                            ({"kind": "approval", "id": "ap-x1", "limits": {"max_launches": 1},
+                              "scope": {"relaunch_after": "any", "runs": ["a" * 64], "plans": ["p-1"]}},
+                             "belongs to a standing grant")):
+            with self.subTest(why=why):
+                self.assertIn(why, G.valid({**ok, **change}))
+        rc, text = run("grant", "add", "-C", str(self.proj), "--quote", "q", "--action", "launch", "--relaunch-after", "any",
+                            "--max-live", "none", "--max-launches", "none", "--expires", "none")
+        self.assertEqual(rc, USAGE, text)
+        rc, text = run("grant", "add", "-C", str(self.proj), "--quote", "decide yourself", "--action", "launch,relaunch",
+                            "--relaunch-after", "any", "--max-live", "none", "--max-launches", "5", "--expires", "none")
+        self.assertEqual(rc, OK, text)
+        self.assertIn("a relaunch after any end too, judged as a launch", text)
+
+    def old_grant(self, quote: str, age_s: float = 7200) -> dict:
+        rec = G.new_grant(quote, {"targets": ["ws"]}, ["launch"], max_live=None, max_launches=None, expires=None)
+        rec["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - age_s))
+        return G.add(self.led, rec)
+
+    def test_recycled_quotes_are_not_an_approval(self):
+        g = self.old_grant("有空闲卡就训练模型吧，注意检查gpu内存")        # (on ws: it does not cover a plan on fx)
+        for words in ("有空闲卡就训练模型吧，注意检查gpu内存", "“有空闲卡就训练模型吧，注意检查gpu内存”",
+                      "有空闲卡就训练模型吧，注意检查"):          # the same text, quoted, or 12+ characters of it
+            with self.subTest(words=words):
+                self.assertIsNotNone(G.recycled(words, [g]))
+        for words in ("可以", "就训练模型吧", "行，就照这个方案跑"):   # short words found inside it: a fresh answer may
+            with self.subTest(words=words):                          # say them
+                self.assertIsNone(G.recycled(words, [g]))
+        fresh = self.old_grant("那就换另一台空闲机器跑吧", age_s=60)
+        self.assertIsNone(G.recycled("那就换另一台空闲机器跑吧", [fresh]))   # said just now: grant and answer at once
+        self.answers = [self.plan_reply()]
+        rc, text = self.cli("launch", "-T", "fx", "--", "c")
+        self.assertEqual(rc, NEEDS_USER, text)
+        pid = self.plan_id(text)
+        n = len(self.led.state().grants)
+        rc, text = self.cli("launch", "--plan", pid, "--approve", "有空闲卡就训练模型吧，注意检查gpu内存")
+        self.assertEqual(rc, NEEDS_USER, text)
+        self.assertIn(f"these words are the quote of standing grant {g['id']}", text)
+        self.assertEqual(len(self.led.state().grants), n)          # nothing recorded
+        self.assertIsNone(self.led.plan_claim(pid))                # the plan is still unused
+        self.answers = [self.submitted()]
+        self.assertEqual(self.cli("launch", "--plan", pid, "--approve", "就训练模型吧")[0], OK)   # a fresh answer
+
+    def test_recycled_thresholds(self):
+        now = time.time()
+
+        def grant(q, age=7200, kind="grant"):
+            return {"id": "g-x", "kind": kind, "quote": q,
+                    "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - age))}
+        twelve = "以后这类事由你来定无需问"                     # 12 CJK characters = weight 24 (RECYCLE_MIN)
+        self.assertEqual(G._weight(G._norm_words(twelve)), 24)
+        self.assertIsNotNone(G.recycled(twelve, [grant(twelve)], now))
+        self.assertIsNone(G.recycled(twelve[:11], [grant(twelve[:11])], now))       # weight 22: a short answer
+        for q in ("可以", "ok", "go ahead", "yes"):                                  # short standing words never block
+            self.assertIsNone(G.recycled(q, [grant(q)], now))
+        long_en = "Yes, go ahead and run it on any free GPU, don't ask me again"
+        for w in ("yes go ahead and run it on any free gpu", "“YES, go ahead and run it on any free GPU.”",
+                  "The user said: Yes, go ahead and run it on any free GPU, don't ask me again — a03"):
+            with self.subTest(w=w):                                                  # case, punctuation, embedded
+                self.assertIsNotNone(G.recycled(w, [grant(long_en)], now))
+        for w in ("go ahead and run it", "don't ask me again"):                      # under 24: fresh words
+            self.assertIsNone(G.recycled(w, [grant(long_en)], now))
+        self.assertIsNone(G.recycled(twelve, [grant(twelve, age=G.RECYCLE_AGE_S - 60)], now))   # said just now
+        self.assertIsNotNone(G.recycled(twelve, [grant(twelve, age=G.RECYCLE_AGE_S + 60)], now))
+        self.assertIsNone(G.recycled(twelve, [grant(twelve, kind="approval")], now))  # an approval's words are not
+        revoked = {**grant(twelve), "revoked": {"at": L.now(), "quote": "stop"}}     # a standing grant's
+        self.assertIsNotNone(G.recycled(twelve, [revoked], now))                     # old words stay old
+        odd = "以后这类事由你来定无需" + "a"                                       # weight 23: below the floor
+        self.assertIsNone(G.recycled(odd, [grant(odd)], now))
+        self.assertIsNotNone(G.recycled(odd + "b", [grant(odd + "b")], now))         # 24
+        self.assertIsNone(G.recycled(twelve, [grant(twelve, age=G.RECYCLE_AGE_S - 1)], now))
+        self.assertIsNotNone(G.recycled(twelve, [grant(twelve, age=G.RECYCLE_AGE_S + 1)], now))
+        short = "可以跑"                                                            # the quote inside longer words
+        self.assertIsNone(G.recycled("好的可以跑这个配置没有问题的请继续", [grant(short)], now))   # weighs the QUOTE
+        self.assertIsNotNone(G.recycled("★" + twelve + "♥", [grant(twelve)], now))   # symbols out
+        self.assertIsNotNone(G.recycled("ＧＯ ＡＨＥＡＤ ＡＮＤ ＲＵＮ ＩＴ ＯＮ ＡＮＹ ＦＲＥＥ ＧＰＵ",
+                                        [grant("go ahead and run it on any free GPU")], now))   # NFKC
+
+    def test_recycled_quotes_everywhere_an_approval_is_taken(self):
+        g = self.old_grant("以后这类事由你来定，无需再来问我。开始或者结束训练任务也都行")
+        rc, text = run("adopt", "-C", str(self.proj), "-T", "fx", "--not-submitted", "rsk-x", "--approve",
+                       "以后这类事由你来定，无需再来问我")
+        self.assertEqual(rc, NEEDS_USER, text)
+        self.assertIn(g["id"], text)
+        with mock.patch("os.execvpe", side_effect=AssertionError("run-sync would have run")):
+            rc, text = run("sync", "-C", str(self.proj), "-T", "fx", "-D", "--approve", "以后这类事由你来定，无需再来问我")
+        self.assertEqual(rc, NEEDS_USER, text)
+        self.assertIn(g["id"], text)
+        rc, text = run("grant", "add", "-C", str(self.proj), "--quote", "以后这类事由你来定，无需再来问我。开始或者结束训练任务也都行",
+                       "--action", "launch,relaunch", "--relaunch-after", "any", "--max-live", "none",
+                       "--max-launches", "none", "--expires", "none")
+        self.assertEqual(rc, OK, text)                               # recorded (the user may type it), but flagged
+        self.assertIn(f"FLAG: its words repeat grant {g['id']}", text)
+
+    def test_recycled_quotes_for_a_cancel_and_a_table(self):
+        g = self.old_grant("取消也行,由你来判断 — 仅限本项目里面多余的作业")
+        rc, text = self.cli("cancel", "--job", "101", "-T", "fx", "--approve", "取消也行,由你来判断 — 仅限本项目里面多余的作业",
+                            "--asked", "可以取消 job 101 吗？")
+        self.assertEqual(rc, NEEDS_USER, text)
+        self.assertIn(g["id"], text)
+        (self.proj / "t.tsv").write_text("#@ run-watch v1\nr fx - -p gpu -- c\n")
+        rc, text = self.cli("watch", "t.tsv", "--approve", "取消也行,由你来判断 — 仅限本项目里面多余的作业")
+        self.assertEqual(rc, NEEDS_USER, text)
+
+    def test_check_after_reports_a_run_that_failed_at_once(self):
+        self.answers = [self.plan_reply()]
+        rc, text = self.cli("launch", "-T", "fx", "-n", f"{self.RUN}--a01", "--", "python", "t.py")
+        pid = self.plan_id(text)
+        self.answers = [self.submitted()]
+        with self.reads(("FAILED", "101", "2:0")), mock.patch.object(X.time, "sleep") as sl, \
+                mock.patch("remote_run.status.digest", return_value=OK) as dg:
+            rc, text = self.cli("launch", "--plan", pid, "--approve", "go ahead", "--check-after", "30")
+        self.assertEqual(rc, FAILED, text)
+        sl.assert_called_once_with(30)
+        self.assertIn(f"{self.RUN} a01 on fx (job 101): FAILED rc=2:0 within 30 s of the launch — it failed at once", text)
+        self.assertEqual(dg.call_args[0][1], "101")
+        self.assertIn("launched, then failed (exit 1)", text)
+        self.assertEqual(L.attempt_state(self.led.read_run(self.RUN).data["attempts"]["a01"]), "FAILED")
+
+    def test_check_after_a_live_or_unreadable_run_keeps_exit_0(self):
+        cases = (((("PENDING", "301"),), "PENDING 5 s after the launch"), ((None,), "not readable now"))
+        for i, (states, line) in enumerate(cases):
+            with self.subTest(line=line):
+                name = f"r{i}--train--a--scratch--s0--a01"
+                self.answers = [self.plan_reply(name=name)]
+                rc, text = self.cli("launch", "-T", "fx", "-n", name, "--", "python", "t.py")
+                self.answers = [self.submitted(str(301 + i))]
+                with self.reads(*states), mock.patch.object(X.time, "sleep"):
+                    rc, text = self.cli("launch", "--plan", self.plan_id(text), "--approve", "go", "--check-after", "5")
+                self.assertEqual(rc, OK, text)
+                self.assertIn(line, text)
+
+    def test_check_after_is_bounded_and_off_by_default(self):
+        self.assertEqual(self.cli("launch", "-T", "fx", "--check-after", "601", "--", "c")[0], USAGE)
+        self.assertEqual(self.cli("launch", "-T", "fx", "--check-after", "-1", "--", "c")[0], USAGE)
+        self.assertEqual(X.parse(["-T", "fx", "--check-after", "600", "--", "c"]).check_after, 600)
+        reads = []
+        with mock.patch.object(X.time, "sleep") as sl, \
+                mock.patch.object(observe, "observe", lambda places, *a, **k: reads.append(1) or
+                                  [observe.Observation(p, why="x") for p in places]):
+            self.submit_a01()                                # no --check-after: no wait, no read after the submit
+        sl.assert_not_called()
+        self.assertEqual(reads, [])
+        self.assertEqual(L.attempt_state(self.led.read_run(self.RUN).data["attempts"]["a01"]), "SUBMITTED")
+
+    def test_check_after_reads_nothing_when_nothing_went_out(self):
+        self.answers = [self.plan_reply()]
+        rc, text = self.cli("launch", "-T", "fx", "--", "c")
+        refused = X.Reply(3, "", "REFUSED: policy", api="api=3", result={"verdict": "refused", "rc": "3"})
+        self.answers = [refused]
+        with mock.patch.object(X.time, "sleep") as sl:
+            rc, text = self.cli("launch", "--plan", self.plan_id(text), "--approve", "go", "--check-after", "30")
+        self.assertNotEqual(rc, OK, text)
+        sl.assert_not_called()                               # nothing launched: no wait, no read
+        self.assertNotIn("--check-after: reading", text)
+
+    def test_check_after_keeps_an_earlier_failure_code(self):
+        self.assertEqual(X.check_after(self.led, X.paths.harness_src(), self.proj, [], 30, 60.0, CONFLICT), CONFLICT)
+        with self.jobs(("501", "FAILED", "1:0")), mock.patch.object(X.time, "sleep"), \
+                mock.patch("remote_run.status.digest", return_value=OK):
+            self.led.record_attempt(name="k--a01", target="fx", kind="slurm", nonce="n501", submit="submitted",
+                                    job="501")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = X.check_after(self.led, X.paths.harness_src(), self.proj, [("k", "a01", "fx", "n501")], 5,
+                                     60.0, CONFLICT)
+        self.assertEqual(code, CONFLICT)                     # another plan's conflict is not replaced by exit 1
+        self.assertIn("(job 501): FAILED rc=1:0 within 5 s", buf.getvalue())
+
+    def test_job_end(self):
+        J = observe.Job
+        for kind, job, want in (("slurm", J("1", "x", "COMPLETED", exit_code="0:0"), "ok"),
+                                ("slurm", J("1", "x", "FAILED", exit_code="2:0"), "failed"),
+                                ("slurm", J("1", "x", "CANCELLED"), "failed"), ("slurm", J("1", "x", "PENDING"), "live"),
+                                ("nohup", J("", "r", "ENDED", rc={"rc": "0"}), "ok"),
+                                ("nohup", J("", "r", "ENDED", rc={"rc": "2"}), "failed"),
+                                ("nohup", J("", "r", "ENDED"), "failed"), ("nohup", J("9", "r", "ALIVE"), "live"),
+                                ("nohup", J("", "r", "NOPID"), "unknown")):
+            with self.subTest(kind=kind, state=job.state, rc=job.rc):
+                self.assertEqual(X._job_end(kind, job)[0], want)
+
+    def jobs(self, *rows):
+        """observe.observe answering every call with Slurm jobs ROWS = (id, state, rc)."""
+        def obs(places, *a, **k):
+            return [observe.Observation(p, ok=True, attempts_ok=True, observed_at=time.time(), jobs=[
+                observe.Job(id=i, name="x", state=st, exit_code=rc, source="sacct" if st in observe.TERMINAL
+                            else "squeue") for i, st, rc in rows]) for p in places]
+        return mock.patch.object(observe, "observe", obs)
+
+    def test_check_after_sees_a_chain_whose_first_segment_failed(self):
+        self.answers = [self.plan_reply(chain="1")]
+        rc, text = self.cli("launch", "-T", "fx", "--chain", "3", "--", "c")
+        pid = self.plan_id(text)
+        self.answers = [self.submitted("201"), self.submitted("202"), self.submitted("203")]
+        with self.jobs(("201", "FAILED", "2:0"), ("202", "PENDING", ""), ("203", "PENDING", "")), \
+                mock.patch.object(X.time, "sleep"), mock.patch("remote_run.status.digest", return_value=OK) as dg:
+            rc, text = self.cli("launch", "--plan", pid, "--approve", "chain it", "--check-after", "20")
+        self.assertEqual(rc, FAILED, text)
+        self.assertIn("(job 201): FAILED rc=2:0 within 20 s", text)
+        self.assertIn("(job 202): PENDING 20 s after the launch", text)
+        self.assertEqual(dg.call_args[0][1], "201")
+
+    def test_check_after_on_a_grant_covered_launch_and_a_job_missing_from_the_read(self):
+        G.add(self.led, G.new_grant("smokes on fx", {"targets": ["fx"]}, ["launch"], max_live=None, max_launches=None,
+                                    expires=None))
+        self.answers = [self.plan_reply(), self.submitted("401")]
+        with self.jobs(("401", "FAILED", "1:0")), mock.patch.object(X.time, "sleep"), \
+                mock.patch("remote_run.status.digest", return_value=OK):
+            rc, text = self.cli("launch", "-T", "fx", "--check-after", "10", "--", "c")
+        self.assertEqual(rc, FAILED, text)                          # cmd_new: covered, submitted, then failed at once
+        self.assertIn("(job 401): FAILED rc=1:0 within 10 s", text)
+        self.answers = [self.plan_reply(name="other--train--a--scratch--s0--a01"), self.submitted("402")]
+        with self.jobs(("999", "RUNNING", "")), mock.patch.object(X.time, "sleep"):
+            rc, text = self.cli("launch", "-T", "fx", "-n", "other--train--a--scratch--s0--a01", "--check-after", "10",
+                                "--", "c")
+        self.assertEqual(rc, OK, text)
+        self.assertIn("(job 402): not in this read — state unknown", text)   # absence is no evidence
+
+    def test_check_after_on_a_box(self):
+        G.add(self.led, G.new_grant("box runs", {"targets": ["ws"]}, ["launch"], max_live=None, max_launches=None,
+                                    expires=None))
+        log = "logs/r-20261104-120000.log"
+        for rc_, want, line in (("0", OK, "ENDED rc=0 10 s after the launch — ended as it should"),
+                                ("2", FAILED, "ENDED rc=2 within 10 s of the launch")):
+            with self.subTest(rc=rc_):
+                calls = []
+
+                def obs(places, *a, **k):     # the settle's journal read first (unreadable: the launch line decides)
+                    calls.append(1)
+                    if len(calls) == 1:
+                        return [observe.Observation(p, why="x") for p in places]
+                    return [observe.Observation(p, ok=True, attempts_ok=True, observed_at=time.time(), jobs=[
+                        observe.Job("", "r", "ENDED", log=log, source="pid", rc={"rc": rc_, "term": "0"})])
+                        for p in places]
+                name = f"r{rc_}"
+                self.answers = [self.plan_reply(kind="nohup", target="ws", name=name), Nohup.started(self)]
+                with mock.patch.object(observe, "observe", obs), mock.patch.object(X.time, "sleep"), \
+                        mock.patch("remote_run.status.digest", return_value=OK) as dg:
+                    rc, text = self.cli("launch", "-T", "ws", "-N", name, "--check-after", "10", "--", "c")
+                self.assertEqual(rc, want, text)
+                self.assertIn(f"({log}): {line}", text)
+                if want == FAILED:
+                    self.assertEqual(dg.call_args[0][1], log)          # the box run's digest: its log, never a pid
+
+    def test_the_refresh_runs_before_plan_submits_too(self):
+        self.answers = [self.plan_reply()]
+        rc, text = self.cli("launch", "-T", "fx", "-n", f"{self.RUN}--a01", "--", "python", "t.py")
+        self.answers = [self.submitted()]
+        with mock.patch.object(X, "refresh") as rf:
+            self.assertEqual(self.cli("launch", "--plan", self.plan_id(text), "--approve", "go")[0], OK)
+        self.assertEqual(rf.call_args[0][3], {self.RUN})
+
+    def test_the_refresh_for_a_name_the_conf_resolves(self):
+        self.submit_a01()
+        self.answers = [self.plan_reply(name=f"{self.RUN}--a02", prior="1")]     # no -n: the plan names it
+        with self.reads(("FAILED", "101", "2:0")):
+            rc, text = self.cli("launch", "-T", "fx", "--", "python", "t.py")
+        self.assertEqual(rc, NEEDS_USER, text)
+        self.assertIn(f"{self.RUN} a01 on fx: SUBMITTED -> FAILED", text)
+
+    def test_the_refresh_window_nonces_and_only_live_attempts(self):
+        old = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 10 * 86400))
+        self.led.record_attempt(name=f"{self.RUN}--a01", target="fx", kind="slurm", nonce="n-old", submit="submitted",
+                                job="11", at=old)
+        self.led.record_attempt(name=f"{self.RUN}--a02", target="fx", kind="slurm", nonce="n-unk", submit="unknown")
+        asked = []
+
+        def obs(places, days, deadline, nonces=None, comments=None):
+            asked.append((days, nonces, comments))
+            return [observe.Observation(p, why="x") for p in places]
+        with mock.patch.object(observe, "observe", obs), contextlib.redirect_stdout(io.StringIO()):
+            X.refresh(self.led, X.paths.harness_src(), self.proj, {self.RUN}, 60.0)
+        self.assertEqual(asked, [(12, {"fx": ["n-unk"]}, {"fx": True})])    # 10 days old + 2; the unknown submit asked
+        ended = self.att("fx", "FAILED", job="6")
+        self.led.update_run("done", lambda rec: rec.setdefault("attempts", {}).update({"a01": ended}) or rec)
+        asked.clear()
+        with mock.patch.object(observe, "observe", obs):
+            X.refresh(self.led, X.paths.harness_src(), self.proj, {"done"}, 60.0)
+        self.assertEqual(asked, [])                                          # nothing live: no read at all
+
+    def test_the_refresh_reads_every_target_it_can(self):
+        self.led.record_attempt(name=f"{self.RUN}--a01", target="gone", kind="slurm", nonce="n-gone",
+                                submit="submitted", job="11")
+        self.led.record_attempt(name=f"{self.RUN}--a02", target="fx", kind="slurm", nonce="n-fx", submit="submitted",
+                                job="12")
+        asked = []
+
+        def obs(places, days, *a, **k):
+            asked.append(([p.target for p in places], days))
+            return [seen(p, "FAILED", "12", "1:0") for p in places]
+        buf = io.StringIO()
+        with mock.patch.object(observe, "observe", obs), contextlib.redirect_stdout(buf):
+            X.refresh(self.led, X.paths.harness_src(), self.proj, {self.RUN}, 60.0)
+        self.assertEqual(asked, [(["fx"], 2)])                        # the target it can read, 2 days back
+        self.assertIn("as live on gone, which this conf cannot read", buf.getvalue())
+        self.assertIn(f"{self.RUN} a02 on fx: SUBMITTED -> FAILED", buf.getvalue())
 
 
 if __name__ == "__main__":

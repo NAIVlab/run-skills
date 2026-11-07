@@ -12,7 +12,8 @@ What may be stopped (the user's policy, §U of the P3 contract):
     --asked, may name it instead (the user is never asked twice; the question is the agent's own text: bookkeeping,
     not proof — rsk does not read whether the answer was a yes) — else exit 4 `needs user: the words do not name
     <J|RUN>`, nothing recorded or cancelled (R8-2: "cancel job 101" never approves 102; a yes to "cancel sw1?" never
-    approves sw2). Then --approve "their words" records a cancel approval naming exactly those job(s) (its quote the
+    approves sw2; and words that repeat a standing grant's quote — grants.recycled — are exit 4 too, before anything).
+    Then --approve "their words" records a cancel approval naming exactly those job(s) (its quote the
     words, its source the asked question; the audit lines carry it too),
     each bound to the identity it was asked for (Slurm: target, job id, run name, WorkDir; nohup: target, pid, start,
     boot_id), for 1 h — acted on once the identity check passes, and used up by that first cancel whatever its
@@ -420,6 +421,7 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     if asked is not None and (words is None or not asked.strip()):
         raise RskError("--asked takes your question the user answered, verbatim (non-empty), and goes with --approve "
                        "\"<their answer>\"", USAGE)
+    grants.refuse_recycled(words, led.state().grants, "this cancel")
     asked = asked or ""
     if not args.run and not args.job:
         raise RskError("rsk cancel RUN | --job J -T T", USAGE)

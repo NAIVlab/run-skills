@@ -38,6 +38,15 @@ class Allowlist(unittest.TestCase):
             with self.subTest(argv=argv):
                 remote_exec.check(argv)
 
+    def test_mfs_directory_quota_reads_only(self):   # mfsgetquota's own usage (as its client prints it):
+        # usage: mfsgetquota [-?] [-nhHkmg] directory [directory ...] — number formats only; mfssetquota sets one
+        for argv in (["mfsgetquota", "-h", "/data/lab"], ["mfsgetquota", "-H", "."], ["mfsgetquota", "-n", "a", "b"],
+                     ["mfsgetquota", "-hg", "/data/lab"]):
+            with self.subTest(argv=argv):
+                remote_exec.check(argv)
+        self.refused(["mfsgetquota", "-s", "1T", "/g"], ["mfsgetquota", "--soft=1T", "/g"], ["mfssetquota", "/g"],
+                     ["mfsgetquota", "-x", "/g"], ["mfsgetquota", "-h", "/g;", "rm"])
+
     def test_nvidia_smi_queries_only(self):         # -f writes its output to a file; subcommands set, reset or write
         self.refused(["nvidia-smi", "-f", "train.py"], ["nvidia-smi", "--filename=x"], ["nvidia-smi", "-q", "-f", "x"],
                      ["nvidia-smi", "-qf", "x"], ["nvidia-smi", "dmon", "-f", "x"], ["nvidia-smi", "pmon"],

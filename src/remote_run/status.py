@@ -19,7 +19,9 @@ It also reads the local ledger (ledger.py) and records what it saw there — nev
   the NOTE for a partition its profile's T_PARTITIONS display list does not name: R7-6), and `needs user:` lines. A
   needs-user line names the decision, never a ready-to-run --approve command (the user's words come first). A ledger that cannot be written (read-only state dir, a full disk) is a warning: the
   view is still printed, nothing recorded.
-logs: the deployed bounded digest (remote/status.sh) for one job id or log path — the one monitoring read.
+logs: the deployed bounded digest (remote/status.sh) for one job id or log path — the monitoring read; logs --grep:
+rsk's own bounded `tail -c B | <status.sh's normaliser> | grep -a -E|-F [-i] -e … | tail -n N` of one project log
+(grep_body: B ≤ GREP_MAX_BYTES, output ≤ GREP_CAP; a job id resolved as status.sh resolves it).
 """
 
 from __future__ import annotations
@@ -482,25 +484,141 @@ DIGEST = r'''rs_digest() {
 rs_digest'''
 
 
-def cmd_logs(args: argparse.Namespace) -> int:
-    proj = project_dir(args.dir)
-    place = select(harness.places(paths.harness_src(), proj), [args.target])[0]
-    argv = ["-n", str(args.lines), args.run] + ([args.ckpt] if args.ckpt else [])
+def digest(place: harness.Place, run: str, lines: int = 5, ckpt: str = "", deadline: float = 60.0) -> int:
+    """The deployed status.sh digest of one run (a Slurm job id or a log path), printed as it comes; its exit code."""
+    argv = ["-n", str(lines), run] + ([ckpt] if ckpt else [])
     body = (f"RDIR={shlex.quote(place.remote_dir)} DEPLOY={shlex.quote(place.deploy)} TGT={shlex.quote(place.target)}\n"
             + DIGEST + " " + " ".join(shlex.quote(a) for a in argv) + "\n")
+    sys.stdout.flush()
     try:
         done = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=30", place.host, "bash -s"],
-                              input=body, text=True, timeout=args.deadline)
+                              input=body, text=True, timeout=deadline)
     except subprocess.TimeoutExpired:
-        print(f"rsk logs: no answer from {place.host} within {args.deadline:.0f} s — state unknown", flush=True)
+        print(f"rsk logs: no answer from {place.host} within {deadline:.0f} s — state unknown", flush=True)
         return UNKNOWN
-    rc = done.returncode
+    return _digest_rc(done.returncode)
+
+
+def _digest_rc(rc: int) -> int:
     if rc in (0, 2, 66):   # 2: status.sh's own usage error, 66: no dir / no deployed status.sh (both said above)
         return OK if rc == 0 else USAGE
     if rc == 255:          # ssh's own failure (its message is above): the run's state is unknown
         return UNKNOWN
     print(f"rsk logs: status.sh exit {rc}", flush=True)
     return FAILED
+
+
+GREP_BYTES = 8 << 20          # rsk logs --grep: the window from the log's end it searches (default)
+GREP_MAX_BYTES = 64 << 20     # … and at most (status.sh reads its markers from the last 64 MiB too)
+GREP_CAP = 1 << 16            # bytes of matching lines shown at most
+
+
+# the `[<date>] ` a harness marker carries (remote/status.sh's TS, literally): a log header `target=<t> job=<id> restart=`
+_TS = r'\[[^]]{0,60}[0-9][0-9][^]0-9]+[0-9][0-9][^]]{0,20}\] '
+# remote/status.sh's norm(): CR -> newline (a tqdm line is one CR-separated stretch), ANSI escapes and control bytes out
+_NORM = r"tr '\r' '\n' | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' | tr -d '\000-\010\013-\037\177'"
+GREP_LINE = 4096              # a matching line longer than this shows its LAST GREP_LINE characters, after '...'
+_CLIP = f"awk -v m={GREP_LINE} '{{ if (length($0) > m) $0 = \"...\" substr($0, length($0) - m + 1); print }}'"
+
+
+def grep_body(place: harness.Place, run: str, pats: list[str], lines: int, nbytes: int, fixed: bool,
+              icase: bool) -> str:
+    """The remote script of `rsk logs --grep`: rsk's own fixed pipeline — the last NBYTES of ONE log of this project,
+    normalised as status.sh does (CR -> newline, ANSI / control bytes out), grep -a for the patterns (each one word,
+    -e), the last LINES matches, at most GREP_CAP bytes. The log: a Slurm job id resolves as status.sh resolves it
+    (logs/*_<id>.out, regular files; several, or a project dir two targets share: the one whose header names THIS
+    target, else refused — pass the path; an unreadable candidate refuses too); else a relative path under the project
+    dir, checked like rsk exec's reads. No pattern is ever shell text; an unreadable log is said, never 'no match'."""
+    from remote_run.remote_exec import project_file
+    if not pats or any(not p or "\n" in p or "\r" in p or "\0" in p for p in pats):
+        raise RskError("rsk logs --grep: a non-empty pattern per --grep, on one line", USAGE)
+    if not 1 <= lines <= 1000:
+        raise RskError("rsk logs --grep: -n 1..1000 matching lines", USAGE)
+    if not 1 <= nbytes <= GREP_MAX_BYTES:
+        raise RskError(f"rsk logs --grep: --bytes 1..{GREP_MAX_BYTES}", USAGE)
+    if re.fullmatch(r"[0-9]+", run):
+        if place.kind != "slurm":
+            raise RskError("rsk logs --grep: a workstation target takes the log path (logs/<name>-<timestamp>.log), "
+                           "not a number", USAGE)
+        jid = run.lstrip("0")
+        if not jid:
+            raise RskError(f"rsk logs --grep: {run!r} is not a job id", USAGE)
+        g = f"logs/*_{jid}.out"
+        pick = (f'TS={shlex.quote(_TS)}; f=""; n=0; m=0; rfail=0; ft=""; set --\n'
+                f'  for c in logs/*_{jid}.out; do [ -f "$c" ] || continue; n=$((n+1)); set -- "$@" "$c"; done\n'
+                '  for c in "$@"; do\n'
+                '    hdr=$(head -c 4096 "$c" 2>/dev/null) || { rfail=1; continue; }\n'
+                f'    t=$(printf \'%s\\n\' "$hdr" | grep -aoE "$TS""target=[^[:space:]]+ job={jid} restart=" | head -n 1 '
+                "| sed 's/.*\\] target=//; s/ job=.*//')\n"
+                '    if [ -n "$t" ] && [ "$t" = "$TGT" ]; then f=$c; m=$((m+1)); elif [ -n "$t" ]; then ft=$t; '
+                'elif [ "$n" = 1 ]; then f=$c; m=1; fi\n'
+                '  done\n'
+                f'  if [ "$rfail" = 1 ]; then echo "rsk logs: a candidate {g} could not be read — pass the log path"; return 66\n'
+                f'  elif [ "$n" = 0 ]; then echo "rsk logs: no log of job {jid} under logs/ ({g})"; return 66\n'
+                f'  elif [ "$m" -gt 1 ]; then echo "rsk logs: $n files match {g} and more than one names $TGT — pass the log '
+                'path"; return 66\n'
+                f'  elif [ "$m" = 0 ] && [ -n "$ft" ] && [ "$n" = 1 ]; then echo "rsk logs: {g} belongs to target $ft, not '
+                '$TGT"; return 66\n'
+                f'  elif [ "$m" = 0 ]; then echo "rsk logs: $n files match {g} and none names target $TGT — pass the log '
+                'path"; return 66; fi\n')
+    else:
+        project_file("rsk logs --grep", run, "")
+        pick = (f'f={shlex.quote(run)}\n'
+                '  [ -f "$f" ] || { echo "rsk logs: no file $f in the project dir"; return 66; }\n')
+    opts = " ".join(["-a"] + (["-F"] if fixed else ["-E"]) + (["-i"] if icase else [])
+                    + [x for p in pats for x in ("-e", shlex.quote(p))])
+    return (f"RDIR={shlex.quote(place.remote_dir)} TGT={shlex.quote(place.target)}\n"
+            'rs_grep() {\n  case "$RDIR" in "~/"*) RDIR="$HOME/${RDIR#\\~/}" ;; esac\n'
+            '  cd "$RDIR" 2>/dev/null || { echo "rsk logs: cannot cd to $RDIR"; return 66; }\n'
+            f"  {pick}"
+            '  [ -r "$f" ] || { echo "rsk logs: cannot read $f"; return 66; }\n'
+            f'  tail -c {nbytes} -- "$f" | {_NORM} | grep {opts} | tail -n {lines} | {_CLIP}\n'
+            '  s=("${PIPESTATUS[@]}")\n'
+            '  [ "${s[4]}" -le 1 ] || return 2   # grep refused a pattern (its message is above): the stages before it then\n'
+            '  [ "${s[0]}" = 0 ] || { echo "rsk logs: cannot read $f (tail exit ${s[0]})"; return 66; }   # die of SIGPIPE\n'
+            '  [ "${s[1]}${s[2]}${s[3]}" = 000 ] || { echo "rsk logs: the log could not be normalised (exits ${s[1]} ${s[2]} ${s[3]}) '
+            '— unknown"; return 1; }\n'
+            f'  [ "${{s[4]}}" != 1 ] || echo "rsk logs: no line matches in the last {nbytes} bytes of $f"\n'
+            '  return 0\n}\n'
+            f"rs_grep 2>&1 | head -c {GREP_CAP}; exit ${{PIPESTATUS[0]}}\n")
+
+
+def grep_log(place: harness.Place, run: str, pats: list[str], lines: int, nbytes: int, fixed: bool, icase: bool,
+             deadline: float) -> int:
+    body = grep_body(place, run, pats, lines, nbytes, fixed, icase)
+    try:
+        done = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=30", place.host, "bash -s"],
+                              input=body.encode(), capture_output=True, timeout=deadline)
+    except subprocess.TimeoutExpired:
+        print(f"rsk logs: no answer from {place.host} within {deadline:.0f} s — unknown", flush=True)
+        return UNKNOWN
+    text = done.stdout.decode("utf-8", errors="replace")
+    print(text, end="" if text.endswith("\n") or not text else "\n", flush=True)
+    if len(done.stdout) >= GREP_CAP:
+        print(f"[rsk logs: output cut at {GREP_CAP} bytes — fewer lines (-n) or a narrower pattern]", flush=True)
+    rc = done.returncode
+    if rc == 255:
+        print(f"rsk logs: ssh failed: {done.stderr.decode('utf-8', errors='replace').strip()[:200]}", flush=True)
+        return UNKNOWN
+    if rc == 0 or (rc == 141 and len(done.stdout) >= GREP_CAP):
+        return OK
+    if rc in (2, 66):     # a pattern grep refused, no such log / dir (its message is above)
+        return USAGE
+    print(f"rsk logs: remote exit {rc}", flush=True)
+    return FAILED
+
+
+def cmd_logs(args: argparse.Namespace) -> int:
+    proj = project_dir(args.dir)
+    place = select(harness.places(paths.harness_src(), proj), [args.target])[0]
+    if args.grep:
+        if args.ckpt:
+            raise RskError("rsk logs --grep searches one log: no checkpoint dir beside it", USAGE)
+        return grep_log(place, args.run, args.grep, 20 if args.lines is None else args.lines,
+                        GREP_BYTES if args.bytes is None else args.bytes, args.fixed, args.ignore_case, args.deadline)
+    if args.fixed or args.ignore_case or args.bytes is not None:
+        raise RskError("rsk logs: -F / -i / --bytes go with --grep PATTERN", USAGE)
+    return digest(place, args.run, 5 if args.lines is None else args.lines, args.ckpt, args.deadline)
 
 
 def add_parsers(sub) -> None:
@@ -516,8 +634,18 @@ def add_parsers(sub) -> None:
     g = sub.add_parser("logs", help="the bounded digest of one run (remote status.sh) — read-only")
     g.add_argument("-T", "--target", required=True)
     g.add_argument("-C", dest="dir", default=None, help="project root (default: the current directory)")
-    g.add_argument("-n", dest="lines", type=int, default=5, help="displayed log lines (status.sh caps at 200)")
+    g.add_argument("-n", dest="lines", type=int, default=None, help="displayed log lines (default 5; status.sh caps "
+                   "at 200) — with --grep: the last N matching lines (default 20, at most 1000)")
+    g.add_argument("--grep", action="append", default=[], metavar="PATTERN",
+                   help="only the lines of the log that match (repeatable: any of them), from its last --bytes — "
+                   "rsk's own bounded tail | grep | tail on the target, never a shell pipe of yours (extended regex; "
+                   "-F fixed strings, -i case-insensitive)")
+    g.add_argument("-F", "--fixed-strings", dest="fixed", action="store_true")
+    g.add_argument("-i", "--ignore-case", dest="ignore_case", action="store_true")
+    g.add_argument("--bytes", type=int, default=None, metavar="B",
+                   help=f"--grep searches the last B bytes of the log (default {GREP_BYTES}, at most {GREP_MAX_BYTES})")
     g.add_argument("--deadline", type=float, default=60.0)
-    g.add_argument("run", help="Slurm job id, or a log path (absolute or relative to the project dir)")
+    g.add_argument("run", help="Slurm job id, or a log path (absolute or relative to the project dir; --grep: "
+                   "relative, under it)")
     g.add_argument("ckpt", nargs="?", default="", help="checkpoint dir to report activity of (optional)")
     g.set_defaults(func=cmd_logs)

@@ -79,6 +79,7 @@ partition's MaxTime → a singleton segment chain (conventions §6): the plan st
 ```
 rsk launch -T <t> -p <partition> -g <ngpu> [-G <gputype>] [-t <time>] [-m <mem>] [-c <cpus>] [-n <name>] [--chain N] [--class C] [--<policy-flag>] -- <RUN>
 rsk launch --plan <id> [--plan <id>]... --approve "<the user's words>"     # the card(s) the user approved: submit
+rsk launch … --check-after 30                                              # + the start milestone: one read 30 s later
 ssh <host> 'bash <REMOTE_DIR>/.<t>/submit.sh -p <partition> -g <ngpu> [-G <gputype>] [-t <time>] [-m <mem>] [-c <cpus>] [-n <name>] [-y] -- <RUN>'   # without rsk
 ```
 `rsk launch` drives this `submit.sh`: one ssh with `--rs-mode plan` (below) for the card, then, once a record covers
@@ -102,7 +103,18 @@ closed)`. A relaunch grant covers it only when the run's latest attempt that ran
 ended with an infrastructure end (PREEMPTED / NODE_FAIL / BOOT_FAIL) and the plan repeats that attempt's configuration
 (else `not the configuration of aNN it resumes`; a plan named after an older attempt, `<run>--a01` again, is recorded as
 the next aNN) — never a run only the journal shows (`the ledger has no earlier attempt of the run that ran`: the user's
-call) —, the user's approval of the card after any end; a `chain=1` plan (an `SBATCH_EXTRA`
+call) —, the user's approval of the card after any end, and a grant recorded with `--relaunch-after any` (the user's
+words hand you re-runs too: "fix it and rerun it yourself", "you decide, after a failure too"; the grant allows `launch`
+too) after any end too: judged then as a launch — scope, budgets, warnings, denies, whatever the configuration (a fixed
+command, another partition) — but never while an earlier attempt rsk can see may still be live (a ledger one live or
+SUBMIT_UNKNOWN on any target, or one only the target's journal shows: its `info_prior_here` counts more than the ledger
+holds there; the plan at most 10 min old). Before deciding, `rsk launch` re-reads every target where the ledger counts
+an attempt of the run as live (the read `rsk status` makes), so a job that just ended is neither refused as a duplicate
+nor an unknown end (a target it cannot read changes nothing). `--check-after S` reads each submission (every chain
+segment) once more S seconds after the submit: pending / running, COMPLETED, or ended otherwise — its state, exit code
+and digest, exit 1 (it was launched; a fix and a relaunch are a new decision). `--approve` words that repeat a standing
+grant's quote (or embed it) are exit 4, also for cancel, `rsk watch`, `adopt`, `sync -D`, `bootstrap --job`: an approval
+answers this card; a `chain=1` plan (an `SBATCH_EXTRA`
 `--dependency=singleton` too) is a `chain`, and every one that applies is checked (a deny of any matches, also one whose
 fact is unknown: a run with an attempt recorded without a class matches a class deny; a record must allow all); the
 card's header says which (`plan <id> — relaunch on <t> …`). Its
@@ -243,6 +255,8 @@ plan is a card to show the user, not an approval: the user's words (or a grant r
 ```
 rsk status -T <t>                                                    # every job of this project: ledger runs, unledgered jobs, needs user:
 rsk logs -T <t> <jobid> [<ckpt-dir>] [-n 40]                         # the same digest as below, from the local project root
+rsk logs -T <t> <jobid> --grep 'loss|Traceback' [-i] [-n 20]         # only matching lines of the log's last 8 MiB (--bytes B ≤ 64 MiB)
+rsk exec -T <t> -- mfsgetquota -h <dir>                              # a directory quota `quota` cannot show, where the target reference names one
 ssh <host> 'bash <REMOTE_DIR>/.<t>/status.sh <jobid> [<ckpt-dir>]'     # review digest (~2 KB): job state, attempt/footer, hints, last 5 lines, ckpt-dir activity
 ssh <host> 'bash <REMOTE_DIR>/.<t>/status.sh -n 40 <jobid>'            # deep read on an anomaly: 40 lines × 200 chars, still byte-bounded
 ssh <host> 'squeue -u $USER -o "%.10i %.12P %.3t %.11M %.11L %R %j"'   # everything of yours; %R = pending reason, %j last = full name

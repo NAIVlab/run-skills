@@ -37,11 +37,11 @@ rsk avail [--type T] [--min N]                    # placement left open: free GP
 rsk sync -T <t> [-n] [--also <path>]              # push code + deploy the harness (run-sync; -n dry run first on a new project; -D prune: only with --approve "<their words>")
 rsk bootstrap -T <t> [--job -p <partition>]       # first run / deps changed: uv sync the target venv, or verify the conda env (run-bootstrap; --job: --approve "<their words>")
 rsk launch -T <t> [Slurm: -p P -g N -G TYPE -t TIME -n NAME --chain N | box: -g N or -d IDS [--gpu-busy-ok], -N NAME] [--class C] -- <RUN>
-rsk launch --plan <id> [--plan <id>]... --approve "<the user's words>"   # submit the card(s) the user approved
+rsk launch --plan <id> [--plan <id>]... --approve "<the user's words>"   # submit the card(s) the user approved (+ --check-after 30: start milestone)
 rsk launch --relaunch <run>                       # the run's next attempt (aNN) with its recorded configuration
-rsk logs -T <t> <jobid|log> [<ckpt-dir>] [-n 40]  # start a review: the deployed status.sh digest of one run, byte-bounded (-n 40 = deep read)
+rsk logs -T <t> <jobid|log> [<ckpt-dir>] [-n 40]  # start a review: the status.sh digest, byte-bounded (-n 40 = deep read; or <jobid|relative log> --grep PAT: matching lines)
 rsk exec -T <t> -- <cmd> [args]                   # ONE bounded read in the remote project dir instead of a raw ssh: squeue sacct sinfo nvidia-smi
-                                                  #   ps df ls stat, head/tail -c N <relative path>, …; no pipes, no $VAR (write values out)
+                                                  #   ps df ls stat quota mfsgetquota, head/tail -c N <relative path>, …; no pipes, no $VAR
 rsk watch <table> [--act] [--once] [--for S]      # many jobs or long waits: run-watch under the project's lease (procedure §5); --act: every row checked against the denies
 rsk watch <table> --approve "<the user's words>"  # their OK of the shown rows + `#@ allow` (Slurm); --act / --approve go through rsk watch only
 rsk cancel <run> [--job <id|pid>] [--approve "<their words>" [--asked "<your question>"]]   # identity check, then scancel / TERM → KILL
@@ -69,29 +69,34 @@ and for anything they do not cover print a one-line plan and wait for their go.
 Do not ask again for what the user already allowed; check every action against it. Before every launch, relaunch,
 resubmit or cancel, check for an existing authorisation first (`rsk launch` / `rsk cancel` check the project's ledger:
 approvals, grants, denies); act when it covers the action, ask only when it does not.
-- "Run this set on this target", "you decide", "auto-resume preemptions within N": record it once, `rsk grant add --quote
-  "<their words>" --action launch|relaunch|chain|cancel_own -T <t> [--partition P] [--name '<glob>'] [--max-gpus N]
-  [--max-time T] [--allow-warnings availability|any] --max-live N|none --max-launches N|none --expires <date>|none` —
-  exactly the scope and limits they stated (`none` where they set none; unclear → ask). Never invent a grant, never widen
-  one. "Never X" → `rsk grant deny --quote "<their words>" …`: a deny always wins (`rsk watch --act` too) and matches
-  what it cannot rule out (a job without a plan, a watch row, a run of unknown class). `--job` is for cancels only: a
-  run's launches are denied with `--name '<run>'` (exit 2 otherwise) — an attempt's name (`<run>--a02`, `<run>--a*`)
-  stands for the run; `-T` must name a target the harness knows (exit 2 `unknown target`); a `--partition` the target's
-  `T_PARTITIONS` display list lacks is exit 2 too: check the spelling with the user — one they confirm is real (policy.sh
-  decides) takes `--unlisted-partition` and is recorded with a NOTE (GPU types are never checked). List flags split on
-  commas (`--name 'b1, b2'` is two); an empty item or one holding a space is exit 2. A deny naming a run with
-  `relaunch`/`resubmit` stops every launch of it on any target in its scope (rsk cannot see every earlier attempt):
-  record "if a fails, don't relaunch it" only once a has run. `rsk grant list`, `rsk status` and `rsk doctor` flag a
-  record naming a target the harness does not know (`never matches`). A sweep they approved shares one approval, never
-  one question each. The action is the plan's, never a flag's: a run that ran before = `relaunch`, a
-  singleton chain = `chain` (each one that applies is checked; a run ran before also when only the target's journal
-  shows it — run-watch's runs never enter the ledger: the plan's `info_prior` —, and a deploy that cannot say counts as
-  one: fail closed); a run's class is set only at its first attempt.
-- Preemption recovery they authorised runs within its budget: a requeueing partition restarts the job itself; else
-  `rsk watch <table> --act` resubmits approved rows within `#@ allow preempt=N`, or `rsk launch --relaunch <run>` under a
+- "Run this set on this target", "you decide", "auto-resume preemptions within N": record it once, `rsk grant add
+  --quote "<their words>" --action launch|relaunch|chain|cancel_own -T <t> [--partition P] [--name '<glob>'] [--max-gpus
+  N] [--max-time T] [--allow-warnings availability|any] [--relaunch-after any] --max-live N|none --max-launches N|none
+  --expires <date>|none` — exactly the scope and limits they stated (`none` where they set none; unclear → ask). Never
+  invent a grant, never widen one. `--approve` records their answer to what is on screen, never earlier words (a
+  standing grant's quote again: exit 4 — a wider grant takes their new words, never the old ones). "Never X" → `rsk
+  grant deny --quote "<their words>" …`: a deny always wins (`rsk watch --act` too) and matches what it cannot rule out
+  (a job without a plan, a watch row, a run of unknown class). `--job` is for cancels only: a run's launches are denied
+  with `--name '<run>'` (exit 2 otherwise) — an attempt's name (`<run>--a02`, `<run>--a*`) stands for the run; `-T` must
+  name a target the harness knows (exit 2 `unknown target`); a `--partition` the target's `T_PARTITIONS` display list
+  lacks is exit 2 too: check the spelling with the user — one they confirm is real (policy.sh decides) takes
+  `--unlisted-partition` and is recorded with a NOTE (GPU types are never checked). List flags split on commas (`--name
+  'b1, b2'` is two); an empty item or one holding a space is exit 2. A deny naming a run with `relaunch`/`resubmit`
+  stops every launch of it on any target in its scope (rsk cannot see every earlier attempt): record "if a fails, don't
+  relaunch it" only once a has run. `rsk grant list`, `rsk status` and `rsk doctor` flag a record naming a target the
+  harness does not know (`never matches`). A sweep they approved shares one approval, never one question each. The
+  action is the plan's, never a flag's: a run that ran before = `relaunch`, a singleton chain = `chain` (each one that
+  applies is checked; a run ran before also when only the target's journal shows it — run-watch's runs never enter the
+  ledger: the plan's `info_prior` —, and a deploy that cannot say counts as one: fail closed); a run's class is set only
+  at its first attempt.
+- Preemption recovery they authorised runs within its budget: a requeueing partition restarts the job itself; else `rsk
+  watch <table> --act` resubmits approved rows within `#@ allow preempt=N`, or `rsk launch --relaunch <run>` under a
   `relaunch` grant (the configuration of the run's latest attempt that ran, and only after an infrastructure end — Slurm
   PREEMPTED / NODE_FAIL / BOOT_FAIL, box REBOOT; never CANCELLED, COMPLETED, FAILED, TIMEOUT, OUT_OF_MEMORY or unknown;
-  an approved card: any end). "Stop the rest of the group if one fails" = `#@ allow … fail-stop`.
+  an approved card: any end). Words that hand you re-runs too ("fix it and rerun it yourself", "you decide, after a
+  failure too") → `--action launch,relaunch --relaunch-after any`: a relaunch after any end (a bug fixed, a run moved),
+  judged as a launch, never while an earlier attempt rsk can see may be live; rsk re-reads a run the ledger counts as
+  live first. "Stop the rest of the group if one fails" = `#@ allow … fail-stop`.
 - Ask first: a charged partition, more resources or a wider scope than authorised. A plan with warnings is never
   grant-covered unless their words allowed it (`--allow-warnings availability` = only the harness's availability gate,
   `any` = every -y gate, a charged partition's too — only when their words say so); nor is a card with policy flags,
