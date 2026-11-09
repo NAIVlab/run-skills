@@ -144,6 +144,7 @@ trainer that cannot resume from a checkpoint. Nothing runs until you say go.
 
 ## How a run happens
 
+![Where each piece of run-skills runs; the numbered arrows follow one run, the block below lists it](docs/architecture.svg)
 ```text
  agent reads references/INDEX.md ──► picks the target (run-avail first when you left it open) ──► reads its reference.md
    │

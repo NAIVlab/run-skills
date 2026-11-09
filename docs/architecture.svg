@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 470" width="760" height="470" role="img" aria-labelledby="t d">
+<title id="t">How run-skills is put together</title>
+<desc id="d">On your machine, you ask a coding agent for a run. The agent reads the remote-run skill, whose index is built from one directory per target, and runs the harness: local commands that sync the code and build the environment, and rsk, which plans each launch on the target, checks it against what you already allowed, then submits it or asks you, and reads the run's status. On each Slurm cluster or GPU workstation, your project directory holds the code and the deployed harness: the submit or launch scripts, the site's policy on a cluster, and a status script that returns a small digest. Logs, checkpoints and model and wandb caches stay there; the environment does too unless the target's storage policy moves it.</desc>
+<defs><marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,1 L9,5 L0,9 z" fill="#6f767c"/></marker><marker id="tail" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,1 L1,5 L10,9 z" fill="#6f767c"/></marker></defs>
+<rect x="0" y="0" width="760" height="470" rx="12" fill="#fff" stroke="none" stroke-width="1"/>
+<rect x="0.5" y="0.5" width="443" height="469" rx="12" fill="#f4f6f7" stroke="#dde1e4" stroke-width="1"/>
+<rect x="503.5" y="0.5" width="256" height="469" rx="12" fill="#f4f6f7" stroke="#dde1e4" stroke-width="1"/>
+<text x="16" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="700" fill="#2f3438" text-anchor="start">Your machine</text>
+<text x="520" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="700" fill="#2f3438" text-anchor="start">Each target</text>
+<text x="520" y="43" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#6b7075" text-anchor="start">a Slurm cluster or a GPU workstation</text>
+<rect x="16" y="44" width="96" height="58" rx="8" fill="#fff" stroke="#b06a3b" stroke-width="1.6"/>
+<text x="64" y="78" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="700" fill="#2f3438" text-anchor="middle">You</text>
+<rect x="190" y="44" width="238" height="58" rx="8" fill="#fff" stroke="#c3c9ce" stroke-width="1"/>
+<text x="204" y="67" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="700" fill="#2f3438" text-anchor="start">Coding agent</text>
+<text x="204" y="86" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4a5056" text-anchor="start">Claude Code, Codex or pi</text>
+<path d="M113,62 H188" fill="none" stroke="#6f767c" stroke-width="1.4" marker-end="url(#head)"/>
+<circle cx="138.5" cy="53" r="8.5" fill="#2f3438"/>
+<text x="138.5" y="56.8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="10.5" font-weight="700" fill="#fff" text-anchor="middle">1</text>
+<text x="152.0" y="57" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" fill="#2f3438" stroke="#f4f6f7" stroke-width="4" stroke-linejoin="round" paint-order="stroke">ask</text>
+<path d="M189,86 H114" fill="none" stroke="#6f767c" stroke-width="1.4" marker-end="url(#head)"/>
+<circle cx="135.5" cy="97" r="8.5" fill="#2f3438"/>
+<text x="135.5" y="100.8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="10.5" font-weight="700" fill="#fff" text-anchor="middle">4</text>
+<text x="149.0" y="101" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" fill="#2f3438" stroke="#f4f6f7" stroke-width="4" stroke-linejoin="round" paint-order="stroke">card</text>
+<rect x="16" y="140" width="154" height="84" rx="8" fill="#fff" stroke="#c3c9ce" stroke-width="1"/>
+<text x="28" y="160" font-family="Menlo, Monaco, Consolas, 'DejaVu Sans Mono', monospace" font-size="12.5" font-weight="700" fill="#2f3438" text-anchor="start">remote-run</text>
+<text x="28" y="178" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#4a5056" text-anchor="start">the skill: an index of</text>
+<text x="28" y="193" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#4a5056" text-anchor="start">your targets and one</text>
+<text x="28" y="208" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#4a5056" text-anchor="start">page about each</text>
+<path d="M230,103 V120 H93 V138" fill="none" stroke="#6f767c" stroke-width="1.4" marker-end="url(#head)"/>
+<text x="206" y="116" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#6b7075" text-anchor="middle">reads</text>
+<rect x="16" y="258" width="154" height="196" rx="8" fill="#fff" stroke="#c3c9ce" stroke-width="1"/>
+<text x="28" y="278" font-family="Menlo, Monaco, Consolas, 'DejaVu Sans Mono', monospace" font-size="12.5" font-weight="700" fill="#2f3438" text-anchor="start">targets/</text>
+<text x="28" y="296" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#4a5056" text-anchor="start">one directory for each</text>
+<text x="28" y="311" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#4a5056" text-anchor="start">cluster or workstation</text>
+<text x="28" y="334" font-family="Menlo, Monaco, Consolas, 'DejaVu Sans Mono', monospace" font-size="11" font-weight="400" fill="#2f3438" text-anchor="start">profile.sh</text>
+<text x="28" y="349" font-size="11" fill="#4a5056" text-anchor="start"><tspan font-family="Menlo, Monaco, Consolas, 'DejaVu Sans Mono', monospace" font-weight="400">policy.sh</tspan><tspan font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-weight="400"> on a cluster</tspan></text>
+<text x="28" y="364" font-family="Menlo, Monaco, Consolas, 'DejaVu Sans Mono', monospace" font-size="11" font-weight="400" fill="#2f3438" text-anchor="start">reference.md</text>
+<text x="28" y="387" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#4a5056" text-anchor="start">facts and rules, not</text>
+<text x="28" y="402" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#4a5056" text-anchor="start">code; yours, or a lab&#x27;s</text>
+<text x="28" y="417" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#4a5056" text-anchor="start">shared pack</text>
+<path d="M93,257 V226" fill="none" stroke="#6f767c" stroke-width="1.4" marker-end="url(#head)"/>
+<text x="100" y="245" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#6b7075" text-anchor="start">indexed</text>
+<rect x="190" y="140" width="238" height="314" rx="8" fill="#fff" stroke="#c3c9ce" stroke-width="1"/>
+<path d="M330,103 V138" fill="none" stroke="#6f767c" stroke-width="1.4" marker-end="url(#head)"/>
+<text x="337" y="125" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#6b7075" text-anchor="start">runs</text>
+<text x="204" y="161" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="700" fill="#2f3438" text-anchor="start">Local commands</text>
+<text x="204" y="179" font-family="Menlo, Monaco, Consolas, 'DejaVu Sans Mono', monospace" font-size="11" font-weight="400" fill="#4a5056" text-anchor="start">run-sync, run-bootstrap,</text>
+<text x="204" y="195" font-family="Menlo, Monaco, Consolas, 'DejaVu Sans Mono', monospace" font-size="11" font-weight="400" fill="#4a5056" text-anchor="start">run-pull, run-avail</text>
+<line x1="190" y1="210" x2="428" y2="210" stroke="#c3c9ce"/>
+<text x="204" y="232" font-size="11.5" fill="#4a5056" text-anchor="start"><tspan font-family="Menlo, Monaco, Consolas, 'DejaVu Sans Mono', monospace" font-weight="700" fill="#2f3438">rsk</tspan><tspan font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-weight="400">  launch, status, logs, cancel</tspan></text>
+<rect x="204" y="246" width="210" height="28" rx="6" fill="#fafbfb" stroke="#c3c9ce" stroke-width="1"/>
+<text x="216" y="264" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="400" fill="#2f3438" text-anchor="start">plan on the target</text>
+<rect x="204" y="288" width="210" height="44" rx="6" fill="#fff" stroke="#b06a3b" stroke-width="1.6"/>
+<text x="216" y="306" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="400" fill="#2f3438" text-anchor="start">covered by what you</text>
+<text x="216" y="321" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="400" fill="#2f3438" text-anchor="start">have already allowed?</text>
+<rect x="204" y="346" width="210" height="28" rx="6" fill="#fafbfb" stroke="#c3c9ce" stroke-width="1"/>
+<text x="216" y="364" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="400" fill="#2f3438" text-anchor="start">submit</text>
+<rect x="204" y="410" width="210" height="28" rx="6" fill="#fafbfb" stroke="#c3c9ce" stroke-width="1"/>
+<text x="216" y="428" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="400" fill="#2f3438" text-anchor="start">status and logs</text>
+<path d="M300,275 V286" fill="none" stroke="#6f767c" stroke-width="1.4" marker-end="url(#head)"/>
+<path d="M300,333 V344" fill="none" stroke="#6f767c" stroke-width="1.4" marker-end="url(#head)"/>
+<text x="307" y="343" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#6b7075" text-anchor="start">yes</text>
+<circle cx="414" cy="288" r="8.5" fill="#2f3438"/>
+<text x="414" y="291.8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="10.5" font-weight="700" fill="#fff" text-anchor="middle">4</text>
+<rect x="518" y="60" width="228" height="396" rx="10" fill="#fbfcfc" stroke="#b9c0c6" stroke-width="1" stroke-dasharray="4 3"/>
+<text x="530" y="80" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#6b7075" text-anchor="start" font-style="italic">your project directory</text>
+<text x="530" y="96" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#6b7075" text-anchor="start" font-style="italic">and, by default, the env</text>
+<rect x="536" y="136" width="196" height="60" rx="8" fill="#fff" stroke="#c3c9ce" stroke-width="1"/>
+<text x="548" y="156" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="700" fill="#2f3438" text-anchor="start">code + harness</text>
+<text x="548" y="173" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#4a5056" text-anchor="start">logs, checkpoints, HF and</text>
+<text x="548" y="188" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#4a5056" text-anchor="start">wandb caches stay in here</text>
+<rect x="536" y="232" width="196" height="156" rx="8" fill="#fff" stroke="#c3c9ce" stroke-width="1"/>
+<text x="548" y="252" font-size="11.5" fill="#4a5056" text-anchor="start"><tspan font-family="Menlo, Monaco, Consolas, 'DejaVu Sans Mono', monospace" font-weight="700" fill="#2f3438">submit.sh</tspan><tspan font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-weight="400"> + </tspan><tspan font-family="Menlo, Monaco, Consolas, 'DejaVu Sans Mono', monospace" font-weight="700" fill="#2f3438">policy.sh</tspan></text>
+<text x="548" y="270" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#4a5056" text-anchor="start">site policy, partition</text>
+<text x="548" y="285" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#4a5056" text-anchor="start">limits, walltime cap,</text>
+<text x="548" y="300" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#4a5056" text-anchor="start">free GPUs</text>
+<line x1="548" y1="314" x2="720" y2="314" stroke="#c3c9ce"/>
+<text x="548" y="334" font-size="11" fill="#4a5056" text-anchor="start"><tspan font-family="Menlo, Monaco, Consolas, 'DejaVu Sans Mono', monospace" font-weight="400">sbatch --requeue</tspan></text>
+<text x="548" y="350" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#4a5056" text-anchor="start">or, on a workstation,</text>
+<text x="548" y="365" font-size="11" fill="#4a5056" text-anchor="start"><tspan font-family="Menlo, Monaco, Consolas, 'DejaVu Sans Mono', monospace" font-weight="400">launch.sh</tspan><tspan font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-weight="400"> with </tspan><tspan font-family="Menlo, Monaco, Consolas, 'DejaVu Sans Mono', monospace" font-weight="400">nohup</tspan></text>
+<text x="548" y="380" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#4a5056" text-anchor="start">on the idlest free GPUs</text>
+<rect x="536" y="404" width="196" height="40" rx="8" fill="#fff" stroke="#c3c9ce" stroke-width="1"/>
+<text x="548" y="428" font-size="11.5" fill="#4a5056" text-anchor="start"><tspan font-family="Menlo, Monaco, Consolas, 'DejaVu Sans Mono', monospace" font-weight="700" fill="#2f3438">status.sh</tspan><tspan font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-weight="400">  a ~2 KB digest</tspan></text>
+<path d="M429,166 H534" fill="none" stroke="#6f767c" stroke-width="1.4" marker-end="url(#head)"/>
+<circle cx="444.5" cy="156" r="8.5" fill="#2f3438"/>
+<text x="444.5" y="159.8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="10.5" font-weight="700" fill="#fff" text-anchor="middle">2</text>
+<text x="458.0" y="160" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" fill="#2f3438" stroke="#f4f6f7" stroke-width="4" stroke-linejoin="round" paint-order="stroke">sync, build</text>
+<path d="M429,260 H534" fill="none" stroke="#6f767c" stroke-width="1.4" marker-end="url(#head)" marker-start="url(#tail)"/>
+<circle cx="465.5" cy="250" r="8.5" fill="#2f3438"/>
+<text x="465.5" y="253.8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="10.5" font-weight="700" fill="#fff" text-anchor="middle">3</text>
+<text x="479.0" y="254" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" fill="#2f3438" stroke="#f4f6f7" stroke-width="4" stroke-linejoin="round" paint-order="stroke">plan</text>
+<path d="M429,360 H534" fill="none" stroke="#6f767c" stroke-width="1.4" marker-end="url(#head)"/>
+<circle cx="459.5" cy="350" r="8.5" fill="#2f3438"/>
+<text x="459.5" y="353.8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="10.5" font-weight="700" fill="#fff" text-anchor="middle">5</text>
+<text x="473.0" y="354" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" fill="#2f3438" stroke="#f4f6f7" stroke-width="4" stroke-linejoin="round" paint-order="stroke">submit</text>
+<path d="M534,424 H429" fill="none" stroke="#6f767c" stroke-width="1.4" marker-end="url(#head)"/>
+<circle cx="459.5" cy="414" r="8.5" fill="#2f3438"/>
+<text x="459.5" y="417.8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="10.5" font-weight="700" fill="#fff" text-anchor="middle">6</text>
+<text x="473.0" y="418" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" fill="#2f3438" stroke="#f4f6f7" stroke-width="4" stroke-linejoin="round" paint-order="stroke">digest</text>
+</svg>
