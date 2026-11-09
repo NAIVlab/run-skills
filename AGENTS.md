@@ -25,7 +25,7 @@ bash tests/pkg-wheel.sh    # NOT in selftest (uv + network once): wheel contents
 `rsk` (`src/remote_run/`): `cli.py`; `install.py` (how it was installed: PEP 610 `direct_url.json` + `uv-receipt.toml`
 → update commands); `packs.py`; `harness.py` calls `lib/common.sh` / `install.sh` (targets, conf → remote dir) — never a
 second implementation in Python; `observe.py` + `status.py` (`rsk status` / `rsk logs`, `--grep` = `status.grep_body`;
-read-only, one ssh per target, discovery by WorkDir / `logs/*.pid`; a failed read is UNOBSERVABLE, never "no jobs"; also the ledger's runs, unledgered jobs,
+read-only, one ssh per target, discovery by WorkDir / `logs/*.pid`; a failed read is UNOBSERVABLE, never "no jobs" (a hung mount: within `observe.FS_WAIT` s); also the ledger's runs, unledgered jobs,
 SUBMIT_UNKNOWN reconciled from the remote journal); `ledger.py` + `grants.py` (the per-project ledger and the one authorisation
 record type, below); `launch.py` (`rsk launch`), `cancel.py` (`rsk cancel`), `watch.py` (`rsk watch` = the lease around
 `bin/run-watch`), `adopt.py` (`rsk adopt`), `wrappers.py` (`rsk sync|bootstrap|pull|avail` exec `bin/run-*`, no logic), `legacy.py`

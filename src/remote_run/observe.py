@@ -25,6 +25,20 @@ from dataclasses import dataclass, field
 
 from remote_run.harness import Place
 
+FS_WAIT = 15   # s: how long the remote dir's filesystem may take to answer one stat before the target is unobservable
+
+# A hung mount (its file server gone) blocks even a stat in an uninterruptible wait no `timeout` can kill, and a shell
+# that runs `[ -d DIR ]` itself hangs with it, holding the ssh session open until the local deadline. So the first look
+# at the dir is a child whose fds are none of the session's (ssh would wait for it), and the shell stops waiting after
+# FS_WAIT s; the child stays behind until its filesystem answers. stat, not the builtin `[ -d ]`: tests stub it.
+_DIRPROBE = r'''rs_dir() {   # rs_dir DIR -> d (a dir) | n (none; its parent is readable) | x (neither) | h (no answer)
+  r=""; read -r -t "${FS_WAIT:-15}" r < <(exec </dev/null 2>/dev/null
+    if [ "$(stat -L -c %F -- "$1")" = directory ]; then echo d; elif ls "$(dirname "$1")" >/dev/null; then echo n
+    else echo x; fi)
+  case "$r" in d|n|x) echo "$r" ;; *) echo h ;; esac
+}'''
+_HUNG = 'echo "@@fail $RDIR: its filesystem gave no answer within ${FS_WAIT:-15} s (a hung mount?)"; return'
+
 _ATTEMPTS = r'''rs_att() {   # rs_att 1|0 (cwd = the project dir): the newest 50 attempts + the asked NONCES, bounded
   echo @@attempts; [ "$1" = 1 ] && [ -d .rs/attempts ] || return 0
   l=$(ls -1t .rs/attempts 2>/dev/null) || { echo "@@partial attempts"; return 0; }
@@ -47,11 +61,14 @@ _ATTEMPTS = r'''rs_att() {   # rs_att 1|0 (cwd = the project dir): the newest 50
   done
 }'''
 
-SLURM = _ATTEMPTS + "\n" + r'''rs_obs() {
+SLURM = _DIRPROBE + "\n" + _ATTEMPTS + "\n" + r'''rs_obs() {
   echo @@start; U=${USER:-$(id -un)}; export SLURM_TIME_FORMAT=%s; echo "@@now $(date +%s)"; here=0
-  if [ -d "$RDIR" ]; then cd "$RDIR" 2>/dev/null || { echo "@@fail cd $RDIR"; return; }; echo "@@pwd $(pwd)|$(pwd -P)"; here=1
-  elif ls "$(dirname "$RDIR")" >/dev/null 2>&1; then echo "@@nodir"; echo "@@pwd $RDIR"   # jobs of a deleted dir still count
-  else echo "@@fail cd $RDIR (its parent is not readable either)"; return; fi
+  case "$(rs_dir "$RDIR")" in
+    d) cd "$RDIR" 2>/dev/null || { echo "@@fail cd $RDIR"; return; }; echo "@@pwd $(pwd)|$(pwd -P)"; here=1 ;;
+    n) echo "@@nodir"; echo "@@pwd $RDIR" ;;   # jobs of a deleted dir still count
+    h) '''+ _HUNG +r''' ;;
+    *) echo "@@fail cd $RDIR (its parent is not readable either)"; return ;;
+  esac
   q=$(squeue -h -u "$U" --states=all -O "JobID:0|,Name:0|,State:0|,Reason:0|,RestartCnt:0|,StartTime:0|,WorkDir:0|") \
     || { echo "@@fail squeue"; return; }
   echo @@squeue; [ -z "$q" ] || printf "%s\n" "$q"   # no grep: in a UTF-8 locale it drops a non-UTF-8 name's row
@@ -66,12 +83,15 @@ SLURM = _ATTEMPTS + "\n" + r'''rs_obs() {
 }
 rs_obs'''
 
-NOHUP = _ATTEMPTS + "\n" + r'''rs_obs() {
+NOHUP = _DIRPROBE + "\n" + _ATTEMPTS + "\n" + r'''rs_obs() {
   echo @@start; now=$(date +%s); echo "@@now $now"; U=${USER:-$(id -un)}
   case "$RDIR" in "~/"*) RDIR="$HOME/${RDIR#\~/}" ;; esac
-  if [ -d "$RDIR" ]; then cd "$RDIR" 2>/dev/null || { echo "@@fail cd $RDIR"; return; }
-  elif ls "$(dirname "$RDIR")" >/dev/null 2>&1; then echo "@@nodir"; echo "@@end"; return   # no dir, no logs, no runs
-  else echo "@@fail cd $RDIR (its parent is not readable either)"; return; fi
+  case "$(rs_dir "$RDIR")" in
+    d) cd "$RDIR" 2>/dev/null || { echo "@@fail cd $RDIR"; return; } ;;
+    n) echo "@@nodir"; echo "@@end"; return ;;   # no dir, no logs, no runs
+    h) '''+ _HUNG +r''' ;;
+    *) echo "@@fail cd $RDIR (its parent is not readable either)"; return ;;
+  esac
   echo "@@pwd $(pwd)|$(pwd -P)"; echo "@@boot $(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
   echo @@ws
   for l in $(ls -1t logs/*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].log 2>/dev/null | head -n 50); do
@@ -139,7 +159,7 @@ _RS = re.compile(r"(?:^|\s)rs=([A-Za-z0-9][A-Za-z0-9._-]{0,63})\s*$")
 def script(place: Place, days: int, nonces: list[str] | tuple[str, ...] = (), comments: bool = False) -> str:
     asked = " ".join(n for n in nonces if NONCE.fullmatch(n))
     head = (f"RDIR={shlex.quote(place.remote_dir)} DAYS={int(days)} NONCES={shlex.quote(asked)} "
-            f"COMMENTS={int(bool(comments))}\n")
+            f"COMMENTS={int(bool(comments))} FS_WAIT={int(FS_WAIT)}\n")
     return head + (SLURM if place.kind == "slurm" else NOHUP) + "\n"   # each one self-contained (rs_att inside)
 
 

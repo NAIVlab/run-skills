@@ -6,9 +6,11 @@ import json
 import os
 import subprocess
 import sys
+import shutil
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from helpers import ScratchHome
 
@@ -53,6 +55,18 @@ class Base(ScratchHome):
         p = self.stub / "bin" / name
         p.write_text(text)
         p.chmod(0o755)
+
+    def hang_stat(self, d: Path) -> None:
+        """A hung mount: every stat of D blocks (here: a sleep that keeps the probe's pipe open, as a D-state stat does)."""
+        real = shutil.which("stat")
+        self.tool("stat", f'#!/usr/bin/env bash\ncase " $* " in *" {d} "*) exec sleep 8 ;; esac\nexec {real} "$@"\n')
+
+    def hung_status(self, d: Path, *argv: str) -> tuple[int, str, float]:
+        self.hang_stat(d)
+        t0 = time.monotonic()
+        with mock.patch.object(observe, "FS_WAIT", 1):
+            rc, text = run("status", "-C", str(self.proj), *argv)
+        return rc, text, time.monotonic() - t0
 
     def target(self, name: str, profile: str) -> None:
         d = Path(os.environ["RS_USER_DIR"]) / "targets" / name
@@ -127,6 +141,13 @@ class Slurm(Base):
         self.assertEqual(rc, UNKNOWN, text)
         self.assertIn("UNOBSERVABLE: cd", text)
         self.assertNotIn("not synced", text)
+
+    def test_a_hung_filesystem_is_unobservable_within_fs_wait(self):   # not the whole ssh deadline, and named
+        rc, text, took = self.hung_status(self.remote)
+        self.assertEqual(rc, UNKNOWN, text)
+        self.assertIn(f"UNOBSERVABLE: {self.remote}: its filesystem gave no answer within 1 s (a hung mount?)", text)
+        self.assertNotIn("no jobs", text)
+        self.assertLess(took, 6, "the session waited for the stuck probe (it holds one of ssh's fds?)")
 
     def test_unknown_target_and_missing_conf(self):
         self.assertEqual(run("status", "-C", str(self.proj), "-T", "fx-other")[0], USAGE)
@@ -402,6 +423,15 @@ class Nohup(Base):
         self.assertEqual(rc, OK, text)
         self.assertIn("not synced here", text)
         self.assertNotIn("UNOBSERVABLE", text)
+
+
+    def test_a_box_whose_filesystem_hangs(self):
+        self.target("fx-box", "T_KIND=nohup; T_HOST=fxbox\n")
+        (self.proj / ".ws.conf").write_text(f"WS_REMOTE_DIR={self.remote}\n")
+        rc, text, took = self.hung_status(self.remote)
+        self.assertEqual(rc, UNKNOWN, text)
+        self.assertIn("its filesystem gave no answer within 1 s", text)
+        self.assertLess(took, 6)
 
 
 class Ledgered(Base):
