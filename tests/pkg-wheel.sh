@@ -51,7 +51,8 @@ echo "-- rsk setup --"
 O=$(sbx rsk setup 2>&1); RC=$?
 [ "$RC" = 0 ] && ok "rsk setup exits 0" || { bad "rsk setup exits 0 (got $RC)"; echo "$O" | fail_sections; }
 has "$O" 'Install OK' "setup ran install.sh to the end"; has "$O" 'RESULT: [0-9]* pass, 0 fail' "setup's selftest passed"
-has "$O" 'docs: skipped' "packaged selftest skips the clone-only doc checks"; has "$O" 'PASS: py test_install' "packaged selftest ran the python tests"
+L=$(cat "$SB/home/.agents/run-skills/selftest.log" 2>/dev/null); hasnt "$O" '^  PASS: ' "setup's selftest is quiet (-q)"
+has "$L" 'docs: skipped' "packaged selftest skips the clone-only doc checks"; has "$L" 'PASS: py test_install' "packaged selftest ran the python tests"
 [ -x "$SB/home/.agents/run-skills/bin/run-sync" ] && ok "harness copy installed and executable" || bad "harness copy installed and executable"
 [ -f "$SB/home/.agents/run-skills/templates/ssh_config" ] && [ -f "$SB/home/.agents/run-skills/docs/packs.md" ] \
   && ok "harness copy carries templates/ and docs/ (INSTALL.md's \$H paths)" || bad "harness copy carries templates/ and docs/"

@@ -123,7 +123,8 @@ else
 fi
 
 echo "== selftest (stubbed slurm/ssh — nothing leaves this machine) =="
-bash "$RS_HOME/selftest.sh"   # from the clone: tests/70-docs.sh needs skills/ (and its symlinks), which $DEST omits
+RS_SELFTEST_LOG=$DEST/selftest.log bash "$RS_HOME/selftest.sh" -q   # from the clone: tests/70-docs.sh needs skills/
+# (and its symlinks), which $DEST omits. -q: FAIL / SKIP lines and the RESULT here, every line in $DEST/selftest.log
 echo
 echo "Install OK. Open Claude Code, Codex or pi and say e.g.: \"run this project on <target>\"."
 [ -n "$(rs_targets)" ] || echo "No targets yet: ask your agent to register your servers — $DEST/INSTALL.md, Steps 2-6."

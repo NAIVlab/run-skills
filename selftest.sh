@@ -2,17 +2,20 @@
 # run-skills selftest.sh — the test runner (local). Phase A runs tests/NN-*.sh against fixture targets written
 # here under a scratch RS_USER_DIR (never the real ~/.config/run-skills); phase B runs targets/<t>/tests.sh and
 # tests.local.sh from the shipped tree, every installed target pack and the real overlay. Every section is a subshell; its "  PASS:"/"  FAIL:"
-# lines are aggregated from a results file.   Usage: bash selftest.sh   (exit code = number of failures)
-set -u
+# lines are aggregated from a results file.   Usage: bash selftest.sh [-q]   (exit code = number of failures)
+# -q (install.sh): all output to RS_SELFTEST_LOG (default: the state dir's selftest.log); shown: a dot per section, then the FAIL / SKIP lines (+ their `|` lines) and RESULT
+set -u; Q=0; case "${1:-}" in -q) Q=1 ;; "") ;; *) echo "usage: bash selftest.sh [-q]" >&2; exit 2 ;; esac
 RS_HOME=$(cd "$(dirname "$0")" && pwd); export RS_HOME
 RS_USER_DIR_REAL=${RS_USER_DIR:-$HOME/.config/run-skills}; export RS_USER_DIR_REAL   # 70-docs reads the real overlay in phase A
 RS_PACKS_DIR_REAL=${RS_PACKS_DIR:-$RS_USER_DIR_REAL/packs}
-T_A=$(mktemp -d); trap 'rm -rf "$T_A"' EXIT
-R=$T_A/results; : > "$R"
-run_section() {   # run_section LABEL CMD... : stream + record the output; a crashed section counts as a FAIL
-  echo "== $1 =="; shift
-  "$@" 2>&1 | tee -a "$R"; rc=${PIPESTATUS[0]}
-  [ "$rc" = 0 ] || echo "  FAIL: section exited $rc" | tee -a "$R"
+T_A=$(mktemp -d); trap 'rm -rf "$T_A"' EXIT; R=$T_A/results; : > "$R"
+[ "$Q" = 0 ] || { LOG=${RS_SELFTEST_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/run-skills/selftest.log}
+  mkdir -p "$(dirname "$LOG")" && : > "$LOG" || exit 2; printf 'selftest (full output: %s) ' "$LOG"; }
+run_section() {   # run_section LABEL CMD... : stream (-q: log, a dot) + record the output; a crashed section is a FAIL
+  l=$1; o=$T_A/section; shift; [ "$Q" = 1 ] || echo "== $l =="; if [ "$Q" = 1 ]; then "$@" > "$o" 2>&1; else "$@" 2>&1 | tee "$o"; fi; rc=${PIPESTATUS[0]}
+  [ "$rc" = 0 ] || echo "  FAIL: section exited $rc" | tee -a "$o"; cat "$o" >> "$R"; [ "$Q" = 1 ] || return 0
+  { echo "== $l =="; cat "$o"; } >> "$LOG"; printf .   # -q shows each FAIL / SKIP line + its `|` detail lines later
+  awk -v l="$l" '/^  (FAIL|SKIP): /{k=1; print "== " l ": " $0; next} k && /^ +\|/{print; next} {k=0}' "$o" >> "$T_A/shown"
 }
 
 # ---------- phase A: fixture targets (spec §9) ----------
@@ -57,6 +60,6 @@ for d in "$RS_HOME"/targets/*/ "$RS_PACKS_DIR_REAL"/*/targets/*/ "$RS_USER_DIR_R
   done
 done
 P=$(grep -c '^  PASS: ' "$R"); F=$(grep -c '^  FAIL: ' "$R"); S=$(grep -c '^  SKIP: ' "$R")
-echo; [ "$S" = 0 ] || echo "$S section(s) skipped — see the SKIP lines"
-echo "===== RESULT: $P pass, $F fail ====="
+[ "$Q" = 0 ] || { echo; cat "$T_A/shown" 2>/dev/null; }; echo; [ "$S" = 0 ] || echo "$S section(s) skipped — see the SKIP lines"
+echo "===== RESULT: $P pass, $F fail ====="; [ "$Q" = 0 ] || echo "full output: $LOG"
 exit "$F"

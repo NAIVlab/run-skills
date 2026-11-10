@@ -17,7 +17,7 @@ harness). The reasons behind the constraints below: `docs/DESIGN.md`; target pac
 bash selftest.sh           # the only test suite, offline (stubbed sbatch/sinfo/scontrol/squeue/ssh/uv/rsync): phase A =
                            # tests/NN-*.sh on fixture targets in a temp RS_USER_DIR; phase B = targets/*/tests.sh (+ the
                            # packs' and the overlay's tests{,.local}.sh). Prints "===== RESULT: N pass, M fail =====", exit M. Run after ANY edit.
-bash install.sh            # copy to ~/.agents/run-skills, ONE skill copy in ~/.agents/skills (+ ~/.claude/skills symlink), INDEX, hpc-run/ws-run uninstalled, forwarders, selftest
+bash install.sh            # copy to ~/.agents/run-skills, ONE skill copy in ~/.agents/skills (+ ~/.claude/skills symlink), INDEX, hpc-run/ws-run uninstalled, forwarders, selftest -q (full log: ~/.agents/run-skills/selftest.log)
 uv tool install --editable . && rsk setup   # the same through rsk, from this clone (edits are live; re-run setup after them)
 bash tests/pkg-wheel.sh    # NOT in selftest (uv + network once): wheel contents, uv tool install from git, setup, update, rollback
 ```
