@@ -12,14 +12,17 @@ submit — every step recorded in the project's ledger (ledger.py) and checked a
    option's value: rsk sends those words itself); a value of -p -g -G -t -m -c -n -N -d --nice never starts with '-';
    a name that carries a class (<exp>--<class>--…) is that class — a different --class is exit 2; a run's class is
    sticky: the class recorded at its first attempt — another one (name or --class), or any one when its first attempt
-   had none, is exit 2; --gpu-busy-ok needs -d.
+   had none, is exit 2; --gpu-busy-ok needs -d. A run name (-n, -N, --relaunch; also one the plan resolves from the
+   conf) holding whitespace or a control character is exit 2, before anything is planned (a word-splitting slip).
 1. Local duplicate: a live ledger attempt of the run (the name minus --aNN) on that target → exit 6 unless
    --same-name-ok (also passed on to the remote guard). A --chain skips it, as submit.sh skips singleton chains. A
    SUBMIT_UNKNOWN attempt of the run blocks ALWAYS (--same-name-ok, chains, relaunch too): rsk status settles it.
    First (refresh), when the ledger counts an attempt of the run as live on any target: ONE read of each such target —
    the read rsk status makes, back to the oldest of them — is applied to the ledger, so a job that ended since is not
    refused as live and a relaunch decision sees its end; also before `--plan` submits; a target that cannot be read
-   changes nothing (the ledger's state stands).
+   changes nothing (the ledger's state stands). An attempt rsk cancel signalled (CANCELLING, CANCELLING?: its end not
+   observed yet) still blocks: the refusal says the cancel is not confirmed (and when the target could not be read
+   now) and points at rsk status / rsk cancel --wait S, never at --same-name-ok.
 2. PLAN — slurm: ONE ssh that reads the `# rs-api=N` marker line of the deployed <REMOTE_DIR>/.<t>/submit.sh itself
    and, only when it says api=3, runs `bash <REMOTE_DIR>/.<t>/submit.sh --rs-attempt <nonce> --rs-mode plan …`; nohup:
    `RS_VIA_RSK=1 bin/run-launch --rs-attempt <nonce> --rs-mode plan …` from the harness (cwd = the project, TARGET
@@ -28,6 +31,10 @@ submit — every step recorded in the project's ledger (ledger.py) and checked a
    warnings_avail warnings_id; slurm conf_extra flags; nohup busy_ok launch_cfg info_run_gpu info_launchers) → exit
    6 `needs: sync`. A plan never submits: its refusal (policy 3, duplicate 6, usage 2, too few free GPUs 8, a nohup env that
    would fail the gate 1) is the exit code, with the target's lines (a nohup plan creates nothing outside .rs/).
+   Every call (plan and submit) first asks the project dir's filesystem (observe's rs_dir, FS_WAIT s; slurm: inside
+   that ssh, before the marker line; nohup: a read-only ssh of its own before run-launch): a hung mount ends it at once,
+   nothing run — exit 5 `…: its filesystem gave no answer within 15 s (a hung mount?) — nothing was planned`; a submit
+   stopped there is NOT_SUBMITTED (the use given back, the plan free again).
 3. The plan and its card are stored (plans/<id>.json, never rewritten). Its action is derived, never a flag: a run that
    already has attempts that may have run (any target; not this plan's own) in the ledger, or in the target's journal
    (the block's envelope info_prior > 0: receipts named <run> / <run>--aNN, Slurm also live jobs of this WorkDir —
@@ -110,6 +117,7 @@ import secrets
 import shlex
 import subprocess
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -190,6 +198,22 @@ def parser() -> argparse.ArgumentParser:
     return p
 
 
+NAME_UNSAFE = "a run name never holds whitespace or a control character"
+
+
+def unsafe_name(name: str) -> bool:
+    """A name holding whitespace or a control character: never a run name — a word-splitting slip in the caller's
+    shell (two words joined into one argument). The Slurm plan block carries the name %q-escaped while the ledger,
+    grant scopes and `rsk cancel RUN` hold it raw: two spellings of one run (cancel_own never matched one)."""
+    return any(c.isspace() or unicodedata.category(c) == "Cc" for c in name)
+
+
+def help_asked(extra: list[str]) -> bool:
+    """`rsk launch -h` (before `--`): the help, no command run (cli.py prints no verdict line after it)."""
+    head = extra[:extra.index("--")] if "--" in extra else extra
+    return "-h" in head or "--help" in head
+
+
 def parse(extra: list[str]) -> argparse.Namespace:
     """ARGS = everything after `rsk launch` (cli.py hands it over unparsed): rsk's flags, then `--` and the command."""
     words = list(extra)
@@ -215,6 +239,10 @@ def parse(extra: list[str]) -> argparse.Namespace:
     if dash:
         raise RskError(f"rsk launch: {', '.join(dash)}: a value never starts with '-' (the target would read it as a "
                        "flag)", USAGE)
+    for flag, v in (("-n", ns.name), ("-N", ns.wsname), ("--relaunch", ns.relaunch)):   # (a relaunch's <run>--aNN too)
+        if isinstance(v, str) and unsafe_name(v):
+            raise RskError(f"rsk launch: {flag}: {NAME_UNSAFE}: {v!r} (a word-splitting slip? quote the name / pass "
+                           "flags as an array)", USAGE)
     if not 0 <= ns.check_after <= CHECK_MAX_S:
         raise RskError(f"rsk launch: --check-after {ns.check_after}: 1 to {CHECK_MAX_S} seconds (0 = off)", USAGE)
     ns.policy_flags, ns.cmd = rest, cmd
@@ -636,8 +664,14 @@ def tracker_note(rec: dict) -> None:
 
 
 # ================================================================================================ the remote calls
-SLURM_BODY = r'''rs_launch() {   # the deployed submit.sh's own marker line first: an older one is never handed rsk's flags
+# Every call first asks the project dir's filesystem (observe's rs_dir: a child the session never waits for, FS_WAIT s):
+# on a hung mount even the marker grep sits in a wait no timeout kills, until the local deadline. A hung one ends the
+# call with `@@fail <dir>: its filesystem gave no answer within N s (a hung mount?)` BEFORE the marker line (@@api) —
+# before anything ran: proof that nothing was planned or submitted (Reply.fail). The child stays behind until it answers.
+_STOP_HUNG = "[ \"$(rs_dir \"$RDIR\")\" != h ] || { " + observe._HUNG + " 69; }"
+SLURM_BODY = observe._DIRPROBE + "\n" + r'''rs_launch() {   # then submit.sh's marker line: an older one never gets rsk's flags
   case "$RDIR" in "~/"*) RDIR="$HOME/${RDIR#\~/}" ;; esac
+  ''' + _STOP_HUNG + r'''
   f=$RDIR/$DEPLOY/submit.sh
   a=$(LC_ALL=C grep -a -m 1 -E '^# rs-api=[0-9]+([[:space:]]|$)' "$f" 2>/dev/null | head -n 1); a=${a#\# rs-}; a=${a%%[[:space:]]*}
   echo "@@api $a"
@@ -648,6 +682,12 @@ SLURM_BODY = r'''rs_launch() {   # the deployed submit.sh's own marker line firs
   [ ! -f "$d/result" ] || echo "@@result $(head -c 256 "$d/result" | head -n 1)"
   [ ! -f "$d/receipt" ] || LC_ALL=C grep -a -E '^(job|name|nonce|at|partition)=' "$d/receipt" | head -c 2048 | sed 's/^/@@k /'
   return "$rc"
+}'''
+# a box: run-launch's own two ssh never look before `cd` — this read-only probe goes first, in an ssh of its own
+DIR_BODY = observe._DIRPROBE + "\n" + r'''rs_probe() {
+  case "$RDIR" in "~/"*) RDIR="$HOME/${RDIR#\~/}" ;; esac
+  ''' + _STOP_HUNG + r'''
+  echo "@@dir answered"
 }'''
 
 
@@ -661,6 +701,7 @@ class Reply:
     result: dict = field(default_factory=dict)
     receipt: dict = field(default_factory=dict)
     why: str = ""
+    fail: str = ""                 # the call stopped before anything ran (a hung mount; a box's probe got no answer)
 
     @property
     def text(self) -> str:
@@ -681,7 +722,7 @@ class Reply:
 
 def slurm_body(place: harness.Place, nonce: str, words: list[str]) -> str:
     head = (f"RDIR={shlex.quote(place.remote_dir)} DEPLOY={shlex.quote(place.deploy)} NONCE={shlex.quote(nonce)} "
-            f"WANT={shlex.quote(API)}\n")
+            f"WANT={shlex.quote(API)} FS_WAIT={int(observe.FS_WAIT)}\n")
     return head + SLURM_BODY + "\nrs_launch " + " ".join(shlex.quote(w) for w in words) + "\n"
 
 
@@ -689,7 +730,9 @@ def parse_slurm(done: subprocess.CompletedProcess) -> Reply:
     r = Reply(done.returncode, done.stdout or "", done.stderr or "")
     after = False
     for ln in r.out.splitlines():
-        if ln.startswith("@@api ") and r.api is None:
+        if ln.startswith("@@fail ") and r.api is None and not after:   # the body's own, before @@api: nothing ran
+            r.fail = r.fail or ln[7:].strip()
+        elif ln.startswith("@@api ") and r.api is None:
             r.api = ln[6:].strip()
         elif ln.startswith("@@rc "):
             after = True
@@ -773,10 +816,27 @@ def submit_words(rec: dict, nonce: str) -> list[str]:
     return [*common, *rec["flags"], "--", *rec["payload"]]
 
 
+def probe_dir(place: harness.Place, deadline: float) -> Reply | None:
+    """A box's call (plan or submit): ONE read-only ssh asks the project dir's filesystem first (DIR_BODY). A Reply
+    with .fail stops the call — a hung mount, or no answer at all (nothing ran: a plan is not made, a submit not sent);
+    None goes on to run-launch (the dir answered, or ssh failed otherwise: run-launch's own ssh says what it finds)."""
+    body = f"RDIR={shlex.quote(place.remote_dir)} FS_WAIT={int(observe.FS_WAIT)}\n" + DIR_BODY + "\nrs_probe\n"
+    wait = min(deadline, observe.FS_WAIT + 60.0)
+    try:
+        done = observe.run(place, body, wait)
+    except subprocess.TimeoutExpired:
+        why = f"no answer from {place.host} within {wait:.0f} s to the project dir's probe"
+        return Reply(None, why=why, fail=why)
+    except OSError:
+        return None
+    hung = [ln[7:].strip() for ln in (done.stdout or "").splitlines() if ln.startswith("@@fail ")]
+    return Reply(done.returncode, done.stdout or "", done.stderr or "", fail=hung[0]) if hung else None
+
+
 def call(src: Path, proj: Path, place: harness.Place, nonce: str, words: list[str], deadline: float) -> Reply:
     if place.kind == "slurm":
         return call_slurm(place, nonce, words, deadline)
-    return call_nohup(src, proj, place.target, words, deadline)
+    return probe_dir(place, deadline) or call_nohup(src, proj, place.target, words, deadline)
 
 
 # ================================================================================================ the plan
@@ -830,6 +890,9 @@ def local_source(proj: Path) -> dict[str, str]:
 def plan_failure(reply: Reply, place: harness.Place) -> RskError:
     """No plan block: what the reply says instead, as rsk's exit code."""
     t = reply.text
+    if reply.fail:                 # the call stopped before anything ran (a hung mount)
+        return RskError(f"[{place.target}] {reply.fail} — nothing was planned (rsk status reads the target again)",
+                        UNKNOWN)
     if reply.rc is None:
         return RskError(f"[{place.target}] {reply.why} — the plan's outcome is unknown, but a plan never submits", UNKNOWN)
     if place.kind == "slurm" and reply.api is not None and reply.api != API:
@@ -1054,6 +1117,10 @@ def make_plan(led: L.Ledger, src: Path, proj: Path, place: harness.Place, req: R
     if lacks:
         raise _needs_sync(place, f"its plan block lacks {', '.join(lacks)} (an api=3 deploy older than this rsk)")
     name = _dec(block.get("name", ""))
+    if unsafe_name(name):     # no -n / -N (parse() checked those): the conf's JOB_NAME or the dir's name, resolved there
+        raise RskError(f"[{place.target}] the plan names the run {name!r} (the conf's JOB_NAME, else the remote dir's "
+                       f"name): {NAME_UNSAFE} — set JOB_NAME, or pass {'-n' if place.kind == 'slurm' else '-N'} NAME; "
+                       "nothing was submitted", USAGE)
     class_check(req.cls, name)
     cls = sticky_class(led, name, req.cls)
     fresh = new_run(led, block, name)
@@ -1115,10 +1182,10 @@ def plan_actions(runs: dict, rec: dict) -> tuple[str, ...]:
     return tuple(acts) or ("launch",)
 
 
-def check_plan(rec: dict, runs: dict | None = None) -> dict:
+def check_plan(rec: dict, runs: dict | None = None, unread: set[str] | None = None) -> dict:
     """The plan as grants.check() reads it: the block, the class (sticky: the run's first), the class each attempt of
     the run was recorded with (a deny of any of them matches; one recorded without: any class), the plan id
-    (approvals name plan ids)."""
+    (approvals name plan ids); UNREAD (the targets launch.refresh could not read just now) only words a refusal."""
     plan = dict(rec["block"])
     if rec.get("class"):
         plan["class"] = rec["class"]
@@ -1126,6 +1193,8 @@ def check_plan(rec: dict, runs: dict | None = None) -> dict:
     plan["plan_id"] = rec["id"]
     if rec.get("created_at"):          # relaunch_after any reads the journal count only from a fresh plan
         plan["plan_age_s"] = max(0.0, time.time() - L.epoch(rec["created_at"]))
+    if unread:
+        plan["unreadable_now"] = sorted(unread)
     return plan
 
 
@@ -1140,14 +1209,15 @@ def room(rec: dict, bound_hash: str) -> float:
 
 
 def decide(source: L.Ledger | L.LedgerState, rec: dict, need: int | None = None,
-           extending: tuple[str, str] | None = None) -> grants.Decision:
+           extending: tuple[str, str] | None = None, unread: set[str] | None = None) -> grants.Decision:
     """grants.check() plus what only a whole request shows: N chain segments need N launches (NEED: the segments
     still to send; EXTENDING: the attempt they join, which holds its own max_live slot), and a standing grant never
     covers a workstation plan that lands on a GPU in use, a user-asked policy flag or --same-name-ok. The actions are
     derived from the ledger now (plan_actions): every one that applies is checked."""
     st = source.state() if isinstance(source, L.Ledger) else source
     acts = plan_actions(st.runs, rec)
-    d = grants.check(st, acts[0], plan=check_plan(rec, st.runs), run=rec["run"], extending=extending, also=acts[1:])
+    d = grants.check(st, acts[0], plan=check_plan(rec, st.runs, unread), run=rec["run"], extending=extending,
+                     also=acts[1:])
     if not d.covered:
         return d
     why = []
@@ -1178,10 +1248,31 @@ def only(led: L.Ledger, rid: str) -> L.LedgerState:
     return st
 
 
-def live_attempts(led: L.Ledger, target: str, run: str) -> list[str]:
+def live_attempts(led: L.Ledger, target: str, run: str) -> list[tuple[str, str, dict]]:
+    """(attempt id, ledger state, attempt) of each live attempt of RUN on TARGET."""
     rec = led.read_run(run).data or {}
-    return [f"{k} ({L.attempt_state(a)})" for k, a in sorted((rec.get("attempts") or {}).items())
+    return [(k, L.attempt_state(a), a) for k, a in sorted((rec.get("attempts") or {}).items())
             if a.get("target") == target and L.is_live(a)]
+
+
+def elsewhere(led: L.Ledger, target: str, name: str, unread: set[str] | None = None) -> None:
+    """A NOTE (never a refusal: moving a run off a target that cannot be read is the user's call, and a grant's own
+    rules judge a relaunch) for each live attempt of the run on ANOTHER target — one still running, or one whose cancel
+    has no observed end: this launch would start a second copy beside it (the card's prior counts only TARGET's
+    journal)."""
+    if not name:
+        return
+    run = L.run_id(name)
+    rec = led.read_run(run).data or {}
+    for k, a in sorted((rec.get("attempts") or {}).items()):
+        tg = str(a.get("target") or "")
+        if not tg or tg == target or not L.is_live(a):
+            continue
+        why = grants.cancel_unconfirmed(run, k, a, time.time(), tg in (unread or ()))
+        out(f"NOTE: {why} — a launch on {target} starts a second copy beside it" if why else
+            f"NOTE: {run} {k} is live on {tg} in the ledger ({L.attempt_state(a)}"
+            f"{': ' + tg + ' could not be read just now' if tg in (unread or ()) else ''}) — a launch on {target} "
+            "starts a second copy beside it")
 
 
 def unknown_attempts(led: L.Ledger, target: str, run: str) -> list[str]:
@@ -1190,28 +1281,30 @@ def unknown_attempts(led: L.Ledger, target: str, run: str) -> list[str]:
             if a.get("target") == target for s in a.get("submissions") or [] if s.get("submit") == "unknown"]
 
 
-def refresh(led: L.Ledger, src: Path, proj: Path, runs: set[str], deadline: float) -> None:
+def refresh(led: L.Ledger, src: Path, proj: Path, runs: set[str], deadline: float) -> set[str]:
     """Before the duplicate check and the grant decision: the ledger learns what a run's attempts did only from a
     read of their target (rsk status), so a job that ended since still looks live — the duplicate guard would refuse
     and a relaunch grant would see no end. For every target holding an attempt of RUNS the ledger counts as live,
     ONE read-only read (the read rsk status makes, back far enough for the oldest such attempt) is applied to the
-    ledger first. A target that cannot be read changes nothing: the ledger's state stands (fail closed)."""
+    ledger first. A target that cannot be read changes nothing: the ledger's state stands (fail closed). Returns the
+    targets holding such an attempt that could not be read now (the duplicate guard names them)."""
     from remote_run import status as S
     st0 = led.state()
     live = {(r, aid): att for r in runs for aid, att in ((st0.runs.get(r) or {}).get("attempts") or {}).items()
             if att.get("target") and L.is_live(att)}
     if not live:
-        return
-    places = []
+        return set()
+    places, unread = [], set()
     all_places = harness.places(src, proj)
     for t in sorted({att["target"] for att in live.values()}):
         try:
             places += S.select(all_places, [t])
         except RskError as exc:
+            unread.add(t)
             out(f"NOTE: the ledger counts {', '.join(f'{r} {a}' for (r, a), att in sorted(live.items()) if att['target'] == t)}"
                 f" as live on {t}, which this conf cannot read ({exc}) — the ledger's state there stands")
     if not places:
-        return
+        return unread
     oldest = min((L.epoch(att.get("created_at")) or time.time()) for att in live.values()
                  if att["target"] in {p.target for p in places})
     days = max(2, min(30, int((time.time() - oldest) // 86400) + 2))
@@ -1229,13 +1322,19 @@ def refresh(led: L.Ledger, src: Path, proj: Path, runs: set[str], deadline: floa
             out(f"ledger: {r} {aid} on {att['target']}: {was} -> {is_} (read just now)")
     for o in obs:
         if not o.ok:
+            unread.add(o.place.target)
             out(f"NOTE: {o.place.target} could not be read now ({o.why}) — the ledger's state of the run there stands")
+    return unread
 
 
-def duplicate(led: L.Ledger, target: str, name: str, same_ok: bool, chain: int) -> None:
+def duplicate(led: L.Ledger, target: str, name: str, same_ok: bool, chain: int,
+              unread: set[str] | None = None) -> None:
     """A live ledger attempt of the run on TARGET -> exit 6 unless SAME_OK / a chain. A SUBMIT_UNKNOWN one blocks
     ALWAYS (--same-name-ok and chains too): its job may exist; only rsk status (the remote journal) or rsk adopt
-    --not-submitted with the user's words settles it."""
+    --not-submitted with the user's words settles it. A live attempt with a cancel rsk sent and no observed end
+    (ledger.cancel_pending) still blocks and the message says so (grants.cancel_unconfirmed: how to see its end), never
+    --same-name-ok (a second copy beside a job that may still run). UNREAD: the targets refresh() could not read just
+    now. An attempt of the run on another target: a NOTE only (elsewhere())."""
     if not name:
         return
     unk = unknown_attempts(led, target, L.run_id(name))
@@ -1246,10 +1345,18 @@ def duplicate(led: L.Ledger, target: str, name: str, same_ok: bool, chain: int) 
     if same_ok or chain:
         return
     live = live_attempts(led, target, L.run_id(name))
-    if live:
-        raise RskError(f"run {L.run_id(name)} is live on {target} in the ledger: {', '.join(live)} — follow it (rsk "
-                       "status), or --same-name-ok when both are wanted (a second copy shares its logs/ckpts)",
-                       CONFLICT)
+    if not live:
+        return
+    run = L.run_id(name)
+    shown = ", ".join(f"{a} ({s})" for a, s, _att in live)
+    t = time.time()
+    ending = [grants.cancel_unconfirmed(run, a, att, t, target in (unread or ())) for a, _s, att in live]
+    if all(ending):
+        raise RskError(f"run {run} is live on {target} in the ledger: {shown} — " + "; ".join(ending)
+                       + "; launch once it shows the end", CONFLICT)
+    raise RskError(f"run {run} is live on {target} in the ledger: {shown} — follow it (rsk status), or "
+                   "--same-name-ok when both are wanted (a second copy shares its logs/ckpts)"
+                   + "".join(f"; {w}" for w in ending if w), CONFLICT)
 
 
 def plan_state(led: L.Ledger, rec: dict, now: float | None = None) -> str:
@@ -1260,6 +1367,8 @@ def plan_state(led: L.Ledger, rec: dict, now: float | None = None) -> str:
     lacks = [k for k in grants.NEEDED.get(str(rec.get("kind")), ()) if k not in (rec.get("block") or {})]
     if lacks:
         return f"plan {rec['id']} lacks {', '.join(lacks)} (planned by an older rsk or deploy)"
+    if unsafe_name(str(rec.get("name", ""))):   # planned by an rsk that let it through
+        return f"plan {rec['id']} names the run {rec.get('name')!r}: {NAME_UNSAFE}"
     t = time.time() if now is None else now
     age = t - L.epoch(rec.get("created_at"))
     if age > PLAN_TTL_S:
@@ -1360,6 +1469,9 @@ def settle(led: L.Ledger, place: harness.Place, rec: dict, run: str, aid: str, n
     def sync_note() -> None:
         out(f"needs: sync (the deploy predates rsk launch: rsk sync -T {place.target})")
 
+    if reply.fail:                   # the call stopped before submit.sh / run-launch ran: proof that nothing was sent
+        return refused(UNKNOWN, f"{reply.fail} — the call stopped before anything ran: nothing was sent to "
+                                f"{place.target}")
     if place.kind == "slurm":
         job = reply.receipt.get("job", "")
         if job and reply.rc != 75:   # the receipt arrived: the job exists, whatever ssh said after it
@@ -1474,7 +1586,8 @@ def settle(led: L.Ledger, place: harness.Place, rec: dict, run: str, aid: str, n
 
 
 def submit_plan(led: L.Ledger, src: Path, proj: Path, place: harness.Place, rec: dict, rid: str, quote: str,
-                deadline: float, claimed: bool = False, launched: list | None = None) -> int:
+                deadline: float, claimed: bool = False, launched: list | None = None,
+                unread: set[str] | None = None) -> int:
     """Every segment of one plan, each: (lock) re-check that RID covers it, claim the plan (first; CLAIMED: the
     caller claimed it already, under the lock that created RID), count the use, record SUBMIT_UNKNOWN — (no lock)
     the ssh — (lock) settle it."""
@@ -1484,9 +1597,9 @@ def submit_plan(led: L.Ledger, src: Path, proj: Path, place: harness.Place, rec:
         words = submit_words(rec, nonce)          # before anything is recorded: a plan it cannot replay sends nothing
         with led.locked():
             if seg == 0:
-                duplicate(led, rec["target"], rec["name"], rec.get("same_name_ok", False), rec.get("chain", 0))
+                duplicate(led, rec["target"], rec["name"], rec.get("same_name_ok", False), rec.get("chain", 0), unread)
             st = only(led, rid)
-            d = decide(st, rec, need=n - seg, extending=(run, aid) if seg else None)
+            d = decide(st, rec, need=n - seg, extending=(run, aid) if seg else None, unread=unread)
             if not d.covered:
                 done = f" ({seg} of {n} segments were submitted)" if seg else ""
                 out(f"not covered any more{done}: " + "; ".join(d.reasons))
@@ -1551,9 +1664,10 @@ def _job_end(kind: str, j: observe.Job) -> tuple[str, str]:
 
 def check_after(led: L.Ledger, src: Path, proj: Path, launched: list, secs: int, deadline: float, code: int) -> int:
     """--check-after S: the start milestone, read once S seconds after the submits (experiment-conventions.md §7):
-    every submission this call made (each segment of a chain) is judged from that read itself — live (pending /
-    running), ended as it should (Slurm COMPLETED, a box run's exit 0), ended otherwise (its state, exit code and the
-    status.sh digest of that job / log), or not in the read (unknown: absence is no evidence). The read is also applied
+    every submission this call made (each segment of a chain) is judged from that read itself — live (pending, with
+    squeue's reason when the read has one: `PENDING (Priority)`; running), ended as it should (Slurm COMPLETED, a box
+    run's exit 0), ended otherwise (its state, exit code and the status.sh digest of that job / log), or not in the
+    read (unknown: absence is no evidence). The read is also applied
     to the ledger. One that ended otherwise is exit 1 when the submits themselves went through: it WAS launched — a fix
     is a new decision (rsk launch --relaunch)."""
     if not launched or secs <= 0:
@@ -1585,6 +1699,8 @@ def check_after(led: L.Ledger, src: Path, proj: Path, launched: list, secs: int,
             out(f"{head}: not in this read — state unknown (rsk status / rsk logs)")
             continue
         verdict, what = _job_end(kind, j)
+        if verdict == "live" and kind == "slurm" and j.state == "PENDING" and j.reason:   # I6: squeue's reason, as
+            what += f" ({observe._short(j.reason, 80)})"                                   # rsk status shows it
         if verdict != "failed":
             out(f"{head}: {what} {secs} s after the launch" + (" — ended as it should" if verdict == "ok" else ""))
             continue
@@ -1614,16 +1730,18 @@ def cmd_new(ns: argparse.Namespace, led: L.Ledger, src: Path, proj: Path) -> int
         raise RskError("rsk launch -T <target> [flags] -- <cmd…>  (or --plan ID … to submit stored plans)", USAGE)
     place = _place(src, proj, target)
     req = build_request(ns, led, place)
+    unread: set[str] = set()   # targets refresh() could not read now (the duplicate guard names them)
     if req.name:          # a run that ended since the last read must not look live (duplicate guard, relaunch end)
-        refresh(led, src, proj, {L.run_id(req.name)}, ns.deadline)
-    duplicate(led, place.target, req.name, req.same_name_ok, req.chain)      # before the plan ssh when the name is known
+        unread |= refresh(led, src, proj, {L.run_id(req.name)}, ns.deadline)
+    duplicate(led, place.target, req.name, req.same_name_ok, req.chain, unread)   # before the plan ssh, the name known
     rec = make_plan(led, src, proj, place, req, ns.deadline)
     if rec["name"] and L.run_id(rec["name"]) != L.run_id(req.name or ""):
-        refresh(led, src, proj, {L.run_id(rec["name"])}, ns.deadline)
-    duplicate(led, place.target, rec["name"], req.same_name_ok, req.chain)    # the resolved name (conf JOB_NAME)
+        unread |= refresh(led, src, proj, {L.run_id(rec["name"])}, ns.deadline)
+    duplicate(led, place.target, rec["name"], req.same_name_ok, req.chain, unread)   # the resolved name (conf JOB_NAME)
+    elsewhere(led, place.target, rec["name"], unread)   # the run live on another target: a NOTE, the user's call
     with led.locked():
         led.create_plan(rec)
-        d = decide(led, rec)
+        d = decide(led, rec, unread=unread)
     out(rec["card"])
     if d.denied:
         out(f"denied: {d.reasons[0]}")
@@ -1634,7 +1752,8 @@ def cmd_new(ns: argparse.Namespace, led: L.Ledger, src: Path, proj: Path) -> int
         return NEEDS_USER
     out(f"covered by {d.record['id']} ({d.record['kind']}, \"{d.record['quote']}\"): {grants.describe(d.record)}")
     launched: list = []
-    code = submit_plan(led, src, proj, place, rec, d.record["id"], d.record["quote"], ns.deadline, launched=launched)
+    code = submit_plan(led, src, proj, place, rec, d.record["id"], d.record["quote"], ns.deadline, launched=launched,
+                       unread=unread)
     return check_after(led, src, proj, launched, ns.check_after, ns.deadline, code)
 
 
@@ -1670,7 +1789,9 @@ def cmd_plans(ns: argparse.Namespace, led: L.Ledger, src: Path, proj: Path) -> i
             raise RskError(f"plan {rec['id']}: the conf now puts {rec['target']} at {p.host}:{p.remote_dir}, the plan "
                            f"was made at {rec.get('host')}:{rec.get('remote_dir')} — plan again", CONFLICT)
         places[rec["id"]] = p
-    refresh(led, src, proj, {rec["run"] for rec in recs if rec.get("run")}, ns.deadline)   # before the lock: ssh
+    unread = refresh(led, src, proj, {rec["run"] for rec in recs if rec.get("run")}, ns.deadline)   # before the lock: ssh
+    for rec in recs:
+        elsewhere(led, rec["target"], rec.get("name", ""), unread)
     by: dict[str, str] = {}
     with led.locked():   # ONE hold: re-check, the denies, claim every plan, then the approval (revoked on a failure)
         problems = [w for w in (plan_state(led, r) for r in recs) if w]
@@ -1681,7 +1802,7 @@ def cmd_plans(ns: argparse.Namespace, led: L.Ledger, src: Path, proj: Path) -> i
         acts_of = {rec["id"]: plan_actions(st.runs, rec) for rec in recs}
         for rec in recs:
             acts = acts_of[rec["id"]]
-            d = grants.check(st, acts[0], plan=check_plan(rec, st.runs), run=rec["run"], also=acts[1:])
+            d = grants.check(st, acts[0], plan=check_plan(rec, st.runs, unread), run=rec["run"], also=acts[1:])
             if d.denied:
                 out(rec["card"])
                 out(f"denied: {d.reasons[0]}")
@@ -1689,7 +1810,7 @@ def cmd_plans(ns: argparse.Namespace, led: L.Ledger, src: Path, proj: Path) -> i
                                "submitted, no approval recorded", REFUSED)
         if words is None:
             for rec in recs:
-                d = decide(led, rec)
+                d = decide(led, rec, unread=unread)
                 if not d.covered:
                     out(rec["card"])
                     out("not covered: " + ("; ".join(d.reasons) or "no record"))
@@ -1728,7 +1849,7 @@ def cmd_plans(ns: argparse.Namespace, led: L.Ledger, src: Path, proj: Path) -> i
             out(f"covered by {by[rec['id']]}: submitting")
         try:
             code = submit_plan(led, src, proj, places[rec["id"]], rec, by[rec["id"]], quotes.get(by[rec["id"]], ""),
-                               ns.deadline, claimed=words is not None, launched=launched)
+                               ns.deadline, claimed=words is not None, launched=launched, unread=unread)
         except RskError as exc:    # one plan's conflict never hides what the others did
             out(f"plan {rec['id']}: {exc}")
             code = exc.code
@@ -1741,8 +1862,7 @@ def cmd_plans(ns: argparse.Namespace, led: L.Ledger, src: Path, proj: Path) -> i
 def cmd_launch(args: argparse.Namespace) -> int:
     from remote_run.status import project_dir
     extra = list(getattr(args, "extra", []) or [])
-    head = extra[:extra.index("--")] if "--" in extra else extra
-    if "-h" in head or "--help" in head:
+    if help_asked(extra):
         parser().print_help()
         return OK
     ns = parse(extra)

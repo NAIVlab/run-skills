@@ -1,8 +1,9 @@
 """`rsk cancel`: stop a run of this project — only after grants.check() and an identity check on the target.
 
     rsk cancel RUN [--job J] [-T T] [--approve "the user's words" [--asked "your question"]] [-C DIR] [--grace S]
-               [--deadline S]
+               [--deadline S] [--wait S]
     rsk cancel --job J -T T [--approve "the user's words" [--asked "your question"]] [-C DIR] [--grace S] [--deadline S]
+               [--wait S]
 
 What may be stopped (the user's policy, §U of the P3 contract):
   - the user said it ("cancel job 123"): the words must name what is cancelled as a whole word — for --job J the job
@@ -22,7 +23,10 @@ What may be stopped (the user's policy, §U of the P3 contract):
     adopted one, never one the ledger shows ended) under a standing grant with cancel_own in scope, each cancel
     counted against its max_launches; anything else is the user's call → exit 4;
   - a deny always wins (exit 3, its quote); someone else's job or process: never (exit 3), whatever was approved.
-Identity, then the action, in ONE ssh (nothing is cancelled that this same read did not check):
+Identity, then the action, in ONE ssh (nothing is cancelled that this same read did not check) — after one look at
+the project dir, the probe rsk status makes: a filesystem that gives no answer within 15 s (a hung mount) ends the
+call there, before anything is read or sent: exit 5 `<dir>: its filesystem gave no answer within 15 s (a hung mount?)
+— nothing was sent`, a cancel_own use given back (an approval is used up all the same):
   slurm  J is in `squeue -u $USER` with this user, the ledger's job name (an unledgered job: its own record's), and
          WorkDir = the project's remote dir (logical or physical) → `scancel J`. A job not in that list is not
          cancelled: another user's (exit 3, from `squeue -j J`), or ended / a wrong id.
@@ -47,9 +51,20 @@ that did open and ran the body). A non-zero scancel (R5-5) is exit 5, the use ke
 confirmed: a timed-out request may have been applied; the message quotes scancel's line naming that job, R6-8) — unless
 scancel's own line for that id says it is invalid or already completing / completed: then exit 0 "nothing to cancel",
 the use given back, the ledger COMPLETING.
-Exit: 0 cancelled (or already ended) · 2 usage · 3 denied / not this user's · 4 needs the user · 5 the target could
-not be read or answered too little (the cancel may have been sent), or a scancel whose outcome is unknown · 6 the
-identity does not match (name, WorkDir, receipt) · 1 kill failed (processes left in the group).
+--wait S (Slurm; default 0 = return once scancel answered): an accepted scancel only asks Slurm to end the job, and
+until a read sees the end the ledger keeps the run live (CANCELLING) — a relaunch of the same name meanwhile meets the
+duplicate guard. --wait S reads the target again right away, then every ~10 s (the read rsk status makes, recorded in
+the ledger as rsk status would), until each accepted job is seen ended or S s pass; one line per job: `ended: job J
+(RUN aNN) on T: STATE (squeue|sacct)`, or `not ended yet: job J (RUN aNN) on T: STATE — the cancel was accepted; rsk
+status shows its end` and exit 5 (nothing given back or taken: the cancel's accounting stands). A read that fails or
+does not list the job proves no end. Jobs already ended / moot, an unknown scancel: no wait. A job an earlier rsk
+cancel already saw accepted (the ledger's CANCELLING, or that cancel's audit line) is not sent scancel again under
+--wait: `already cancelled: …`, then only the wait — a read, so nothing is authorised or used (the user is not asked
+twice). nohup: accepted, changes nothing (the cancel itself waits --grace and records the end).
+Exit: 0 cancelled (or already ended; with --wait: and seen ended) · 2 usage · 3 denied / not this user's · 4 needs the
+user · 5 the target could not be read or answered too little (the cancel may have been sent), its project filesystem
+hung (nothing sent), a scancel whose outcome is unknown, or --wait S passed before the end was seen · 6 the identity
+does not match (name, WorkDir, receipt) · 1 kill failed (processes left in the group).
 """
 
 from __future__ import annotations
@@ -59,6 +74,7 @@ import re
 import secrets
 import shlex
 import subprocess
+import time
 from dataclasses import dataclass
 
 from remote_run import grants, harness, observe, paths
@@ -94,9 +110,15 @@ def scancel_line(text: str, job: str) -> str:
     general = [ln for ln in lines if not _ID_IN.search(ln)]
     return general[-1] if general else ""
 
+# I8: both bodies look at the project dir first with rsk status's probe (observe.rs_dir: a child holding none of the
+# session's fds, waited for FS_WAIT s) — a hung mount would hold `cd` (and the ssh) until the local deadline, after
+# @@start: "may have been sent". Its `h` ends the call BEFORE @@start with observe's @@fail: proof that nothing ran.
+# Only `h` is decided here; d / n / x go on to the `cd` below as before (its own @@fail).
+_PROBE = '  [ "$(rs_dir "$RDIR")" != h ] || { ' + observe._HUNG + '; }   # I8: before @@start, nothing sent\n'
+
 SLURM_SH = r'''rs_cancel() {   # rs_cancel JOB WANT_NAME ... : identity of each, then scancel of exactly those that passed
-  echo @@start; U=${USER:-$(id -un)}; echo "@@user $U"
   case "$RDIR" in "~/"*) RDIR="$HOME/${RDIR#\~/}" ;; esac
+''' + _PROBE + r'''  echo @@start; U=${USER:-$(id -un)}; echo "@@user $U"
   cd "$RDIR" 2>/dev/null || { echo "@@fail cd $RDIR"; return 0; }; p1=$(pwd); p2=$(pwd -P); echo "@@pwd $p1|$p2"
   q=$(squeue -h -u "$U" --states=all -O "JobID:0|,Name:0|,UserName:0|,WorkDir:0|,State:0|") || { echo "@@fail squeue"; return 0; }
   ok=""
@@ -121,8 +143,8 @@ SLURM_SH = r'''rs_cancel() {   # rs_cancel JOB WANT_NAME ... : identity of each,
 }'''
 
 NOHUP_SH = r'''rs_kill() {   # rs_kill PID NONCE START BOOT ... : identity of each (receipt, /proc, owner, group), then TERM, grace, KILL
-  echo @@start; U=${USER:-$(id -un)}; echo "@@user $U"; boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)
   case "$RDIR" in "~/"*) RDIR="$HOME/${RDIR#\~/}" ;; esac
+''' + _PROBE + r'''  echo @@start; U=${USER:-$(id -un)}; echo "@@user $U"; boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)
   cd "$RDIR" 2>/dev/null || { echo "@@fail cd $RDIR"; return 0; }
   [ -n "$boot" ] || { echo "@@fail no /proc boot_id"; return 0; }
   kv() { sed -n "s/^$1=//p" "$2" 2>/dev/null | head -n 1; }
@@ -369,7 +391,8 @@ def authorize(led: L.Ledger, place: harness.Place, items: list[Item], words: str
 
 
 def body(place: harness.Place, items: list[Item], grace: int) -> str:
-    head = f"RDIR={shlex.quote(place.remote_dir)} GRACE={int(grace)}\n"
+    head = (f"RDIR={shlex.quote(place.remote_dir)} GRACE={int(grace)} FS_WAIT={int(observe.FS_WAIT)}\n"
+            + observe._DIRPROBE + "\n")              # rs_dir, which both bodies call first (_PROBE, I8)
     if place.kind == "slurm":
         args = [w for i in items for w in (i.job, i.name)]
         return head + SLURM_SH + "\nrs_cancel " + " ".join(shlex.quote(a) for a in args) + "\n"
@@ -421,6 +444,9 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     if asked is not None and (words is None or not asked.strip()):
         raise RskError("--asked takes your question the user answered, verbatim (non-empty), and goes with --approve "
                        "\"<their answer>\"", USAGE)
+    if not 0 <= args.wait <= WAIT_MAX_S:
+        raise RskError(f"--wait S takes seconds from 0 (the default: no wait) to {WAIT_MAX_S}, not {args.wait} — a "
+                       "longer wait is a later rsk status, not a loop of reads on the login node", USAGE)
     grants.refuse_recycled(words, led.state().grants, "this cancel")
     asked = asked or ""
     if not args.run and not args.job:
@@ -445,6 +471,15 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     if bad:
         raise RskError(f"{', '.join(bad)}: {'a Slurm job id' if place.kind == 'slurm' else 'a pid (the run wrapper)'}",
                        USAGE)
+    before = accepted_before(led, place.target, items) if args.wait > 0 and place.kind == "slurm" else {}
+    for i in items:
+        if i.job in before:
+            out(f"already cancelled: {_label(i)} on {place.target} — an earlier rsk cancel's scancel was accepted "
+                f"({before[i.job] or 'at ?'}); not sent again: --wait follows its end")
+    waiting = [i for i in items if i.job in before]
+    items = [i for i in items if i.job not in before]
+    if not items:                          # only a wait: a read, nothing to authorise or send
+        return wait_end(led, place, waiting, args.wait, args.deadline)
     cover = authorize(led, place, items, words, args.run or args.job, asked)
     q_kw = {"asked": asked} if asked else {}         # NF8: the question the words answer, in every audit line
     deadline = args.deadline + (args.grace + 5 if place.kind == "nohup" else 0)
@@ -471,11 +506,15 @@ def cmd_cancel(args: argparse.Namespace) -> int:
         led.audit("cancel", target=place.target, jobs=[i.job for i in items], outcome="unobservable", why=why[:200],
                   sent="maybe" if sent else "no", **q_kw)
         silent = sent and "start" not in facts       # no answer at all (timeout, 255, signal): the body may have run
+        early = "fail" in facts and "start" not in facts   # I8: the hung-mount probe stopped it before anything ran
         raise RskError(f"[{place.target}] {why} — "
                        + ("the cancel may have been sent: rsk status (no answer at all: the job may have been cancelled "
                           "— ssh's own words are no proof that the body never ran; the use is kept)" if silent else
-                          "the cancel may have been sent: rsk status" if sent else "nothing was cancelled"), UNKNOWN)
+                          "the cancel may have been sent: rsk status" if sent else
+                          "nothing was sent, nothing was cancelled (it stopped before reading any job; retry once rsk "
+                          "status reads the target again)" if early else "nothing was cancelled"), UNKNOWN)
     worst = OK
+    accepted = waiting                     # Slurm: scancel rc=0 (the ledger's CANCELLING) — what --wait follows
     for i in items:
         v = verdict.get(i.job, "missing")
         rid = cover[i.job]["id"]
@@ -510,6 +549,7 @@ def cmd_cancel(args: argparse.Namespace) -> int:
                 if i.run:
                     led.observe(i.run, i.attempt, i.job, "CANCELLING", "rsk cancel (scancel rc=0)")
                 out(f"cancelled: {what} on {place.target} — scancel accepted (under {rid}); rsk status shows it end")
+                accepted.append(i)
             else:
                 left = extra.get(f"left:{i.job}", "")
                 n = left.split(" ")[0] if left else "?"
@@ -548,7 +588,113 @@ def cmd_cancel(args: argparse.Namespace) -> int:
         led.audit("cancel", run=i.run, attempt=i.attempt, target=place.target, job=i.job, record=rid,
                   outcome=f"not cancelled: {v}"[:200], **q_kw)
         worst = worst or code
+    if accepted and args.wait > 0:         # nohup: the cancel already waited --grace and recorded the end
+        w = wait_end(led, place, accepted, args.wait, args.deadline)   # also after another item's non-zero code
+        worst = worst or w
     return worst
+
+
+WAIT_EVERY = 10.0      # s between two reads of `rsk cancel --wait` (a login node's squeue + sacct each; tests patch it)
+WAIT_MAX_S = 600       # the longest --wait: at most ~60 reads, as --check-after is capped (launch.CHECK_MAX_S)
+
+
+def _label(i: Item) -> str:
+    return f"job {i.job}" + (f" ({i.run} {i.attempt})" if i.run else "")
+
+
+def _sub(led: L.Ledger, i: Item) -> dict:
+    """I's submission (Slurm job id) in the ledger now; {} when the ledger has none."""
+    att = ((((led.read_run(i.run).data or {}).get("attempts") or {}).get(i.attempt)) or {}) if i.run else {}
+    return next((s for s in att.get("submissions") or [] if str(s.get("job") or "") == i.job), {})
+
+
+def _ledger_end(led: L.Ledger, i: Item) -> tuple[str, str, bool]:
+    """(state, source, ended) of I's submission in the ledger now: its recorded end, else the last state seen."""
+    s = _sub(led, i)
+    seen, end = s.get("seen") or {}, s.get("end") or {}
+    state = str(end.get("state") or seen.get("state") or "") if end else str(seen.get("state") or "")
+    return state or "CANCELLING", str(seen.get("source") or end.get("evidence") or "ledger"), \
+        bool(end) or state in L.TERMINAL
+
+
+def accepted_before(led: L.Ledger, target: str, items: list[Item]) -> dict[str, str]:
+    """--wait (Slurm): {job: when} for the ledgered live ITEMS whose scancel an earlier rsk cancel saw ACCEPTED and
+    whose end no read has shown since (ledger.sub_cancel_pending == CANCELLING: the ledger's CANCELLING, or the marker
+    rsk cancel left while later reads show the job COMPLETING). `rsk cancel RUN --wait S` then waits for their end
+    without sending scancel again: a read acts on nothing, so nothing is authorised or used (an approval used up by
+    that cancel is not asked for twice). Not an unclear one (CANCELLING?: it may not have been applied — sent again,
+    authorised as a new cancel), nor one a later read shows live in another state (a requeue: the job runs again).
+    A submission recorded before the marker existed: that cancel's audit line (`cancelled`, this target, job, run and
+    attempt) counts while no read since shows the job in a state but COMPLETING. Without --wait the cancel is sent
+    again, as before."""
+    live = {i.job: i for i in items if i.run and not i.ended}
+    got, legacy = {}, {}
+    for j, i in live.items():
+        s = _sub(led, i)
+        st, at = L.sub_cancel_pending(s)
+        if st == "CANCELLING":
+            got[j] = at
+        elif not st and not s.get("cancel"):
+            legacy[j] = s.get("seen") or {}
+    if legacy:
+        for a in led.read_audit()[0]:
+            i = live.get(str(a.get("job", "")))
+            if i is None or i.job not in legacy or i.job in got:
+                continue
+            seen = legacy[i.job]
+            if a.get("event") == "cancel" and a.get("outcome") == "cancelled" and a.get("target") == target \
+                    and a.get("run") == i.run and a.get("attempt") == i.attempt \
+                    and (seen.get("state") == "COMPLETING" or str(seen.get("at", "")) <= str(a.get("at", ""))):
+                got[i.job] = str(a.get("at", ""))
+    return got
+
+
+def wait_end(led: L.Ledger, place: harness.Place, items: list[Item], wait: int, deadline: float) -> int:
+    """I1, `--wait S` (Slurm): the jobs whose scancel was accepted (ITEMS: the ledger's CANCELLING) are followed with the
+    read rsk status makes — observe + status.record, so the ledger learns what rsk status would — at once, then every
+    WAIT_EVERY s, until each one's end is observed or S s pass. One line per job: `ended: job J (RUN aNN) on T: STATE
+    (squeue|sacct)`, or `not ended yet: …` → exit 5: the cancel was accepted, its end not seen (no use is given back or
+    taken: the cancel settled them). Absence from a read is no end (its rows may be out of sacct's window), a read that
+    fails changes nothing (said once per reason; the next read may answer). A job the ledger does not know (--job J,
+    WorkDir checked by the cancel) is followed in the read itself."""
+    from remote_run import status as S
+    todo = list(items)
+    state = {i.job: ("CANCELLING", "") for i in items}
+    atts = [((led.read_run(i.run).data or {}).get("attempts") or {}).get(i.attempt) or {} for i in items if i.run]
+    oldest = min([L.epoch(a.get("created_at")) or time.time() for a in atts] or [time.time()])
+    days = max(2, min(30, int((time.time() - oldest) // 86400) + 2))   # launch.refresh's window: back to the oldest
+    stop, said = time.monotonic() + wait, set()
+    while True:
+        left = stop - time.monotonic()
+        st0 = led.state()
+        o = observe.observe([place], days, min(deadline, max(left, 20.0)))[0]   # a read is never cut below 20 s
+        for n in S.record(led, st0, [o]):
+            out(f"ledger: {n}")
+        hung = not o.ok and "its filesystem gave no answer" in o.why   # observe._HUNG: each read leaves a stuck stat
+        if not o.ok and re.sub(r"[0-9]+", "#", o.why) not in said:      # "no answer within N s": one reason
+            said.add(re.sub(r"[0-9]+", "#", o.why))
+            out(f"NOTE: {place.target} could not be read now ({o.why}) — the jobs' state stands; "
+                + ("not reading it again now (a hung mount: each read would leave a stuck process on the login node)"
+                   if hung else "reading again"))
+        for i in list(todo):
+            if i.run:
+                st, source, done = _ledger_end(led, i)
+            else:
+                j = next((j for j in o.jobs if j.id == i.job), None) if o.ok else None
+                st, source = (j.state, j.source) if j else state[i.job]
+                done = bool(j) and j.state in observe.TERMINAL
+            state[i.job] = (st, source)
+            if done:
+                out(f"ended: {_label(i)} on {place.target}: {st} ({source or 'ledger'})")
+                todo.remove(i)
+        left = stop - time.monotonic()
+        if not todo or left <= 0 or hung:
+            break
+        time.sleep(min(WAIT_EVERY, left))
+    for i in todo:
+        out(f"not ended yet: {_label(i)} on {place.target}: {state[i.job][0]} — the cancel was accepted; rsk status "
+            "shows its end")
+    return UNKNOWN if todo else OK
 
 
 def _text(b: bytes | str | None) -> str:
@@ -562,12 +708,13 @@ def sent_maybe(facts: dict, verdict: dict[str, str], items: list[Item], cut: boo
     """For an answer without @@end (cut off, timed out) or with @@fail: may a scancel / TERM have gone out? Only proof
     says no — no @@start from an ssh that ended with the remote's own status or never started (CUT False: all it
     printed arrived, so the remote never began; CUT = a timeout, ssh's own 255 or a signal is no proof — the body may
-    have run there while nothing came back), @@fail (it stopped before any identity), `@@scancel none` / `@@kill
+    have run there while nothing came back), @@fail (it stopped before any identity — I8: the hung-mount probe's
+    before @@start too; whatever came after it, the body returns right after printing it), `@@scancel none` / `@@kill
     none`, or every item's identity verdict arrived and none passed. Anything else after @@start: maybe."""
-    if "start" not in facts:
-        return cut
     if "fail" in facts:
         return False
+    if "start" not in facts:
+        return cut
     if facts.get("scancel") == "none" or facts.get("kill") == "none":
         return False
     if all(i.job in verdict for i in items) and not any(v.startswith("ok") for v in verdict.values()):
@@ -622,4 +769,9 @@ def add_parser(sub) -> None:
                    "with the approval and in the audit; bookkeeping, not proof")
     p.add_argument("--grace", type=int, default=30, help="nohup: seconds between TERM and KILL (default 30)")
     p.add_argument("--deadline", type=float, default=60.0)
+    p.add_argument("--wait", type=int, default=0, metavar="S",
+                   help="Slurm: after an accepted scancel, read the target again (as rsk status does, every ~10 s; S <= 600) "
+                   "until the job's end is seen or S seconds pass — then exit 5 'not ended yet' (default 0: no wait; "
+                   "a job an earlier rsk cancel saw accepted is only waited for, not cancelled again; nohup: the "
+                   "cancel already waits --grace)")
     p.set_defaults(func=cmd_cancel)

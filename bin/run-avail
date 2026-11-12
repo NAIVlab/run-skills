@@ -6,7 +6,9 @@
 # Slurm (per partition of T_PARTITIONS, per gres type): free = total - used on usable nodes (state idle / mixed /
 # allocated / completing / planned, none of the flags * ~ # ! % $ @ ^) that still have an idle CPU; "max/node" = the
 # most free on ONE node (a job here is single-node); "planned" = free GPUs on nodes backfill holds for a pending job.
-# Free is not schedulable: QOS, account and per-user caps still apply (submit.sh checks them). Workstations: a GPU is
+# Free is not schedulable: priority, QOS / account / per-user caps and the account's other jobs (other projects, other
+# sessions of this user) decide when a job starts — nothing here reads them, and submit.sh's availability gate only
+# counts idle GPUs (minus the job's --exclude nodes); squeue's pending reason says which applies. Workstations: a GPU is
 # free with no compute process, < 1 GiB used and < 5 % util. --type filters gres type / GPU name (substring),
 # --min N keeps rows with >= N free on one node (one box). Exit 0 if every target answered, else 1.
 set -uo pipefail
@@ -97,7 +99,7 @@ END { if ("nvidia-smi" in bad || n == 0) { print "  ERROR: nvidia-smi gave no GP
     else rows = rows sprintf("  GPU%s %-26s %-7s %5.1f/%.1fG %3d%%  procs %s\n", idx[i], nm[i], st, us[i] / 1024, tt[i] / 1024, ut[i], ("compute-apps" in bad ? "?" : busy[uu[i]] + 0)) }
   if (shown == 0 || nf < MIN) exit; printf "  %d/%d free\n%s", nf, shown, rows }'
 
-echo "# run-avail $(date -u +%Y-%m-%dT%H:%MZ)  (free/total per gres type; free is not schedulable: QOS/account/per-user caps apply)"
+echo "# run-avail $(date -u +%Y-%m-%dT%H:%MZ)  (free/total per gres type; free is not schedulable: priority, QOS/account/per-user caps and your other jobs decide)"
 FAIL=0
 for n in $(seq 1 "$i"); do
   t=$(cat "$TMP/$n.name"); kind=$(cat "$TMP/$n.kind" 2>/dev/null)

@@ -11,6 +11,18 @@ one ssh and tracked by PID + log. The harness is deployed to `~/<WS_REMOTE_DIR>/
 (relative to the box's `$HOME`, e.g. `projects/<name>`; `<TAG>_REMOTE_DIR` per box), `ENV_KIND` (uv default | conda,
 then `ENV_NAME`), `RUN`; full list in `conf-keys.md`. Missing → follow `project-setup.md`; never guess the remote dir.
 
+**Reading rsk.** Read each call's whole output and its exit code: a refusal's reason, a `NOTE:` or a `WARNING:` is in the
+lines, not in the code alone. `rsk launch` and `rsk cancel` end every call that got past their arguments with one
+verdict line, the last on stdout: `rsk launch: exit N (<meaning>)` (`rsk cancel: …`), plus ` — <its first line>` when an
+error ended the call (the error itself goes to stderr as `rsk: …`). A script that calls rsk logs every call's full
+output to a file and branches on the exit code — a `grep` for `launched|refus|ERROR` loses every answer it did not
+foresee. Pass options literally or as an array (`"${args[@]}"`): the agent's shell may be zsh, which never splits an
+unquoted `$VAR` (`a="-N x"; rsk launch $a …` passes ONE word), while bash splits one you meant as one word; a run name
+(`-N`, `--relaunch`) holding whitespace or a control character is exit 2 before anything is planned — quote it. Exit 5
+is an unknown or unreachable state: read the line before treating it as anything else — `… its filesystem gave no answer
+within 15 s (a hung mount?)` means the project dir hung before anything ran there (nothing planned, launched or
+signalled; try again once the mount answers), unlike a reply lost after the launch or cancel started (§4, §5).
+
 ## 1. Sync — push code, deploy the harness
 ```
 rsk sync -T <t> [-n] [--also <path>]      # = TARGET=<t> bash $ROOT/bin/run-sync …; additive; -n dry-run; -D also delete
@@ -345,6 +357,24 @@ is kept`: a fallback route or a login shell can print `Connection refused` on a 
 left in the run's group (`FAILED: … process(es) still in its group after TERM …`). Without
 rsk, on the same terms: `ssh <host> "kill <pid>"` (the `<log>.pid` wrapper: it forwards TERM to the run once and records
 `term=1`), and only if the run's group outlives that, `ssh <host> "kill -- -<pid>"` (the whole process group).
+`rsk cancel … --wait S` is accepted and changes nothing here: the cancel already waits `--grace` and records the end.
+**Moving a run to another target**: `rsk cancel <run>` (its answer is the end), then plan it on the new target (`rsk
+launch -T <new> …` — a `relaunch`: after a stop only the user's approval of the card or a `--relaunch-after any` grant
+covers it). An answer that left the end unknown (exit 5) keeps the run live in the ledger: a launch of it on that box is
+refused, on another target rsk prints a NOTE (the old copy may still run) — `rsk status` again once the box answers,
+never `--same-name-ok` for it (two live copies would share the run's logs and checkpoints), and tell the user when you
+launch elsewhere before the old end is seen. rsk copies no checkpoint between targets: a relaunch elsewhere resumes only from what that target's
+project dir holds — check it before the launch. To carry one over: `rsk pull -T <old> -n ckpts/<dir>` (count + size; a
+large tree needs the user's OK), `rsk pull -T <old> ckpts/<dir>`, then `rsk sync -T <new> --also ckpts/<dir>` (a
+one-off force-push of that excluded path), and confirm the trainer's own resume line after the start. A run that starts
+fresh instead says so in its notes (conventions §4) and in your report.
+**Looking after runs under a standing grant** (`relaunch`, `--relaunch-after any`, `cancel_own`): the grant says what
+rsk lets through, not what is wise. A run that was stopped — `CANCELLED` (rsk cancel), or `term=1` in its `<log>.rc` (a
+TERM: the user, another session) — was someone's decision: never relaunch it unprompted, even where a grant would cover
+it; ask. Several runs ending at the same moment point at the box (a reboot, a full disk, the driver) or a shared input
+(data, code, the env), not at each run: read one log (`rsk logs`) before relaunching any, and relaunch one before the
+rest. Bound the relaunches you start yourself (state the number in your report; the grant's budget is a ceiling, not a
+target); the same failure twice after a fix → stop and escalate (conventions §7).
 
 **Many runs or long waits: `run-watch`** (cwd = project root; `bin/run-watch` header = the contract). A table
 `#@ run-watch v1` lists rows `name target done-path -` (the name = the log prefix `logs/<name>-<timestamp>.log`;

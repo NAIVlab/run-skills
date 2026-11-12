@@ -1537,10 +1537,39 @@ def _infra_miss(prev: tuple[str, dict] | None) -> list[str]:
             f"({', '.join(INFRA_END)}): anything else is the user's call"]
 
 
+CANCEL_SENT = L.CANCEL_SENT   # rsk cancel's observations (Slurm): scancel accepted it / its answer did not confirm it
+
+
+def cancel_unconfirmed(run: str, aid: str, att: dict, now: float, unreadable_now: bool = False) -> str:
+    """I4: what blocks while a cancel rsk sent to the attempt has no observed end (ledger.cancel_pending: CANCELLING,
+    or CANCELLING? — kept through later reads that show the job COMPLETING) — said as that, never as a live run to keep
+    (--same-name-ok would start a second copy beside one that may still run), with what clears it: after an accepted
+    scancel, `rsk cancel RUN --wait S` only waits (nothing is sent, authorised or used again); after an unclear one it
+    would send scancel again, a new cancel authorised as one — rsk status first shows whether it ends.
+    UNREADABLE_NOW: the read made just before (launch.refresh) could not read its target. '' when no cancel is pending."""
+    st, at_s = L.cancel_pending(att)
+    if not st:
+        return ""
+    tg = str(att.get("target") or "?")
+    sub = [s for s in att.get("submissions") or [] if s.get("job")]
+    job = f"job {sub[-1]['job']}" if sub else "its job"
+    at = L.epoch(at_s) if at_s else 0
+    when = f" {_ago(now - at)} ago" if at else ""
+    seen = (f"{tg} is not readable now" if unreadable_now else f"no read of {tg} has shown its end since")
+    if st == "CANCELLING":
+        return (f"the cancel of {run} {aid} ({job} on {tg}) is not confirmed yet: sent{when}, scancel accepted it; "
+                f"{seen} — rsk cancel {run} --wait S waits for its end (nothing is sent again), or rsk status shows it")
+    return (f"the cancel of {run} {aid} ({job} on {tg}) is not confirmed: sent{when}, scancel's answer did not confirm "
+            f"it (CANCELLING?); {seen} — rsk status shows whether it ends; rsk cancel {run} would send it again (a new "
+            "cancel, authorised as one)")
+
+
 def _any_misses(plan: dict, f: Facts, state: L.LedgerState) -> list[str]:
     """relaunch_after "any": why a relaunch of F's run may NOT start yet — any earlier attempt of the run that may still
     hold resources: a ledger attempt that is live or SUBMIT_UNKNOWN (any target), or one only the target's journal
-    shows (its info_prior counts more submissions of the run there than the ledger holds, or cannot say)."""
+    shows (its info_prior counts more submissions of the run there than the ledger holds, or cannot say). A cancel
+    sent whose end no read has shown (ledger.cancel_pending) is said as that (I4: cancel_unconfirmed; PLAN's
+    optional `unreadable_now` = the targets launch.refresh could not read just now)."""
     run = L.run_id(f.name or "")
     prior = prior_attempts(state.runs, run, str(plan.get("plan_id", "")))
     out = []
@@ -1548,11 +1577,16 @@ def _any_misses(plan: dict, f: Facts, state: L.LedgerState) -> list[str]:
     if isinstance(age, (int, float)) and age > ANY_PLAN_MAX_AGE_S:   # its journal count was read when it was planned
         out.append(f"the plan is {int(age // 60)} min old: what the target's journal held then may have changed — plan "
                    "it again for a relaunch covered after any end")
+    sent = [(k, a) for k, a in prior if L.cancel_pending(a)[0]]
     live = [f"{k} ({L.attempt_state(a)}{', ' + a['target'] if a.get('target') and a['target'] != f.target else ''})"
-            for k, a in prior if L.is_live(a)]
+            for k, a in prior if L.is_live(a) and not L.cancel_pending(a)[0]]
     if live:
         out.append(f"earlier attempt(s) of {run} may still be live: {', '.join(live)} — a relaunch covered after any end "
                    "starts once every earlier one has ended (rsk status; or stop it first)")
+    unread = {str(x) for x in plan.get("unreadable_now") or () if isinstance(x, str)}
+    t = time.time() if state.now is None else state.now
+    out += [cancel_unconfirmed(run, k, a, t, str(a.get("target") or "") in unread) + " — a relaunch covered after any "
+            "end starts once it has ended" for k, a in sent]
     # the ledger's submissions on this target the journal must hold a receipt of: not unsent ones, not jobs adopted without
     # a receipt (adopt.py's synthetic nonces) — each of those would hide one receipt the ledger never saw
     here = sum(1 for _k, a in prior if a.get("target") == f.target for s in a.get("submissions") or []
@@ -1686,6 +1720,28 @@ def prior_attempts(runs: dict, run: str, plan_id: str = "") -> list[tuple[str, d
                   key=lambda kv: _anum(kv[0]))
 
 
+def att_name(att: dict) -> str:
+    """A ledger attempt's run name as facts() reads it: a %q value. The ledger holds it twice — the decoded name
+    (attempt `name`, what L.run_id keys the run by) and the plan block's form (request.bound.name: Slurm's %q, a
+    box's %s) — and facts() decodes, so the decoded name passed as is broke on any name %q escapes: a name holding a
+    space (`a\\ b` in the block) read as two words, unreadable, and no cancel_own grant could ever cover the run. The
+    bound form when it decodes to one word (what the launch was judged on); else the decoded name, quoted (an
+    attempt from before the bound name, a box's %s name with a quote or a backslash). Two forms that decode to
+    different names: both, as two words — unreadable, so a deny scoping names matches it and no grant covers it."""
+    raw = str(att.get("name") or "")
+    b = ((att.get("request") or {}).get("bound") or {}).get("name")
+    if isinstance(b, str) and b:
+        try:
+            dec = unq(b)
+        except RskError:
+            dec = None
+        if dec is not None and (not raw or dec == raw):
+            return b
+        if dec is not None:
+            return f"{shlex.quote(dec)} {shlex.quote(raw)}"
+    return shlex.quote(raw) if raw else ""
+
+
 def _original(prev: tuple[str, dict] | None) -> dict | None:
     """The configuration a relaunch / resubmit must repeat: that of PREV, the run's latest attempt that may have run —
     the one whose end a relaunch grant relies on (never an older attempt the plan happens to be named after)."""
@@ -1732,7 +1788,7 @@ def check(ledger: L.Ledger | L.LedgerState, action: str, *, plan: dict | None = 
             req = a.get("request") or {}
             own = bool(live) and req.get("action") in LAUNCHES and s.get("submit") != "adopted" and bool(req.get("plan"))
             facts_plan = {"target": a.get("target", ""), "kind": a.get("kind", ""), "warnings": "0",
-                          **req.get("bound", {}), "name": a.get("name", ""),
+                          **req.get("bound", {}), "name": att_name(a),
                           "bound_hash": str(req.get("bound_hash") or ""), "plan_id": str(req.get("plan") or ""),
                           "classes_recorded": run_classes(run_rec),
                           **({"class": req["class"]} if req.get("class") else {})}

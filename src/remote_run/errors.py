@@ -5,7 +5,7 @@ from __future__ import annotations
 OK = 0
 FAILED = 1         # the command ran on the target and exited non-zero (its own code is printed)
 USAGE = 2          # usage, config or a fixable setup problem
-REFUSED = 3        # a site policy refused: final
+REFUSED = 3        # a site policy or a deny (the user's, or another user's job) refused: final
 NEEDS_USER = 4     # a decision only the user can make (`needs:` says which)
 UNKNOWN = 5        # the outcome or the remote state is unknown / unreachable
 CONFLICT = 6       # an existing run, lock, drift or stale deploy blocks the action
@@ -16,7 +16,7 @@ EXIT_CODES = {
     OK: "ok",
     FAILED: "the remote command ran and failed (its exit code is printed)",
     USAGE: "usage, config or setup problem",
-    REFUSED: "refused by site policy (final)",
+    REFUSED: "refused: a site policy or a deny (final)",
     NEEDS_USER: "needs the user's decision",
     UNKNOWN: "unknown or unreachable",
     CONFLICT: "conflict with existing state",

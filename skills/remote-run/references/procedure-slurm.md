@@ -7,6 +7,17 @@ dropped: `my-hpc` → `MYHPC_`); `<host>` = its ssh alias from the table. Run ev
 wrap `submit.sh` / `scancel` with the plan card, the authorisation check and the ledger (SKILL.md §3).
 The deployed copy of the harness lives at `<REMOTE_DIR>/.<t>/` — `env.sh status.sh submit.sh job.sbatch bootstrap.sh
 profile.sh MANIFEST [policy.sh policy.local.sh]` — and is refreshed by every sync (`MANIFEST`, the sha256 of each file, last).
+**Reading rsk.** Read each call's whole output and its exit code: a refusal's reason, a `NOTE:` or a `WARNING:` is in the
+lines, not in the code alone. `rsk launch` and `rsk cancel` end every call that got past their arguments with one
+verdict line, the last on stdout: `rsk launch: exit N (<meaning>)` (`rsk cancel: …`), plus ` — <its first line>` when an
+error ended the call (the error itself goes to stderr as `rsk: …`). A script that calls rsk logs every call's full
+output to a file and branches on the exit code — a `grep` for `submitted|refus|ERROR` loses every answer it did not
+foresee. Pass options literally or as an array (`"${args[@]}"`): the agent's shell may be zsh, which never splits an
+unquoted `$VAR` (`a="-n x"; rsk launch $a …` passes ONE word), while bash splits one you meant as one word; a run name
+(`-n`, `--relaunch`) holding whitespace or a control character is exit 2 before anything is planned — quote it. Exit 5
+is an unknown or unreachable state: read the line before treating it as anything else — `… its filesystem gave no answer
+within 15 s (a hung mount?)` means the project dir hung before anything ran there (nothing planned, submitted or
+signalled; try again once the mount answers), unlike a reply lost after the submit or cancel started (§4, §5).
 
 ## 0. `.hpc.conf` — the only per-project state
 Sourced as shell: values with spaces MUST be double-quoted or sync/submit abort. Minimum: `REMOTE_DIR` (absolute
@@ -61,8 +72,9 @@ lets exactly this payload start without a venv.
 Collect partition / GPU count / GPU type / walltime / run command from the user's words, the target's reference and
 the conf defaults. Unless the user fixed the placement, `run-avail` (`rsk avail`) comes first (INDEX Routing: Placement):
 the plan then cites what is free (`max/node` = GPUs on one node; `planned` = held by backfill for a pending job; free is
-not schedulable — QOS and per-user caps apply), and why this target and partition. Prefer the target's default
-partition unless the user or the reference says otherwise. **`rsk launch` (§4) plans first and checks whether the
+not schedulable — priority, QOS and per-user caps and this user's other jobs decide: §5 "A run that waits"), and why
+this target and partition. Prefer the target's default partition unless the user or the reference says otherwise.
+**`rsk launch` (§4) plans first and checks whether the
 user's recorded words already cover that plan** (SKILL.md §3): covered → it submits and you report which record
 covered it; not covered (exit 4) → show its card verbatim with `ref: <reference path>` (re-read it if only a
 summary of it is in context) and wait for the user's words ("go" / "确认" / "跑" or anything that approves this card).
@@ -212,8 +224,11 @@ calls `sbatch/srun/salloc`, an `SBATCH_EXTRA` carrying `-p/--partition` or a for
 that is neither an option nor the value of the option before it, or a value option left without its value at the end
 (exit 2, in plan and submit: sbatch would run that word as the batch script, or eat the harness's next option —
 `conf-keys.md`), prints per-node availability and stops with `WARNING: only N free … Re-run -y` when the GPUs are not
-free (`-y` queues anyway), refuses a second live job of the same name from this project (`ERROR: '<name>' is already
-RUNNING from this project (job N …)`, exit 6: follow that job, or pick another `-n`; `--same-name-ok` only when the user
+free (`-y` queues anyway; a node the job's own last `--exclude` / `-x` names is listed `[excluded]` and not counted — a
+value that is no plain comma-separated host list, a hostlist range `n[1-4]` or a path, is not subtracted: a `NOTE:` says
+so, and the count may then include GPUs the job cannot use), refuses a second live job of the same name from this
+project (`ERROR: '<name>' is already RUNNING from this project (job N …)`, exit 6: follow that job, or pick another
+`-n`; `--same-name-ok` only when the user
 wants both; `--dependency=singleton` chains skip the check), prints `WARNING (lint): SBATCH_EXTRA …` (warnings only,
 for now: tell the user) for an option outside its allowed set or one the harness sets itself — reading the words as the
 scan does, so an option's separate value is never linted as an option (in `--comment -t1` the `-t1` is the comment) —,
@@ -286,8 +301,9 @@ Slurm's USR1 warning (time limit, or preemption where the site sends it) / SIGTE
 and was forwarded to the trainer; `lost` = it arrived after the trainer was gone; `pending` = before it started (the job
 aborts). `footer=none` = still running, or the attempt ended before writing it (killed). GPU use is judged by the log's
 step rate (where `nvidia-smi` is usable is in the target's reference). State → meaning: `PENDING` — read the reason
-(Priority/Resources = wait; a QOS/limit reason = a cap, not a stall); `RUNNING`; `COMPLETED` — rc 0, still verify the
-final artifact (rc 0 with `usr1=1` = it exited after the signal: find its own save line before resubmitting); `FAILED` —
+(Priority/Resources = wait; a QOS/limit reason = a cap, not a stall: "A run that waits", below); `RUNNING`; `COMPLETED`
+— rc 0, still verify the final artifact (rc 0 with `usr1=1` = it exited after the signal: find its own save line before
+resubmitting); `FAILED` —
 read the Traceback (`usr1=1` = it was signalled first; rc 138 there usually means no USR1 handler — rely on periodic
 saves, then resubmit; sacct may show it as `10:0`); `TIMEOUT` — still running at `-t`; `--requeue` does not restart it (the chain's next segment, or a
 resubmit, resumes it); `OUT_OF_MEMORY` — smaller batch or larger `-m`; `PREEMPTED` / `NODE_FAIL` as the latest state = NOT
@@ -341,6 +357,47 @@ the cancel stays unknown — exit 5, the use kept (fail closed). Exit 1 is never
 workstation kill that left processes).
 Without rsk: the job's line in `ssh <host> 'squeue -h -u $USER --states=all -O "JobID:0|,Name:0|,UserName:0|,WorkDir:0|,State:0|"'`
 (the read `rsk cancel` makes) must show the run's name, your user and this remote dir; then `scancel <jobid>`, on the same terms.
+`rsk cancel … --wait S` waits for the end it started: for every job whose `scancel` was accepted (ledger `CANCELLING`)
+it re-reads the target — the read `rsk status` makes — about every 10 s (S ≤ 600) until the ledger shows that job ended, then
+prints `ended: job J (<run> aNN) on <t>: <STATE> (<source>)`; when S seconds pass first, `not ended yet: job J (<run> aNN)
+on <t>: <state> — the cancel was accepted; rsk status shows its end` and exit 5, the use accounting unchanged. A job
+already ended, or a moot cancel, is not waited for; `--wait 0` (the default) is the call without it; a read that finds
+the project dir hung ends the wait at once. `rsk cancel <run> --wait S` on a run whose cancel was ACCEPTED earlier only
+waits (nothing is sent, authorised or used again); after an unconfirmed one (`CANCELLING?`) it sends scancel again — a
+new cancel, authorised as one. A cancel whose ssh found the project dir hung (`… its filesystem gave no answer within 15
+s (a hung mount?)`, exit 5) stopped before the body ran: nothing was signalled — a `cancel_own` use is given back, a
+cancel approval stays used up (a retry needs the user's words again).
+**A run that waits (PENDING).** Free is not schedulable: the submit gate counts idle GPUs (minus the job's `--exclude`
+nodes); when the job starts is the scheduler's call (priority, limits and caps, the other jobs in the queue — this
+user's other projects and agent sessions among them). squeue's pending reason (`Priority`, `Resources`, a QOS or limit
+name, …) is the scheduler's own word for what the job waits on: read it before adding submits to the same queue.
+`rsk launch --check-after S` prints it right after the submit (`PENDING (<reason>)`); `rsk status` shows it per job and,
+for each Slurm target it read, one line on this user's jobs there from other dirs (`this user's other jobs on <t> (other
+dirs: this user's other projects or sessions): RUNNING 3, PENDING 7 (Priority 5, …)`; no line = none; a failed read never
+says none).
+When a run waits long, compare targets (`rsk avail`) and tell the user what you see — moving it (below) beats stacking
+more submits onto the same queue.
+**Moving a run to another target**: `rsk cancel <run> --wait 120`, then plan it on the new target (`rsk launch -T <new>
+…` — a `relaunch`: after a CANCELLED end only the user's approval of the card or a `--relaunch-after any` grant covers
+it). Until rsk has seen the old job end, the ledger keeps it `CANCELLING` (`CANCELLING?` after an unconfirmed
+`scancel`): a launch of the run on that same target is refused (§4: the live-run check) — the refusal says the cancel's
+end is not confirmed yet and names the old target when it could not be read now; on another target rsk prints a NOTE
+(the old copy may still run) and judges the plan as usual. `not ended yet` = the end not seen within S. Then `rsk
+status` once that target answers (or `rsk cancel <run> --wait S` after an accepted cancel: it only waits); never
+`--same-name-ok` for it (two live copies would share the run's logs and checkpoints), and tell the user when you
+launch elsewhere before the old end is seen. rsk copies no checkpoint between targets: a relaunch
+elsewhere resumes only from what that target's project dir holds (targets sharing a filesystem and `REMOTE_DIR` share
+it) — check it before the launch. To carry one over: `rsk pull -T <old> -n ckpts/<dir>` (count + size; a large tree
+needs the user's OK), `rsk pull -T <old> ckpts/<dir>`, then `rsk sync -T <new> --also ckpts/<dir>` (a one-off
+force-push of that excluded path), and confirm the trainer's own resume line after the start. A run that starts fresh
+instead says so in its notes (conventions §4) and in your report.
+**Looking after runs under a standing grant** (`relaunch`, `--relaunch-after any`, `cancel_own`): the grant says what
+rsk lets through, not what is wise. A CANCELLED end was someone's decision — the user's, another session's, the site's
+— so never relaunch it unprompted, even where a grant would cover it: ask. Several runs failing within the same minutes
+point at the target (a node, the filesystem, a quota) or a shared input (data, code, the env), not at each run: read one
+log (`rsk logs`) before relaunching any, and relaunch one before the rest. Bound the relaunches you start yourself (state
+the number in your report; the grant's budget is a ceiling, not a target); the same failure twice after a fix → stop
+and escalate (conventions §7). Many rows to resubmit after preemptions: `rsk watch --act` on a table the user approved.
 
 **Many jobs or long waits: `run-watch`** (cwd = project root; `bin/run-watch` header = the full contract). A table
 `#@ run-watch v1` lists rows `name target done-path submit.sh-args -- cmd` (or `-`: watch only; `-p` required, no

@@ -18,7 +18,10 @@ It also reads the local ledger (ledger.py) and records what it saw there — nev
   balance (and, as rsk grant list shows them, the WARNING for a record naming a target the harness does not know and
   the NOTE for a partition its profile's T_PARTITIONS display list does not name: R7-6), and `needs user:` lines. A
   needs-user line names the decision, never a ready-to-run --approve command (the user's words come first). A ledger that cannot be written (read-only state dir, a full disk) is a warning: the
-  view is still printed, nothing recorded.
+  view is still printed, nothing recorded;
+- per Slurm target read in full, one line counting this user's live jobs there from OTHER dirs (other projects, other
+  tabs) by state and pending reason (others_line; --json `other_dirs`, null when the
+  target was not read — never "none" then).
 logs: the deployed bounded digest (remote/status.sh) for one job id or log path — the monitoring read; logs --grep:
 rsk's own bounded `tail -c B | <status.sh's normaliser> | grep -a -E|-F [-i] -e … | tail -n N` of one project log
 (grep_body: B ≤ GREP_MAX_BYTES, output ≤ GREP_CAP; a job id resolved as status.sh resolves it).
@@ -166,7 +169,23 @@ def render(o: observe.Observation, days: int, known: set[str] | None = None) -> 
         lines.append(f"  no jobs from this dir {'in the last ' + str(days) + 'd' if p.kind == 'slurm' else 'with a log'}")
     elif any(j.state not in ("COMPLETED",) for j in o.jobs):
         lines.append(f"  digest: rsk logs -T {p.target} <job id | log path>")
+    lines += others_line(o)
     return lines
+
+
+def others_line(o: observe.Observation) -> list[str]:
+    """I5: one line for a Slurm target read in full — this user's live jobs there whose WorkDir is not this project's
+    dir (other projects, other tabs of the same user): they compete with it, so this project's own pending
+    jobs may wait on them. Counts by squeue state, the pending ones by their reason. Nothing when there are none;
+    nothing either (never "none") when the read failed — render() has said UNOBSERVABLE then."""
+    if not o.ok or o.place.kind != "slurm" or not o.others:
+        return []
+    first = ("RUNNING", "PENDING")
+    def order(d: dict[str, int]) -> list[str]:
+        return sorted(d, key=lambda k: (first.index(k) if k in first else len(first), -d[k], k))
+    why = ", ".join(f"{r} {o.others_reasons[r]}" for r in order(o.others_reasons))
+    st = ", ".join(f"{s} {o.others[s]}" + (f" ({why})" if s == "PENDING" and why else "") for s in order(o.others))
+    return [f"  this user's other jobs on {o.place.target} (other dirs: this user's other projects or sessions): {st}"]
 
 
 GRACE_S = 300     # an open attempt younger than this may still be running somewhere: not yet a decision for the user
@@ -427,7 +446,10 @@ def cmd_status(args: argparse.Namespace) -> int:
                          "observed_at": int(o.observed_at), "remote_now": o.now,
                          "jobs": [{**vars(j), "ledgered": (j.id if o.place.kind == "slurm" else j.log) in keys[o.place.target]}
                                   for j in o.jobs],
-                         "attempts_listed": o.attempts_ok} for o in obs],
+                         "attempts_listed": o.attempts_ok,
+                         # I5: this user's live jobs of other dirs there (null: not read, or not Slurm — never "none")
+                         "other_dirs": {"states": o.others, "pending_reasons": o.others_reasons}
+                         if o.ok and o.place.kind == "slurm" else None} for o in obs],
             "runs": [{"run": r, "attempt": a, "state": L.attempt_state(att), **att} for r, a, att in v["runs"]],
             "unledgered": v["unledgered"], "grants": [   # R8-7: a record valid() rejects is never described — listed
                 {**g, "covers": grants.describe(g), "balance": grants.balance(g, st),   # as rsk grant list --json does

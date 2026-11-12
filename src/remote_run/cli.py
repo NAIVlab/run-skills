@@ -22,7 +22,10 @@
 
 Exit codes: 0 ok · 1 the remote command ran and failed (rsk exec / rsk logs print its code) · 2 usage/config/setup ·
 3 refused · 4 needs the user · 5 unknown/unreachable · 6 conflict · 7 watch lease ended · 8 placement ·
-141 stdout's reader left (`| head`).
+141 stdout's reader left (`| head`). rsk launch and rsk cancel end stdout with ONE verdict line, always the last:
+`rsk launch: exit N (<meaning>)`, plus ` — <the error's first line>` when an error ended the command (that error
+also goes to stderr as `rsk: …`). A script wrapping rsk keeps that line or the exit code: a grep of the lines
+above it can miss a refusal.
 """
 
 from __future__ import annotations
@@ -38,15 +41,26 @@ from remote_run import __version__, adopt, cancel, config, grants, harness, inst
 from remote_run import watch, wrappers
 from remote_run import remote_exec
 from remote_run import status as status_cmd
-from remote_run.errors import OK, UNKNOWN, USAGE, RskError
+from remote_run.errors import EXIT_CODES, OK, UNKNOWN, USAGE, RskError
 
 
 SKILL = "remote-run"                          # the one skill install.sh installs
+VERDICT = ("launch", "cancel")                # their last stdout line is the verdict: verdict_line()
+VERDICT_WHY = 240                             # the error's first line, cut to this many characters
 REPLACED_SKILLS = ("hpc-run", "ws-run")       # the skills it replaced: install.sh uninstalls them from every root
 
 
 def out(msg: str = "") -> None:
     print(msg, flush=True)
+
+
+def verdict_line(command: str, rc: int, why: str = "") -> str:
+    """rsk launch / rsk cancel's last stdout line: `rsk <command>: exit N (<EXIT_CODES[N]>)`, then ` — ` + WHY's first
+    line (at most VERDICT_WHY characters) when an error ended the command. Agents that wrapped rsk in scripts grepping
+    or tailing its output lost every refusal: one stable line, the same on every path, is what such a script keeps."""
+    line = f"rsk {command}: exit {rc} ({EXIT_CODES.get(rc, 'not a listed code')})"
+    first = (why.splitlines() or [""])[0].strip()
+    return line + (f" — {first[:VERDICT_WHY]}" if first else "")
 
 
 # ---------------------------------------------------------------------------------------------------- setup
@@ -414,19 +428,24 @@ def main(argv: list[str] | None = None) -> int:
     if extra and not getattr(args, "passthrough", False):
         parser.error(f"unrecognized arguments: {' '.join(extra)}")
     args.extra = extra
+    verdict = args.command in VERDICT and not (args.command == "launch" and launch.help_asked(extra))
     try:
-        rc = args.func(args)
+        why = ""
+        try:
+            rc = args.func(args)
+        except RskError as exc:
+            why, rc = str(exc), exc.code
+            print(f"rsk: {exc}", file=sys.stderr, flush=True)
+        except subprocess.TimeoutExpired as exc:
+            why, rc = f"timed out: {' '.join(map(str, exc.cmd))}", UNKNOWN
+            print(f"rsk: {why}", file=sys.stderr, flush=True)
+        if verdict:               # after stderr's line (flushed): the last line of a terminal or a merged capture too
+            print(verdict_line(args.command, rc, why), flush=True)
         sys.stdout.flush()        # a reader that went away surfaces here, not as a traceback at interpreter exit
         return rc
     except BrokenPipeError:       # `rsk status | head`: stdout's reader left before the end — say so the shell's way
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())   # the exit-time flush must not fail again
-        return 141
-    except RskError as exc:
-        print(f"rsk: {exc}", file=sys.stderr, flush=True)
-        return exc.code
-    except subprocess.TimeoutExpired as exc:
-        print(f"rsk: timed out: {' '.join(map(str, exc.cmd))}", file=sys.stderr, flush=True)
-        return UNKNOWN
+        return 141                # (no verdict line: nobody is reading)
     except KeyboardInterrupt:
         return 130
 

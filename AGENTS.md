@@ -26,8 +26,9 @@ bash tests/pkg-wheel.sh    # NOT in selftest (uv + network once): wheel contents
 → update commands); `packs.py`; `harness.py` calls `lib/common.sh` / `install.sh` (targets, conf → remote dir) — never a
 second implementation in Python; `observe.py` + `status.py` (`rsk status` / `rsk logs`, `--grep` = `status.grep_body`;
 read-only, one ssh per target, discovery by WorkDir / `logs/*.pid`; a failed read is UNOBSERVABLE, never "no jobs" (a hung mount: within `observe.FS_WAIT` s); also the ledger's runs, unledgered jobs,
-SUBMIT_UNKNOWN reconciled from the remote journal); `ledger.py` + `grants.py` (the per-project ledger and the one authorisation
-record type, below); `launch.py` (`rsk launch`), `cancel.py` (`rsk cancel`), `watch.py` (`rsk watch` = the lease around
+SUBMIT_UNKNOWN reconciled from the remote journal, and per Slurm target this user's jobs in other dirs, counted (`other_dirs`)); `ledger.py` + `grants.py` (the per-project ledger and the one authorisation
+record type, below); `launch.py` (`rsk launch`), `cancel.py` (`rsk cancel`, `--wait S` = follow an accepted scancel to its observed end) — both end with ONE stdout
+verdict line `rsk launch|cancel: exit N (…)[ — the error]` (`cli.verdict_line`), and their plan / submit / cancel ssh probe the project dir first (`observe._DIRPROBE`: a hung mount = exit 5, nothing run); `watch.py` (`rsk watch` = the lease around
 `bin/run-watch`), `adopt.py` (`rsk adopt`), `wrappers.py` (`rsk sync|bootstrap|pull|avail` exec `bin/run-*`, no logic), `legacy.py`
 (`rsk doctor --legacy-refs`); `errors.py` = the exit codes (0 ok 1 failed 2 usage 3 refused 4 needs user 5 unknown 6 conflict 7 lease
 ended 8 placement). The wheel force-includes the harness under `remote_run/_harness/` (`pyproject.toml`): a new top-level dir the
@@ -304,7 +305,7 @@ docs/packs.md): `echo 'WARNING: …' >&2; [ "$FORCE" = 1 ] || exit 1` — print,
 `flags=`: never grant-covered), `--*-user-asked` sets `ACK=1`. Then: (probe) partition → `-g` range → cpu/mem heuristics →
 MaxTime (`P_MAXTIME` else `T_MAXTIME`; explicit limits only) → payload guard → `SBATCH_EXTRA` scan (`-p`, `T_FORBIDDEN_QOS`,
 every word an option or its option's value, no trailing value option) → every `--time`/`-t` in `SB_ARGS` vs MaxTime → sinfo
-availability (`WARNING: only … Re-run -y`) → duplicate guard (`--same-name-ok`, singleton chains and `--rs-chain` skip it) →
+availability (`WARNING: only … Re-run -y`; the nodes of `SB_ARGS`' last `--exclude`/`-x` not counted, a hostlist range: a NOTE) → duplicate guard (`--same-name-ok`, singleton chains and `--rs-chain` skip it) →
 `SBATCH_EXTRA` lint on the scan's words (WARN: not in the allowlist + `T_SBATCH_EXTRA_ALLOW`, or a harness option) → plan
 block / `--rs-expect` check → snapshots → `sbatch` (env `RS_ATTEMPT`, last `--comment` + ` rs=<NONCE>`). Nothing
 cluster-named lives in shared code; a policy's own EXIT trap, `exit` or fds stay in submit.sh's subshell, away from the journal.

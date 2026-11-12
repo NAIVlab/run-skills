@@ -161,6 +161,38 @@ def is_live(att: dict) -> bool:
     return False
 
 
+CANCEL_SENT = ("CANCELLING", "CANCELLING?")   # rsk cancel's observations (Slurm): scancel accepted / its answer unclear
+
+
+def cancel_pending(att: dict) -> tuple[str, str]:
+    """(state, when) of a cancel rsk sent to a live attempt whose end no read has shown — state CANCELLING (scancel
+    accepted it) or CANCELLING? (its answer did not confirm it); ('', '') when there is none. The ledger's `seen` says it
+    until a read writes the queue's state over it, so rsk cancel also keeps a marker on the submission (`cancel`, set by
+    observe()): it still counts while every later read shows the job COMPLETING — the end of a cancel — and no longer
+    once a read shows it in any other live state (a requeue, or a cancel that did not take: the job is live, not ending).
+    An attempt with no marker (a cancel recorded before it existed) counts only while `seen` says CANCELLING[?]."""
+    if not is_live(att):
+        return "", ""
+    for s in reversed(att.get("submissions") or []):
+        if s.get("submit") == "not_submitted" or s.get("end"):
+            continue
+        got = sub_cancel_pending(s)
+        if got[0]:
+            return got
+    return "", ""
+
+
+def sub_cancel_pending(s: dict) -> tuple[str, str]:
+    """cancel_pending() for one submission S (its job), whatever the rest of the attempt holds."""
+    seen, mark = s.get("seen") or {}, s.get("cancel") or {}
+    if seen.get("state") in CANCEL_SENT:
+        return str(seen["state"]), str(seen.get("at", ""))
+    if mark.get("state") in CANCEL_SENT and (seen.get("state") == "COMPLETING"     # (a read that began before the
+                                             or str(seen.get("at", "")) < str(mark.get("at", ""))):   # cancel: older)
+        return str(mark["state"]), str(mark.get("at", ""))
+    return "", ""
+
+
 @dataclass
 class Loaded:
     data: Any
@@ -513,6 +545,8 @@ class Ledger:
             for s in att.get("submissions") or []:
                 if key and key in (s.get("job"), (s.get("proc") or {}).get("log")):
                     s["seen"] = {"state": state, "at": when, "source": source, **({"detail": detail} if detail else {})}
+                    if state in CANCEL_SENT:   # rsk cancel: the marker cancel_pending() reads after later reads
+                        s["cancel"] = {"state": state, "at": when}
                     if end:
                         s["end"] = {"at": when, **end}
                     elif state not in TERMINAL and s.get("end"):   # a requeued job is live again

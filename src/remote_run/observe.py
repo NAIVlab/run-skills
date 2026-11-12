@@ -2,7 +2,9 @@
 
 Discovery is by place, not by memory: every job of this user whose Slurm WorkDir is the project's remote dir
 (`squeue --states=all` + `sacct` over the last few days), every nohup run that left `logs/<name>-<stamp>.log`
-(+ `.pid`). A failed or partial query is reported as unobservable — never as "no jobs". A remote dir that does not
+(+ `.pid`). The same squeue lists this user's jobs of every other dir: those are only counted (live ones, by state and
+a pending one's reason — what competes with this project's jobs for the user's caps), never this project's jobs. A failed or partial query is
+reported as unobservable — never as "no jobs". A remote dir that does not
 exist under a readable parent is "not synced here" (Slurm still matches jobs against its path); an unreadable parent
 (an unmounted filesystem) stays unobservable. The remote script is sent on
 stdin inside a function, so a cut-off transfer runs nothing (the same shape as bin/run-watch).
@@ -150,6 +152,11 @@ class Observation:
     comments: dict[str, str] = field(default_factory=dict)    # Slurm job id -> the NONCE its comment carries
     comments_ok: bool = False                      # asked for, and squeue answered
     boot_id: str = ""                              # nohup: the box's boot_id now ('' = not read)
+    # Slurm: this user's live squeue rows whose WorkDir is NOT this project's dir (other projects, other tabs: they
+    # compete with this project's jobs) — state -> rows, and PENDING ones' reason -> rows. Counted from the rows the same
+    # squeue already returns (-u, every dir); never part of `jobs`. Empty on a read that failed: then unknown, not none.
+    others: dict[str, int] = field(default_factory=dict)
+    others_reasons: dict[str, int] = field(default_factory=dict)
 
 
 NONCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -161,6 +168,21 @@ def script(place: Place, days: int, nonces: list[str] | tuple[str, ...] = (), co
     head = (f"RDIR={shlex.quote(place.remote_dir)} DAYS={int(days)} NONCES={shlex.quote(asked)} "
             f"COMMENTS={int(bool(comments))} FS_WAIT={int(FS_WAIT)}\n")
     return head + (SLURM if place.kind == "slurm" else NOHUP) + "\n"   # each one self-contained (rs_att inside)
+
+
+OTHERS_KEYS = 24        # distinct states / pending reasons kept per target (more: counted under "(other)")
+
+
+def _short(text: str, n: int = 60) -> str:
+    """A squeue word as one bounded, printable token (a reason may carry a long node list)."""
+    s = "".join(c if c.isprintable() and not c.isspace() else "_" for c in text.strip())
+    return s if len(s) <= n else s[:n - 3] + "..."
+
+
+def _count(d: dict[str, int], key: str) -> None:
+    if key not in d and len(d) >= OTHERS_KEYS:
+        key = "(other)"
+    d[key] = d.get(key, 0) + 1
 
 
 def _kv(text: str, sep: str = " ") -> dict[str, str]:
@@ -242,7 +264,13 @@ def parse(place: Place, text: str, rc: int, err: str) -> Observation:
         for line in sections.get("squeue", []):
             f = line.removesuffix("|").rsplit("|", 5)
             jid, bar, name = f[0].partition("|")
-            if len(f) < 6 or not bar or f[5] not in pwds:
+            if len(f) < 6 or not bar:
+                continue
+            if f[5] not in pwds:     # another dir's job of this user: counted (I5), never one of this project's
+                if f[1] not in TERMINAL:   # squeue --states=all keeps a just-ended job a while: it holds no limit
+                    _count(o.others, _short(f[1]))
+                    if f[1] == "PENDING":
+                        _count(o.others_reasons, _short(f[2]) or "?")
                 continue
             queued[jid] = Job(jid, name, f[1], f[2], f[3], _int(f[4]), source="squeue")
             o.jobs.append(queued[jid])

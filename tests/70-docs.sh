@@ -948,6 +948,51 @@ else bad "$IDX matches rs_gen_index"; diff "$T/idx.md" "$RS_HOME/$IDX" | head -1
 has "$(cat "$T/idx.md")" '^## Routing' "INDEX carries a Routing section"
 has "$(cat "$T/idx.md")" '^| target | kind | ' "INDEX: one table, a kind column"
 
+echo "-- job management (2026-11-11): reading rsk, moving a run, free is not schedulable, a standing grant — awareness, not rules --"
+for r in 'end with the verdict line `rsk launch: exit N' 'branch on the exit code (never on grepped words)' 'pass options literally or as an array' \
+         'zsh, maybe your shell, never splits an unquoted `.VAR` (a name with a space: exit 2)' \
+         'Moving a run: `rsk cancel <run> --wait 120`, then plan it on the new target' 'never `--same-name-ok`; no checkpoint moves by itself' \
+         'Slurm: free is not schedulable (priority, caps, your other jobs)' 'rather than stacking submits' \
+         'a CANCELLED end was someone.s decision — never relaunched unprompted' 'read one log before relaunching any; bound the relaunches you start'; do
+  has "$ST" "$r" "$F: $r"; done
+has "$ST" 'rsk cancel <run> \[--job <id|pid>\] \[--approve "<their words>" \[--asked "<your question>"\]\] \[--wait S\]' "$F: the cancel line names --wait"
+for f in "$PSLT" "$PNOT"; do
+  for r in '\*\*Reading rsk\.\*\* Read each call.s whole output and its exit code' 'one verdict line, the last on stdout: `rsk launch: exit N (<meaning>)`' \
+           'logs every call.s full output to a file and branches on the exit code' 'which never splits an unquoted `.VAR`' \
+           'holding whitespace or a control character is exit 2 before anything is planned' '(a hung mount?)` means the project dir hung before anything ran there' \
+           '\*\*Moving a run to another target\*\*' 'never `--same-name-ok` for it' 'rsk copies no checkpoint between targets' \
+           '`rsk pull -T <old> -n ckpts/<dir>`' '`rsk sync -T <new> --also ckpts/<dir>` (a one-off force-push of that excluded path)' \
+           'A run that starts fresh instead says so in its notes' '\*\*Looking after runs under a standing grant\*\*' \
+           'the grant says what rsk lets through, not what is wise' 'was someone.s decision' 'read one log (`rsk logs`) before relaunching any' \
+           'Bound the relaunches you start yourself' 'the same failure twice after a fix → stop and escalate'; do
+    has "$f" "$r" "procedure-slurm / -nohup: $r"; done; done
+has "$PSLT" 'it re-reads the target — the read `rsk status` makes — about every 10 s' "procedure-slurm: cancel --wait (I1)"
+has "$PSLT" '`not ended yet: job J (<run> aNN) on <t>: <state> — the cancel was accepted; rsk status shows its end` and exit 5' "procedure-slurm: --wait's end not seen: exit 5 (I1)"
+has "$PNOT" '`rsk cancel … --wait S` is accepted and changes nothing here' "procedure-nohup: --wait on a box (I1)"
+has "$PSLT" 'only waits (nothing is sent, authorised or used again); after an unconfirmed one (`CANCELLING?`) it sends scancel again' "procedure-slurm: --wait after an accepted vs an unclear cancel (review)"
+has "$PSLT" 'a cancel approval stays used up (a retry needs the user.s words again)' "procedure-slurm: a hung-mount cancel keeps an approval used (review)"
+has "$PSLT" 'on another target rsk prints a NOTE (the old copy may still run)' "procedure-slurm: moving: another target is a NOTE (review)"
+has "$PNOT" 'on another target rsk prints a NOTE (the old copy may still run)' "procedure-nohup: moving: another target is a NOTE (review)"
+has "$(cat "$RS_HOME/src/remote_run/cancel.py")" 'WAIT_MAX_S = 600' "cancel.py: --wait is bounded, as the docs say (S ≤ 600)"
+has "$PSLT" '\*\*A run that waits (PENDING)\.\*\* Free is not schedulable' "procedure-slurm: a run that waits"
+has "$PSLT" 'the scheduler.s call (priority, limits and caps, the other jobs in the queue' "...what decides when a job starts"
+has "$PSLT" 'moving it (below) beats stacking more submits onto the same queue' "...compare targets, never stack submits"
+has "$PSLT" 'a node the job.s own last `--exclude` / `-x` names is listed `\[excluded\]` and not counted' "procedure-slurm: the gate and the job's --exclude (I7)"
+has "$(cat "$RS_HOME/docs/DESIGN.md")" 'names is listed `\[excluded\]` and never' "DESIGN: the gate and the job's --exclude (I7)"
+# what the docs' checkpoint carry-over uses is in the code: run-pull pulls ckpts/ (not on its refused list), run-sync --also force-pushes
+# an excluded path, and ckpts is one (rs_sync_excludes)
+has "$(cat "$RS_HOME/bin/run-sync")" '^# --also PATH: force-push one excluded path for this sync only' "run-sync: --also force-pushes an excluded path"
+has "$(grep -A4 'rs_sync_excludes() {' "$RS_HOME/lib/common.sh")" ' /ckpts/ ' "rs_sync_excludes: ckpts/ is excluded (so --also is the way over)"
+hasnt "$(grep 'never pulled' "$RS_HOME/bin/run-pull")" 'ckpts' "run-pull: ckpts/ is not among the refused paths"
+has "$(cat "$RS_HOME/remote/submit.sh")" '\[excluded\]' "submit.sh: the gate's table marks [excluded]"
+hasnt "$(cat "$RS_HOME/bin/run-avail")" 'submit.sh checks them' "run-avail no longer says submit.sh checks QOS / account caps"
+has "$(head -14 "$RS_HOME/bin/run-avail")" 'Free is not schedulable: priority, QOS / account / per-user caps and the account.s other jobs' "run-avail: free is not schedulable, what decides"
+# the scripting note's shell fact, reproduced: zsh (no SH_WORD_SPLIT) keeps an unquoted $VAR one word, bash splits it
+if command -v zsh >/dev/null 2>&1; then
+  zw=$(zsh -fc 'v="-n a"; set -- $v; print $#' 2>&1); bw=$(bash -c 'v="-n a"; set -- $v; echo $#' 2>&1)
+  [ "$zw:$bw" = 1:2 ] && ok "zsh fact: an unquoted \$VAR stays one word (bash splits it in two) — the docs' scripting note" || bad "zsh fact: unquoted \$VAR (zsh $zw, bash $bw words; want 1 and 2)"
+else echo "  SKIP: no zsh here — the zsh word-splitting fact behind the docs' scripting note is checked where zsh is installed"; fi
+
 echo "-- shipped targets --"
 SHIPPED=$(RS_USER_DIR=/nonexistent RS_PACKS_DIR=/nonexistent C 'rs_targets')
 [ -z "$SHIPPED" ] && ok "no site target ships in the engine (sites live in packs / the overlay)" || bad "no site target ships in the engine: $SHIPPED"
@@ -996,7 +1041,7 @@ for f in "$RS_HOME"/bin/* "$RS_HOME"/lib/*.sh "$RS_HOME"/remote/* "$RS_HOME"/tar
 done
 budget() { [ -f "$RS_HOME/$1" ] || { bad "$1 exists"; return; }; local n; n=$(wc -l < "$RS_HOME/$1")
   [ "$n" -le "$2" ] && ok "$1 within $2 lines ($n)" || bad "$1 within $2 lines ($n)"; }
-budget lib/common.sh 141; budget remote/env.sh 170; budget remote/bootstrap.sh 100; budget remote/submit.sh 429; budget remote/job.sbatch 70   # common +3: rs_ref, rs_deploy_profile; +8: rs_legacy_routing (a legacy rule keeps its kind)
+budget lib/common.sh 141; budget remote/env.sh 170; budget remote/bootstrap.sh 100; budget remote/submit.sh 444; budget remote/job.sbatch 70   # common +3: rs_ref, rs_deploy_profile; +8: rs_legacy_routing (a legacy rule keeps its kind)
 # P2 (the attempt journal): submit.sh +75 (claim/replay, the body in a subshell, child-shell conf, duplicate guard, lint, receipt); bootstrap.sh +10, job.sbatch +5 (snapshots)
 # P3 (api=3): submit.sh +40 (the --rs-mode/--rs-expect/--rs-chain pre-scan, rs_bound + rs_plan = the block and the expect check, the chain conflict)
 # P3 review: submit.sh +25 (--rs-warnings + the recount, SBATCH_EXTRA --time vs MaxTime, env_hook/venv_dir/uv_sync_args bound, squeue fail-closed under --rs-expect)
@@ -1009,8 +1054,11 @@ budget lib/common.sh 141; budget remote/env.sh 170; budget remote/bootstrap.sh 1
 # counts journal receipts named the run id or <run id>--aNN plus this WorkDir's squeue rows no receipt names, says unknown when squeue failed or a
 # receipt is unreadable, and undoes a policy's set -f / failglob (+15); the block line (+1)
 # 2026-11-07: submit.sh +3 (426 → 429) — rs_wenv: info_wandb_env, does $PROJ/.wandb_env name WANDB_MODE (a smoke's conf key) (+2); its header line (+1)
+# 2026-11-11: submit.sh +15 (429 → 444) — I7: the gate counts no GPU on a node the job's own --exclude / -x names (given once): the walk
+# over SB_ARGS as the scan reads it (+4) and its comment (+4), gpu_avail's [excluded] mark (+2), the NOTEs for a value that is no plain
+# host list and for several --exclude (+3), the check's comment (+2)
 budget remote/status.sh 175   # generous on purpose: every lookup has an explicit failure branch; compressing them hides bugs
-budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 266; budget AGENTS.md 363; budget INSTALL.md 238 # AGENTS +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
+budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 266; budget AGENTS.md 365; budget INSTALL.md 238 # AGENTS +2: cancel --wait / the verdict line / the dir probe / other_dirs; +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
 # P3-P7 docs: AGENTS +25 (the rsk modules, tests/62, the authorisation model, the P7 nudge, the new rails); README +10 (what is asked and
 # what is not, the honest limit, the rsk launch step, src/); INSTALL +5 (doctor --legacy-refs, earlier permissions, standing words)
 # 2026-11-06 follow-ups: AGENTS +6 (relaunch_after, recycled quotes, the refresh, --check-after, logs --grep); README +1 (re-runs handed over)
@@ -1043,7 +1091,7 @@ budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget RE
 # _spaced), status --json's INVALID records (+5); cancel words naming the job, cancel.named / unnamed (+2)); README +0
 # NF8: AGENTS +3 (warnings_gpu in the block and never grant-covered, grants.gpu_warn_miss (+1); a .wandb_env naming HF_HOME /
 # ACCELERATE_ (NF7, +1); --asked and ranges in the cancel approval (+1)); README +0
-budget skills/remote-run/SKILL.md 164; budget bin/run-watch 1102   # round 3: SKILL +11 (the -y rule with grant kinds, --allow-warnings availability|any,
+budget skills/remote-run/SKILL.md 172; budget bin/run-watch 1102   # round 3: SKILL +11 (the -y rule with grant kinds, --allow-warnings availability|any,
 # derived actions and the sticky class, relaunch only after an infrastructure end, cancel approvals bound / 1 h / used up, rsk watch --act vs
 # denies (also in §3), `plan <id> is free again`); run-watch +116 lines (881 → 997), D11 — target column and same-target inheritance, sticky unknowns from any state file
 # (foreign/settled/R_FU, the journal hands back the row's own status), fail-stop inherited with rows plus --release of a non-row trigger, pending
@@ -1077,6 +1125,9 @@ budget skills/remote-run/SKILL.md 164; budget bin/run-watch 1102   # round 3: SK
 # 2026-11-06: SKILL +5 (--relaunch-after any for handed-over re-runs, never earlier words as --approve, the re-read before a relaunch)
 # 2026-11-07: SKILL +3 (rsk launch on a new run's name outside §2 and a smoke's tracker; --free-name; the §4 fields after a launch) —
 # the same day made hints ("hints, not gates"): a name a NOTE, a smoke refused only when certain (+0)
+# 2026-11-11: SKILL +8 (job management, awareness not rules: reading rsk — the verdict line, scripts branch on the exit code, options
+# literal or an array (+3); moving a run — cancel --wait, an unconfirmed cancel, checkpoints, free is not schedulable (+3); a standing
+# grant: a CANCELLED end, many failures at once, bounded relaunches (+2)); --wait on the cancel line (+0)
 budget skills/remote-run/references/experiment-conventions.md 144;   # +4: the run-watch exception (§3, §6, §7); +1: a USR1 death is FAILED; +3: the authorised exceptions (§5, §6, §7)
 # 2026-11-07: conventions +4 (a new run's name outside §2 a NOTE / --free-name; the §4 NOTE; a smoke refused only when certain, else a WARNING)
 budget skills/remote-run/references/project-setup.md 100

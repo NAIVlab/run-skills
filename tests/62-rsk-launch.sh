@@ -102,6 +102,7 @@ pyl() { HOME="$T/lhome" "$PY" -I -c "import sys, json; sys.path[:0] = sys.argv[1
 att() { pyl 'a = L.Ledger(sys.argv[2]).read_run(sys.argv[3]).data["attempts"][sys.argv[4]]; s = a["submissions"][-1]
 print(L.attempt_state(a), s["submit"], s["job"] or (s.get("proc") or {}).get("pid", ""), a["request"]["grant"], len(a["submissions"]))' "$CWD" "$@"; }
 pid_of() { printf '%s\n' "$1" | sed -n 's/^needs user: approval — plan \(p-[^ ]*\).*/\1/p' | tail -n 1; }
+lastln() { printf '%s\n' "$1" | tail -n 1; }   # rsk launch / cancel: the verdict line, last also with stderr merged
 reap() { local r p; for r in "$T"/proj_*/.rs/attempts/*/receipt; do [ -f "$r" ] || continue; p=$(sed -n 's/^pgid=//p' "$r")
   [ -n "$p" ] && [ "$(awk '{ sub(/.*\) /, ""); print $20 }' "/proc/$p/stat" 2>/dev/null)" = "$(sed -n 's/^start=//p' "$r")" ] && kill -KILL -- "-$p" 2>/dev/null; done; }
 trap 'reap; [ -z "${LP:-}" ] || kill "$LP" 2>/dev/null; rm -rf "$T"' EXIT
@@ -115,6 +116,7 @@ echo "-- slurm: plan -> the card, exit 4; nothing submitted --"
 O=$(rsk launch -T fx-slurm -n "$N1" -g 1 -- python train.py --lr 1e-3); RC=$?; PL1=$(pid_of "$O")
 [ "$RC" = 4 ] && [ -n "$PL1" ] && ok "plan: exit 4, needs user: approval — plan <id>" || { bad "plan: exit 4 (rc=$RC)"; printf '%s\n' "$O" | head -30 | sed 's/^/    | /'; }
 nosub "...nothing reached sbatch"
+has "$(lastln "$O")" "^rsk launch: exit 4 (needs the user's decision)\$" "the verdict line, last: exit 4 (needs the user's decision)"
 has "$O" "^plan $PL1 — launch on fx-slurm (slurm)" "card: plan id, action, target, kind"
 has "$O" '^  partition  gpu$' "card: partition (decoded)"; has "$O" '^  gres       gpu:1$' "card: gres"; has "$O" '^  mem        40G$' "card: mem"
 has "$O" '^  payload    python train.py --lr 1e-3$' "card: payload words"; has "$O" '^  warnings   0' "card: warnings 0"
@@ -131,6 +133,7 @@ echo "-- --approve: submitted with --rs-expect, ledger attempt + approval use --
 O=$(rsk launch --plan "$PL1" --approve "yes, run the smoke"); RC=$?
 [ "$RC" = 0 ] && has "$O" '^submitted: exp--smoke--base--scratch--s0 a01 job 101 on fx-slurm' "approved -> submitted (job 101)" || { bad "approve (rc=$RC)"; printf '%s\n' "$O" | sed 's/^/    | /'; }
 has "$O" '^approval ap-.*launch of 1 approved plan' "an approval record (plan-approve) for the plan"
+has "$(lastln "$O")" '^rsk launch: exit 0 (ok)$' "...the verdict line, last: exit 0 (ok)"
 has "$O" 'plan: bound_hash=[0-9a-f]* = --rs-expect' "submit.sh checked --rs-expect (the replay)"
 has "$(tail -n 1 "$T/sbatch.log")" "rs=rsk-" "the job's comment carries rs=<nonce>"
 hasnt "$(grep -- '--rs-expect' "$T/ssh-body.log" | tail -n 1)" " -y " "no -y: the card showed no warning"
@@ -142,6 +145,8 @@ O=$(rsk status); has "$O" 'exp--smoke--base--scratch--s0 *a01  PENDING' "rsk sta
 echo "-- local duplicate: a live ledger run of that name -> exit 6 after one read of its target (the refresh), no plan --"
 : > "$T/ssh-host.log"; NB=$(wc -l < "$T/ssh-body.log"); O=$(rsk launch -T fx-slurm -n "$N1" -g 1 -- python train.py); RC=$?
 [ "$RC" = 6 ] && has "$O" 'is live on fx-slurm in the ledger' "same run live -> exit 6" || bad "local duplicate (rc=$RC)"
+has "$(lastln "$O")" '^rsk launch: exit 6 (conflict with existing state) — run exp--smoke--base--scratch--s0 is live on fx-slurm in the ledger: a01 (PENDING)' \
+  "...the verdict line, last: exit 6 and the refusal's first line (a wrapper that greps keeps it)"
 [ "$(wc -l < "$T/ssh-host.log")" -le 1 ] && hasnt "$(tail -n "+$((NB + 1))" "$T/ssh-body.log")" '--rs-mode' \
   "...one read at most (the job is still PENDING there), no plan sent"
 O=$(rsk launch -T fx-slurm -n "$N1" -g 1 --same-name-ok -- python train.py); [ "$?" = 4 ] && ok "--same-name-ok: planned (exit 4)" || bad "--same-name-ok plans"
@@ -248,6 +253,7 @@ O=$(rsk cancel exp--ablate--sb--scratch--s0 --approve "cancel exp--ablate--sb--s
 rsk grant add --quote "you may stop your own smoke runs" -T fx-slurm --action cancel_own --max-live none --max-launches none --expires 2099-12-31 >/dev/null
 O=$(rsk cancel exp--smoke--w--scratch--s0); RC=$?
 [ "$RC" = 0 ] && has "$O" '^cancelled: job ' "a cancel_own grant covers the agent's own run" || bad "cancel_own (rc=$RC)"
+has "$(lastln "$O")" '^rsk cancel: exit 0 (ok)$' "...rsk cancel's verdict line, last: exit 0 (ok)"
 
 echo "-- review: --force / --rs-* are never policy flags (M3); a --class against the name's class (H3) --"
 R=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\nWANDB_MODE=disabled\n' "$R" > "$R/.hpc.conf"; CWD=$R; : > "$T/ssh-host.log"
@@ -256,10 +262,17 @@ O=$(rsk launch -T fx-slurm -n exp--smoke--f--scratch--s0--a01 -g 1 --force -- py
 O=$(rsk launch -T fx-slurm -n exp--smoke--f--scratch--s0--a01 -g 1 --rs-mode -- python t.py); [ "$?" = 2 ] && ok "M3: an --rs-* word -> exit 2" || bad "M3 --rs-*"
 O=$(rsk launch -T fx-slurm --class smoke -n exp--train--big--scratch--s0--a01 -g 1 -- python t.py); RC=$?
 [ "$RC" = 2 ] && has "$O" 'contradicts the name' "H3: --class smoke on a train name -> exit 2" || bad "H3 class (rc=$RC)"
+NS="exp--smoke--f--scratch--s0 ref--a01"; O=$(rsk launch -T fx-slurm -n "$NS" -g 1 -- python t.py); RC=$?   # a word-splitting slip
+[ "$RC" = 2 ] && has "$O" "a run name never holds whitespace or a control character: '$NS' (a word-splitting slip? quote the name / pass flags as an array)" \
+  "a run name with a space -> exit 2, named" || bad "name with a space (rc=$RC)"
+has "$(lastln "$O")" '^rsk launch: exit 2 (usage, config or setup problem) — rsk launch: -n: a run name never holds' "...the verdict line, last"
+O=$(rsk launch -T fx-slurm --relaunch "exp--smoke--f--scratch--s0 x"); [ "$?" = 2 ] && has "$O" 'never holds whitespace' "...--relaunch too" || bad "--relaunch with a space"
 [ ! -s "$T/ssh-host.log" ] && ok "...all before any ssh" || bad "...all before any ssh"
+[ -z "$(ls "$(pyl 'print(L.Ledger(sys.argv[2]).dir)' "$R")/plans" 2>/dev/null)" ] && ok "...no plan stored" || bad "...no plan stored"
 rsk grant deny --quote "no train runs on fx this week" -T fx-slurm --class train >/dev/null
 O=$(rsk launch -T fx-slurm -n exp--train--big--scratch--s0--a01 -g 1 -- python t.py); RC=$?
 [ "$RC" = 3 ] && has "$O" 'no train runs on fx this week' "H3: the name's class meets a class deny -> exit 3" || bad "H3 deny (rc=$RC)"
+has "$(lastln "$O")" '^rsk launch: exit 3 (refused: a site policy or a deny (final)) — denied by d-' "...the verdict line, last: exit 3 and the deny"
 
 echo "-- review M1: a deny of launch also stops a chain; L5: a chain under max_live 1 sends every segment --"
 R=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\nWANDB_MODE=disabled\n' "$R" > "$R/.hpc.conf"; CWD=$R
@@ -506,6 +519,11 @@ O=$(rsk cancel a2--train--t--scratch--s0); RC=$?; rm -f "$T/scancel.err"
 [ "$RC" = 5 ] && has "$O" "^UNKNOWN: job $J2 (a2--train--t--scratch--s0 a01): scancel exit 1 (scancel: error: Kill job error on job id $J2: Socket timed out" "R5-5: scancel exit 1 (the cancel was applied) -> exit 5, unknown, quoting its own line (R6-8)" || { bad "R5-5 (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
 hasnt "$O" 'not cancelled' "...never 'not cancelled'"; has "$(rsk grant list)" 'uses 2/3' "...the use is kept"
 has "$(att a2--train--t--scratch--s0 a01)" '^CANCELLING? submitted' "...the ledger: CANCELLING? (not confirmed)"
+touch "$T/ssh.noconnect"; : > "$T/sbatch.log"; O=$(rsk launch -T fx-slurm -n a2--train--t--scratch--s0--a02 -p gpu -g 1 -t 1:00:00 -- python train.py); RC=$?; rm -f "$T/ssh.noconnect"
+[ "$RC" = 6 ] && has "$O" "a01 (CANCELLING?) — the cancel of a2--train--t--scratch--s0 a01 (job $J2 on fx-slurm) is not confirmed: sent" \
+  "2026-11: a relaunch right after a cancel, the target unreadable -> exit 6: the cancel is not confirmed, said so" || { bad "cancel not confirmed (rc=$RC)"; printf '%s\n' "$O" | tail -4 | sed 's/^/    | /'; }
+has "$O" 'fx-slurm is not readable now — rsk status shows whether it ends; rsk cancel a2--train--t--scratch--s0 would send it again' "...an unclear cancel: rsk status first, a resend is a new cancel"
+hasnt "$O" 'nothing is sent again' "...never promising --wait sends nothing (it would resend an unclear one)"; hasnt "$O" 'same-name-ok' "...never at --same-name-ok"; nosub "...nothing submitted"
 O=$(rsk launch -T fx-slurm -n a3--train--t--scratch--s0 -p gpu -g 1 -t 1:00:00 -- python train.py); RC=$?; J3=$(jid "$O")
 [ "$RC" = 0 ] && [ -n "$J3" ] || bad "R6-4 setup: a3--train--t--scratch--s0 launched under the grant (rc=$RC)"
 touch "$T/ssh.fallback"; : > "$T/scancel.log"; O=$(rsk cancel a3--train--t--scratch--s0); RC=$?; rm -f "$T/ssh.fallback"
@@ -529,6 +547,22 @@ O=$(rsk launch --plan "$PD"); RC=$?
 [ "$RC" = 6 ] && [ "$(grep -c . "$T/sbatch.log")" = 1 ] && ok "...the retry is refused: still 1 sbatch (was: submitted again)" || bad "R6-4 fallback retry (rc=$RC)"
 rsk status >/dev/null
 has "$(att exp--train--d6--scratch--s0 a01)" '^[A-Z]* submitted [0-9][0-9]* ' "...rsk status reconciles it from the journal's receipt (the job id)"
+
+echo "-- 2026-11: a hung project mount ends the plan ssh within FS_WAIT (observe's rs_dir), before submit.sh runs: exit 5 --"
+RH=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\nWANDB_MODE=disabled\n' "$RH" > "$RH/.hpc.conf"; CW0=$CWD; CWD=$RH
+printf '#!/usr/bin/env bash\ncase " $* " in *" %s "*) exec sleep 8 ;; esac\nexec %s "$@"\n' "$RH" "$(command -v stat)" > "$T/bin/stat"
+chmod +x "$T/bin/stat"; : > "$T/sbatch.log"; s0=$(date +%s)   # every stat of the dir blocks, as on a mount whose server is gone
+O=$( cd "$CWD" && HOME="$T/lhome" PATH="$T/bin:$PATH" "$PY" -I -c 'import sys; sys.path[:0] = sys.argv[1:2]
+from remote_run import cli, observe; observe.FS_WAIT = 1; sys.exit(cli.main(sys.argv[2:]))' "$SRC" \
+  launch -T fx-slurm -n exp--smoke--hung--scratch--s0 -g 1 -- python t.py 2>&1 ); RC=$?; s1=$(date +%s); rm -f "$T/bin/stat"
+[ "$RC" = 5 ] && has "$O" "^rsk: \[fx-slurm\] $RH: its filesystem gave no answer within 1 s (a hung mount?) — nothing was planned" \
+  "the plan ssh: exit 5, the hung dir named" || { bad "hung mount (rc=$RC)"; printf '%s\n' "$O" | tail -4 | sed 's/^/    | /'; }
+[ $((s1 - s0)) -lt 10 ] && ok "...within FS_WAIT, never the 180 s deadline ($((s1 - s0)) s)" || bad "...took $((s1 - s0)) s"
+[ ! -d "$RH/.rs/attempts" ] && ok "...submit.sh never ran (no attempt in the journal)" || bad "...submit.sh ran: $(ls "$RH/.rs/attempts")"
+has "$(lastln "$O")" "^rsk launch: exit 5 (unknown or unreachable) — \[fx-slurm\] $RH: its filesystem" "...the verdict line, last"
+hasnt "$O" 'needs: sync' "...never 'needs: sync'"; nosub "...nothing submitted"
+O=$(rsk launch -T fx-slurm -n exp--smoke--hung--scratch--s0 -g 1 -- python t.py); RC=$?
+[ "$RC" = 4 ] && ok "...the dir answers again: planned (exit 4)" || bad "the dir answers again (rc=$RC)"; CWD=$CW0
 
 echo "-- round 6 R6-1: a relaunch deny naming a run stops every launch of it, also on a target whose journal never saw it --"
 U6=$T/user-r61; cp -R "$RS_USER_DIR" "$U6"; mkdir -p "$U6/targets/fx2"; cp "$R/.hpc.conf" "$T/r.conf"

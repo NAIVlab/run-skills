@@ -250,22 +250,37 @@ _i=0; _prev=""; _po=""; for _w in "${SB_ARGS[@]}"; do
   _prev=$_w; _po=$_o; _i=$((_i + 1)); done
 case "$_prev" in -t|--ti|--tim|--time) echo "ERROR: $_po ends with a dangling '$_prev' (no value) — fix .hpc.conf / policy.sh; nothing submitted" >&2; exit 2 ;; esac
 
-# free GPUs of type $2 (or any) in partition $1 -> stdout "FREE<TAB>MAXNODE"; per-node table to stderr.
+# free GPUs of type $2 (or any) in partition $1 -> stdout "FREE<TAB>MAXNODE"; per-node table to stderr. $3: the job's
+# --exclude host names, comma-separated (NodeHost compared as is): listed `[excluded]`, never counted.
 gpu_avail() {
   sinfo -p "$1" -N -h -O "NodeHost:25,Gres:170,GresUsed:170,StateLong:15" \
-   | awk -v T="$2" '
+   | awk -v T="$2" -v X="${3:-}" '
+       BEGIN{n=split(X,xa,","); for(i=1;i<=n;i++) if(xa[i]!="") ex[xa[i]]=1}
        function cnt(s,  re,a){re=(T=="any")?"gpu:([^:,(]*:)?[0-9]+":"gpu:" T ":[0-9]+"
                               if(match(s,re)){a=substr(s,RSTART,RLENGTH); sub(/.*:/,"",a); return a+0} return 0}
-       {cfg=cnt($2); if(cfg==0) next; used=cnt($3); st=$4; free=cfg-used; if(free<0)free=0;
-        printf "  %-12s %d/%d  [%s]\n",$1,free,cfg,st > "/dev/stderr";
-        if(st ~ /^(idle|mix)/ && st !~ /(drain|down|drng|maint|resv|boot|fail|comp|inval|noresp|plnd|unk)/){tot+=free; if(free>maxn)maxn=free}}
+       {cfg=cnt($2); if(cfg==0) next; used=cnt($3); st=$4; free=cfg-used; if(free<0)free=0; x=($1 in ex)
+        printf "  %-12s %d/%d  [%s]%s\n",$1,free,cfg,st,(x?" [excluded]":"") > "/dev/stderr";
+        if(!x && st ~ /^(idle|mix)/ && st !~ /(drain|down|drng|maint|resv|boot|fail|comp|inval|noresp|plnd|unk)/){tot+=free; if(free>maxn)maxn=free}}
        END{printf "%d\t%d\n",tot+0,maxn+0}'
 }
-# warn + (unless -y) exit 1 if fewer than NGPU of $2 are free on one node of partition $1.
+# The nodes this job may not use: its -x / --exclude in SB_ARGS — the harness's, the policy's, SBATCH_EXTRA's words; none
+# after them sets one — read as the scan reads them: an option's separate value is never an option (`--comment -xn1`:
+# tests/vgate comment_value=). Given more than once: which one sbatch keeps has no reproduction here (dup_time= is --time's),
+# so EXCL_N > 1 subtracts none (a NOTE; the count as before).
+EXCL=""; EXCL_N=0; _val=0; _prev=""; for _w in "${SB_ARGS[@]}"; do
+  if [ "$_val" = 1 ]; then _val=0; case "$_prev" in -x|--exclude) EXCL=$_w; EXCL_N=$((EXCL_N + 1)) ;; esac
+  else case "$_w" in --exclude=*) EXCL=${_w#--exclude=}; EXCL_N=$((EXCL_N + 1)) ;; -x?*) EXCL=${_w#-x}; EXCL_N=$((EXCL_N + 1)) ;; esac
+    case "$_w" in --?*=*|-[!-]?*) ;; --?*) case "$_sv" in *" ${_w#--} "*) _val=1 ;; esac ;; -[$_ss]) _val=1 ;; esac; fi; _prev=$_w; done
+# warn + (unless -y) exit 1 if fewer than NGPU of $2 are free on one node of partition $1; the job's --exclude nodes are not
+# counted when it is ONE plain comma-separated host list, matched against sinfo's NodeHost (a site whose node names differ from
+# their hosts: nothing matches — the count as before); any other value (a hostlist range `n[1-4]`, a path), or several
+# --exclude: none, a NOTE says so.
 check_gpu_avail() {
-  local out free maxn
-  echo "$1 nodes carrying '$2' (free/cfg, state):"
-  out=$(gpu_avail "$1" "$2") || true
+  local out free maxn x=$EXCL
+  if [ "$EXCL_N" -gt 1 ]; then x=""; echo "NOTE: this job gives --exclude/-x $EXCL_N times — the count below subtracts none of their nodes: it may include GPUs this job cannot use" >&2
+  else case "$x" in *[!$AN._,-]*) x=""; echo "NOTE: this job's --exclude '$EXCL' is not a plain comma-separated host list (a hostlist range?) — the count below subtracts none of its nodes: it may include GPUs this job cannot use" >&2 ;; esac; fi
+  echo "$1 nodes carrying '$2' (free/cfg, state${x:+; [excluded] = named by its --exclude, not counted}):"
+  out=$(gpu_avail "$1" "$2" "$x") || true
   free=$(printf '%s' "$out" | cut -f1); maxn=$(printf '%s' "$out" | cut -f2)
   free=${free:-0}; maxn=${maxn:-0}
   echo "  -> $free free now; up to $maxn on one node (a 1-node job needs $NGPU on ONE node)."; AVAIL="free:$free/max_node:$maxn/gpu_type:$2"

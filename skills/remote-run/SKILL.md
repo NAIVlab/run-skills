@@ -44,11 +44,14 @@ rsk exec -T <t> -- <cmd> [args]                   # ONE bounded read in the remo
                                                   #   ps df ls stat quota mfsgetquota, head/tail -c N <relative path>, …; no pipes, no $VAR
 rsk watch <table> [--act] [--once] [--for S]      # many jobs or long waits: run-watch under the project's lease (procedure §5); --act: every row checked against the denies
 rsk watch <table> --approve "<the user's words>"  # their OK of the shown rows + `#@ allow` (Slurm); --act / --approve go through rsk watch only
-rsk cancel <run> [--job <id|pid>] [--approve "<their words>" [--asked "<your question>"]]   # identity check, then scancel / TERM → KILL
+rsk cancel <run> [--job <id|pid>] [--approve "<their words>" [--asked "<your question>"]] [--wait S]   # identity check, then scancel / TERM → KILL
 rsk pull -T <t> [-n] <path>...                    # copy results back (run-pull; -n = count + size first)
 rsk grant add|deny|list|revoke …                  # the user's standing words (§3); rsk adopt: ledger a run rsk did not start
 rsk doctor                                        # offline check of this install (skill, packs, targets, grants, ssh aliases); rsk update: when the user asks
 ```
+Read each call's whole output and exit code; `rsk launch` / `rsk cancel` end with the verdict line `rsk launch: exit N
+(<meaning>)[ — <why>]`. Scripting rsk: log every call's full output, branch on the exit code (never on grepped words), pass
+options literally or as an array — zsh, maybe your shell, never splits an unquoted `$VAR` (a name with a space: exit 2).
 `rsk launch -T` plans on the target (every check a submit runs; nothing submitted), stores the plan and its card, then
 checks the user's recorded authorisations (§3). Exit 0 `covered by <id> (…, "<quote>")` = submitted under their earlier
 words: say so in your report, with the record and its words. Exit 4 `needs user: approval — plan <id>` = **show the card
@@ -57,6 +60,9 @@ every card, one `--approve` with several `--plan`. Exit 6 = the card went stale 
 it says what changed; `needs: sync`) or that run is live: sync or plan again, show the new card. Exit 5 after a submit = SUBMIT_UNKNOWN, never resubmitted (it blocks that run until `rsk status` settles it),
 whatever ssh's own words were (a fallback route of a session that ran can print `Connection refused`): the plan stays used;
 `plan <id> is free again` = the target proved nothing went out: fix the cause, `rsk launch --plan <id>` retries it under the same record.
+Moving a run: `rsk cancel <run> --wait 120`, then plan it on the new target; `not ended yet` or a refusal saying a
+cancel's end is not seen yet (often: the old target was unreadable) → `rsk status` again, never `--same-name-ok`; no
+checkpoint moves by itself (procedures §5). Slurm: free is not schedulable (priority, caps, your other jobs): a long wait → compare targets (`rsk avail`) rather than stacking submits.
 Slurm: `references/procedure-slurm.md` (sync → bootstrap → plan → submit → monitor, the storage model, what `submit.sh`
 checks). Workstation: `references/procedure-nohup.md` (sync → bootstrap → GPUs → plan → launch → monitor). Conf keys:
 `references/conf-keys.md`. Naming, run classes, wandb, checkpoint/resume: `references/experiment-conventions.md` — read
@@ -162,3 +168,5 @@ restore `grants.json`, or move it and its `.prev` aside and `rsk grant recount`:
   `rsk watch <table> --approve`), within the table's `#@ allow` budget, `fail-stop` cancels included (`rsk watch --act`
   first refuses rows a deny of theirs matches); `rsk cancel` / `rsk launch --relaunch` under a grant that covers them
   (§3); on workstations `run-watch` only detects.
+- Under a standing grant: a CANCELLED end was someone's decision — never relaunched unprompted; several runs failing at
+  once point at the target or a shared input — read one log before relaunching any; bound the relaunches you start.

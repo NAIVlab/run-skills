@@ -119,8 +119,13 @@ because sbatch keeps the last one), a payload guard (no nested `sbatch`/`srun`),
 or forbidden QOS smuggled in; every word an option or the value of the option before it — sbatch's getopt string starts
 with `+`, so the first other word would become the batch script and the harness's own options after it that script's
 arguments, and a value option at the end would swallow the harness's next option), an availability check with `sinfo`
-(busy → warning, `-y` to queue anyway), a lint of `SBATCH_EXTRA` that reads its words as that scan does (an option's
-separate value, `--comment -t1`, is never linted as an option), and finally `sbatch --requeue`.
+(busy → warning, `-y` to queue anyway; a node the job's own last `--exclude` / `-x` names is listed `[excluded]` and never
+counted — a count of GPUs the job may not use once said "6 free" where none was usable — but only a plain comma-separated
+host list is read: a hostlist range or a path is not expanded here, never guessed, so a NOTE says the count includes it;
+and free is all the gate measures — priority, QOS / per-user caps and the account's other jobs decide when a job
+starts, which squeue's pending reason names and the docs teach to read), a lint of `SBATCH_EXTRA` that reads its words
+as that scan does (an option's separate value, `--comment -t1`, is never linted as an option), and finally
+`sbatch --requeue`.
 The job wrapper writes a header per start (`restart=N`) and an `EXIT rc=N` footer, and forwards Slurm's warning and
 termination signals to the trainer, so the log itself records how each attempt ended.
 
