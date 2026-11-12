@@ -2,43 +2,48 @@
 # run-skills bin/run-pull — copy results back from a target into the current project (cwd, must hold .hpc.conf /
 # .ws.conf): logs, metrics, eval outputs, a checkpoint. Runs LOCALLY; rsync only, never ssh, so it works through a
 # site's restricted data-transfer node — the same transfer host run-sync uses (rs_xfer_host).
-#   TARGET=<name> bash ~/.agents/run-skills/bin/run-pull [-n|--dry-run] <path>...
+#   TARGET=<name> bash ~/.agents/run-skills/bin/run-pull [-n|--dry-run] [--root] <path>...
 # <path> is relative to the remote project dir and lands at the same path here (rsync -R). Additive: never deletes,
 # never replaces a local file that is newer (-u). Env and harness state (venvs, caches, deploy dirs, the conf,
 # .wandb_env, .git, the .rs/ attempt journal) is refused. -n = file count + total size, nothing written: use it before a large pull.
+# --root: every <path> is relative to the conf's OUTPUT_ROOT instead (<TAG>_OUTPUT_ROOT first; rs_output_root: the project's
+# own out-of-tree output root, never guessed), refused when ANY component is env/harness state (rs_root_rel); same landing.
 set -euo pipefail
 RS_HOME=$(cd "$(dirname "$0")/.." && pwd)
 . "$RS_HOME/lib/common.sh"
 rs_init
-rs_load_conf REMOTE_DIR WS_REMOTE_DIR REMOTE_HOST EXTRA_EXCLUDES SYNC_ALSO  # trust only the conf, never stale exports
+rs_load_conf REMOTE_DIR WS_REMOTE_DIR REMOTE_HOST EXTRA_EXCLUDES SYNC_ALSO OUTPUT_ROOT  # trust only the conf, never stale exports
 CONF=$(rs_conf_file); RDIR=$(rs_remote_dir); XHOST=$(rs_xfer_host)
 
-usage() { echo "usage: TARGET=<name> run-pull [-n|--dry-run] <remote-project-relative path>..." >&2; exit 2; }
-DRY=""; PATHS=()
+usage() { echo "usage: TARGET=<name> run-pull [-n|--dry-run] [--root] <path relative to the remote project dir (--root: to OUTPUT_ROOT)>..." >&2; exit 2; }
+DRY=""; ROOTED=""; PATHS=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -n|--dry-run) DRY=--dry-run ;;
+    --root) ROOTED=1 ;;
     --) shift; PATHS+=("$@"); break ;;
     -*) usage ;;
     *) PATHS+=("$1") ;;
   esac; shift
 done
 [ "${#PATHS[@]}" -gt 0 ] || usage
+SDIR=$RDIR; [ -z "$ROOTED" ] || SDIR=$(rs_output_root)   # the remote dir the paths are relative to
 DEPLOYS=" .ws $(rs_targets | sed 's/^/./' | tr '\n' ' ')"
 SRC=(); i=0
 for p in "${PATHS[@]}"; do
+  if [ -n "$ROOTED" ]; then p=$(rs_root_rel "$p"); else
   while :; do case "$p" in ./*) p=${p#./} ;; */) p=${p%/} ;; *) break ;; esac; done
   case "$p" in ''|.|/*|-*|..|../*|*/..|*/../*|*/./*|*/.|*//*|*[!A-Za-z0-9._/+=,@-]*)   # no globs, spaces, shell chars
     die "run-pull: '$p' — give a plain path inside the remote project dir (relative, no '..', no wildcards)" ;; esac
-  d=$p; while :; do [ ! -L "$d" ] || die "run-pull: local '$d' is a symlink and rsync would replace it with a real dir — ask the user"
-    case "$d" in */*) d=${d%/*} ;; *) break ;; esac; done
   top=${p%%/*}
   case "$top" in .venv|.venv-*|.cache|.local|.config|bin|.git|.wandb_env|.hpc.conf|.ws.conf|.rs) die "run-pull: '$p' is env/harness state, never pulled" ;; esac
-  case "$DEPLOYS" in *" $top "*) die "run-pull: '$p' is a deployed harness dir, never pulled" ;; esac
-  PATHS[$i]=$p; SRC+=("$XHOST:$RDIR/./$p"); i=$((i+1))   # /./ = the -R anchor: the path below it is recreated here
+  case "$DEPLOYS" in *" $top "*) die "run-pull: '$p' is a deployed harness dir, never pulled" ;; esac; fi
+  d=$p; while :; do [ ! -L "$d" ] || die "run-pull: local '$d' is a symlink and rsync would replace it with a real dir — ask the user"
+    case "$d" in */*) d=${d%/*} ;; *) break ;; esac; done
+  PATHS[$i]=$p; SRC+=("$XHOST:$SDIR/./$p"); i=$((i+1))   # /./ = the -R anchor: the path below it is recreated here
 done
 
-echo "[$T_NAME] pull ${DRY:+(dry) }$XHOST:$RDIR/{${PATHS[*]}}  ->  $(pwd)/   (newer local files kept, nothing deleted)"
+echo "[$T_NAME] pull ${ROOTED:+(root) }${DRY:+(dry) }$XHOST:$SDIR/{${PATHS[*]}}  ->  $(pwd)/   (newer local files kept, nothing deleted)"
 RC=0
 # -K: a local symlinked dir inside a pulled tree stays a symlink (written through, or rsync exit 23 — never replaced)
 rsync -azR -u -K --safe-links --stats $DRY --exclude='.wandb_env' --exclude='.venv*/' --exclude='__pycache__/' \
@@ -65,8 +70,10 @@ case "$BACK" in
   0) ;;
   unknown) echo "[$T_NAME] NOTE: could not check whether run-sync would push these back (local listing failed) —" \
              "make sure EXTRA_EXCLUDES covers them and SYNC_ALSO does not" >&2 ;;
-  *) echo "[$T_NAME] NOTE: run-sync would push $BACK of these files back and, once the remote copies change," \
-       "overwrite them with this copy — add the dir to EXTRA_EXCLUDES in ./$CONF (and drop it from SYNC_ALSO)" >&2 ;;
+  *) [ -n "$ROOTED" ] && W="into the project dir (a second copy beside OUTPUT_ROOT's)" ||
+       W="back and, once the remote copies change, overwrite them with this copy"
+     echo "[$T_NAME] NOTE: run-sync would push $BACK of these files $W —" \
+       "add the dir to EXTRA_EXCLUDES in ./$CONF (and drop it from SYNC_ALSO)" >&2 ;;
 esac
-echo "[$T_NAME] pull done <- $XHOST:$RDIR  (${PATHS[*]})"
+echo "[$T_NAME] pull done <- $XHOST:$SDIR  (${PATHS[*]})"
 exit "$RC"

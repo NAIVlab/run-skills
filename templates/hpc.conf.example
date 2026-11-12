@@ -19,3 +19,5 @@ DEFAULT_CLUSTER=mycluster                    # target used when the user names n
 # SBATCH_EXTRA="--qos=high --exclude=n1"     # never --partition; QOS/partition are submit.sh's decision
 # EXTRA_EXCLUDES="/.deps-*"                  # extra rsync excludes (also protected from -D)
 # SYNC_ALSO="data/small.json"                # excluded paths to push anyway
+# MYCLUSTER_OUTPUT_ROOT='/data/<user>/<project>-out'   # runs write outside REMOTE_DIR on purpose? that root, per target
+#                                            #   (rsk pull / rsk sync --root <path> only; never guessed)

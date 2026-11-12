@@ -89,6 +89,25 @@ payload brings its own runtime, typically a container); the containment variable
 virtual-memory cap cannot run a torch-sized `uv sync`, so the env is built where the jobs run. A misconfigured job therefore stops with a
 one-line reason instead of training for a day in the wrong environment.
 
+**The one declared exception: `OUTPUT_ROOT`.** Some projects write their big outputs and checkpoints to a data root
+outside the project dir on purpose (a large disk, a quota elsewhere, a root several projects or sessions share), and
+the harness pins nothing there. Before the key, files crossed the wire only relative to the project dir, so a
+checkpoint under such a root had no sanctioned way to another target and a "resume" there started from step 0. The
+conf may declare that root per target (`<TAG>_OUTPUT_ROOT`, prefixable for both kinds): opt-in, never guessed, a
+plain absolute (or `$HOME`-relative) dir that is neither the home dir (or above it) nor the project dir nor inside or
+around it — the project dir has its own commands, a root holding it would let a root push write into the code, and a
+home holds keys. The conf is sourced locally, so an unquoted `$HOME` or `~` arrives as the local home's absolute path:
+the comparison reads a path at or under the local `$HOME` as the target's home (`rs_rpath`), which is exact when the two
+homes match (a workstation with the same user) and cannot be when they differ — there the user keeps the root clear.
+rsk touches it only on `--root`: `run-pull --root` reads paths relative to it (landing as any pull does), `run-sync
+--root` pushes the named local paths into it and nothing else. Because the root may hold other projects' trees, every
+component of such a path is checked against env and harness state (and credential dirs), the push never deletes (`-D`
+is refused), never replaces a newer remote file (`-u`) or a remote symlinked dir (`-K`), and never creates the root: it
+lists `<root>/.` first, rsync only (under `-n` rsync's receiver skips the mkdir and itemizes the root as created, so the
+dry run alone would pass), then writes to `<root>/./`, whose mkdir fails when the root is missing — `tests/48`, with the
+real rsync; it runs no ssh, since a transfer node's restricted shell takes rsync only. Caches, logs and `ckpts/` stay
+pinned under the project, as above.
+
 ## Submission (`remote/submit.sh` + `policy.sh`)
 
 `submit.sh` is generic; everything site-specific is behind two hooks:

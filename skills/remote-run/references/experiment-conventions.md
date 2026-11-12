@@ -71,7 +71,7 @@ The run must write periodic checkpoints under the project dir (`ckpts/` or the t
 from the latest one when re-executed with the same command. Verify that resume flag/behavior exists before
 the first long submit; if the command cannot resume, say so in the plan line and let the user decide. Saves are
 atomic (temp name, then rename; keep the previous one): a signal or time limit landing mid-save otherwise
-corrupts the only resume point.
+corrupts the only resume point. Outside the project dir only under the conf's `OUTPUT_ROOT` (carried with `--root`).
 - slurm: jobs are submitted with `--requeue` (auto-resume by default): preemption or a node failure re-runs
   the SAME command — same job id, log appended, a `restart=N` header line marks the attempt. A partition that
   preempts by cancel ends the job PREEMPTED instead: resuming is a new submit (new id, same name). The harness forwards

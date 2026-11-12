@@ -40,7 +40,8 @@ dir last synced from **another local checkout** (decided by the local path; the 
 is refused — `ERROR: … was last synced from another checkout: <path> (…)`, exit 2 — because the sync would overwrite
 that checkout's code under any job still running from it. Tell the user; with their OK (and no job of the other
 checkout running) re-run with `--take-over`. `--also <path>` force-pushes one excluded path for this sync only
-(a new container image, a wheelhouse); `SYNC_ALSO` is the every-sync form.
+(a new container image, a wheelhouse); `SYNC_ALSO` is the every-sync form. `rsk sync -T <t> [-n] --root <path>` is no
+sync: it pushes only that local path into the conf's `OUTPUT_ROOT` (§6; no deploy, no stamp; with `-D` or `--also`: exit 2).
 
 ## 2. Bootstrap the env — first run, and after any dependency change (idempotent)
 ```
@@ -363,11 +364,8 @@ launch -T <new> …` — a `relaunch`: after a stop only the user's approval of 
 covers it). An answer that left the end unknown (exit 5) keeps the run live in the ledger: a launch of it on that box is
 refused, on another target rsk prints a NOTE (the old copy may still run) — `rsk status` again once the box answers,
 never `--same-name-ok` for it (two live copies would share the run's logs and checkpoints), and tell the user when you
-launch elsewhere before the old end is seen. rsk copies no checkpoint between targets: a relaunch elsewhere resumes only from what that target's
-project dir holds — check it before the launch. To carry one over: `rsk pull -T <old> -n ckpts/<dir>` (count + size; a
-large tree needs the user's OK), `rsk pull -T <old> ckpts/<dir>`, then `rsk sync -T <new> --also ckpts/<dir>` (a
-one-off force-push of that excluded path), and confirm the trainer's own resume line after the start. A run that starts
-fresh instead says so in its notes (conventions §4) and in your report.
+launch elsewhere before the old end is seen. rsk copies no checkpoint between targets by itself: carry it first (§6,
+"Carrying a checkpoint"); a run that starts fresh instead says so in its notes (conventions §4) and in your report.
 **Looking after runs under a standing grant** (`relaunch`, `--relaunch-after any`, `cancel_own`): the grant says what
 rsk lets through, not what is wise. A run that was stopped — `CANCELLED` (rsk cancel), or `term=1` in its `<log>.rc` (a
 TERM: the user, another session) — was someone's decision: never relaunch it unprompted, even where a grant would cover
@@ -390,9 +388,11 @@ finding — report it.
 ```
 rsk pull -T <t> -n <path>...      # = TARGET=<t> bash $ROOT/bin/run-pull -n …: dry run, file count + total size (rsync --stats); writes nothing
 rsk pull -T <t> <path>...         # copy them into the local project
+rsk pull -T <t> [-n] --root <path>...   # the same, <path> relative to the conf's OUTPUT_ROOT (outside the project dir)
 ```
 Paths are relative to the project dir and land at the same path locally (`logs/<file>`, `results/`); plain paths
-only (no wildcards, no `..`) — for anything outside the project dir, ask the user. Additive: a local file newer than
+only (no wildcards, no `..`) — for anything outside the project dir, `--root` when it lies under the conf's
+`OUTPUT_ROOT` (`conf-keys.md`), else ask the user. Additive: a local file newer than
 the remote copy is kept, nothing local is deleted, local symlinked dirs stay symlinks (one on the path itself is
 refused); venvs, caches, deploy dirs, the conf, `.wandb_env` and `.git` are refused. It only runs `rsync`, through the
 target's transfer host when its profile sets `T_XFER_HOST`. Never hand-roll an `rsync`/`scp` to `<host>` instead —
@@ -400,6 +400,16 @@ a site that requires a transfer node need not refuse every copy elsewhere, so a 
 Large trees (`ckpts/`, `wandb/`): `-n` first, then pull with the user's OK. `NOTE: run-sync would push N of these
 files back` = a later sync would overwrite newer remote results with this copy: add the dir to `EXTRA_EXCLUDES`
 (and drop it from `SYNC_ALSO`). Exit 24 = files vanished mid-copy (a running job rotated them): pull again later.
+
+**Carrying a checkpoint to another target**: no checkpoint moves by itself, and a target without one trains from step 0.
+In the project dir: `rsk pull -T <old> -n ckpts/<dir>` (count + size; a large tree needs the user's OK), `rsk pull -T
+<old> ckpts/<dir>`, `rsk sync -T <new> --also ckpts/<dir>` (a one-off force-push of that excluded path). When the run
+writes its checkpoints outside the project dir (a data root on a big disk), declare that root per target —
+`<TAG>_OUTPUT_ROOT` for the old and the new one, each in that target's own conf (`.hpc.conf` for a cluster, `.ws.conf`
+for a workstation; never guessed: ask the user) — and carry the latest checkpoint: `rsk pull -T <old> --root -n <path>`
+(size first; a large one with the user's OK), `rsk pull -T <old> --root <path>`, `rsk sync -T <new> --root <path>` (only
+that path: `-u`, never deletes, never creates the root — exit ≠ 0 on a missing one, `-n` too). Then launch there and
+confirm the trainer's resume line (resumed from that step, not 0) at the first review.
 
 ## Storage model (the deployed `.ws/env.sh` enforces it; the box's profile chooses the policy)
 Everything under the project dir by default: HF/torch caches (`$PROJ/.cache/…`), wandb dirs, `logs/`, `ckpts/`,

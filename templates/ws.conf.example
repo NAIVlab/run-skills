@@ -14,3 +14,5 @@ DEFAULT_STATION='<alias>'                    # target used when the user names n
 # VENV_DIR='$HOME/.venvs/<project>'          # explicit venv location (single-quoted: expands on the box)
 # BOOTSTRAP_HOOK=scripts/bootstrap_env.sh    # run by bootstrap.sh INSTEAD of `uv sync`
 # ENV_HOOK=scripts/env_hook.sh               # sourced at the end of .ws/env.sh; branch on $WS_TAG inside
+# MYBOX_OUTPUT_ROOT='/data/<user>/<project>-out'   # runs write outside the project dir on purpose? that root, per box
+#                                            #   (absolute or '$HOME/…'; rsk pull / rsk sync --root <path> only)

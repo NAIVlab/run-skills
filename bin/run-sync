@@ -2,6 +2,7 @@
 # run-skills bin/run-sync — push the current project (cwd, must hold .hpc.conf / .ws.conf) to a target and
 # deploy the harness into <REMOTE_DIR>/.<target>/ (slurm) or <REMOTE_DIR>/.ws/ (nohup). Runs LOCALLY.
 #   TARGET=<name> bash ~/.agents/run-skills/bin/run-sync [-n|--dry-run (itemized)] [-D|--delete] [--also PATH]... [--take-over]
+#   TARGET=<name> bash ~/.agents/run-skills/bin/run-sync [-n] --root PATH...   (a root push, below)
 # Additive by default: caches / venvs / wandb / logs / ckpts / outputs / data on the remote are excluded, so a
 # code sync never deletes them (not even with -D). .wandb_env is pushed separately as mode 600.
 # --also PATH: force-push one excluded path for this sync only (a one-off SYNC_ALSO, e.g. a new container image).
@@ -13,17 +14,22 @@
 # Ownership is the local path alone (host is recorded for the message): clones at the same path on two machines pass.
 # Every rsync runs with --timeout=300: a link that stalls for 5 min fails (rsync's exit) instead of hanging the session.
 # CLUSTER= / STATION= are accepted as aliases of TARGET= (v1 forwarders rely on that).
+# --root PATH (repeatable, --root=PATH; takes the next word like --also): a root push and NOTHING else — those local paths
+# (project-relative, rs_root_rel) into the conf's OUTPUT_ROOT (rs_output_root: the project's own out-of-tree output root),
+# rsync -azR -u -K: a newer remote file is never replaced, nothing deleted (-D: exit 2), a missing root never created
+# (listed first, -n too; then <root>/./: its mkdir fails); no ssh, no project code, deploy, stamp or .wandb_env. With --also
+# or --take-over: exit 2.
 set -euo pipefail
 RS_HOME=$(cd "$(dirname "$0")/.." && pwd)
 . "$RS_HOME/lib/common.sh"
 rs_init
-rs_load_conf REMOTE_DIR WS_REMOTE_DIR REMOTE_HOST EXTRA_EXCLUDES SYNC_ALSO   # trust only the conf, never stale exports
+rs_load_conf REMOTE_DIR WS_REMOTE_DIR REMOTE_HOST EXTRA_EXCLUDES SYNC_ALSO OUTPUT_ROOT   # trust only the conf, never stale exports
 CONF=$(rs_conf_file); RDIR=$(rs_remote_dir); DEPLOY=$(rs_deploy_dir); HOST=$(rs_host)
 XHOST=$(rs_xfer_host)   # every rsync below goes to the transfer host (if any); ssh mkdir/chmod stay on $HOST
 rsy() { rsync --timeout=300 "$@"; }   # EVERY transfer: 300 s without I/O aborts it (rsync's own --timeout) instead of hanging
 
-DRY=""; DEL=""; ALSO=""; TAKE=0
-usage() { echo "usage: TARGET=<name> run-sync [-n|--dry-run] [-D|--delete] [--also PATH]... [--take-over]" >&2; exit 2; }
+DRY=""; DEL=""; ALSO=""; TAKE=0; ROOTP=()
+usage() { echo "usage: TARGET=<name> run-sync [-n|--dry-run] [-D|--delete] [--also PATH]... [--take-over] | [-n] --root PATH..." >&2; exit 2; }
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -n|--dry-run) DRY="--dry-run --itemize-changes" ;;   # -n shows every file it would transfer
@@ -33,10 +39,35 @@ while [ "$#" -gt 0 ]; do
                   ALSO="$ALSO $2"; shift ;;
     --also=?*)    case "$1" in *[[:space:]]*) die "--also '${1#--also=}': no spaces in paths (rsync -R semantics)" ;; esac
                   ALSO="$ALSO ${1#--also=}" ;;
+    --root)       [ "$#" -ge 2 ] && [ -n "$2" ] || usage; ROOTP+=("$2"); shift ;;
+    --root=?*)    ROOTP+=("${1#--root=}") ;;
     --take-over)  TAKE=1 ;;
     *) usage ;;
   esac; shift
 done
+
+if [ "${#ROOTP[@]}" -gt 0 ]; then   # a root push: the named paths into OUTPUT_ROOT, nothing else
+  [ -z "$DEL" ] || die "--root never deletes (a root may hold other projects' files): drop -D"
+  [ -z "$ALSO" ] || die "--root and --also go to different places (OUTPUT_ROOT / the project dir): run them separately"
+  [ "$TAKE" = 0 ] || die "--take-over is about the project dir; a root push never touches it"
+  ROOT=$(rs_output_root); RP=()
+  for p in "${ROOTP[@]}"; do p=$(rs_root_rel "$p")
+    [ -e "$p" ] || die "--root '$p' not found here ($(pwd)) — a root push sends local paths, relative to the project root"
+    d=$p; while :; do [ ! -L "$d" ] || die "--root: local '$d' is a symlink (rsync would skip it or recreate it as one) — ask the user"
+      case "$d" in */*) d=${d%/*} ;; *) break ;; esac; done
+    RP+=("$p"); done
+  echo "[$T_NAME] root push ${DRY:+(dry) }${RP[*]} -> $XHOST:$ROOT/   (newer remote files kept, nothing deleted)"
+  RC=0   # the root must exist, -n too (under --dry-run rsync's receiver skips the mkdir and itemizes the root as created): an
+  rsy --list-only --exclude='*' "$XHOST:$ROOT/." >/dev/null || RC=$?   # rsync-only read (a transfer host's shell), '.' alone
+  [ "$RC" = 0 ] || { echo "[$T_NAME] $XHOST:$ROOT/ cannot be listed (rsync exit $RC, above: missing, not a dir, unreachable) — a root" \
+    "push never creates it: ask the user to create it there, or fix OUTPUT_ROOT / ${T_TAG}_OUTPUT_ROOT in ./$CONF" >&2; exit "$RC"; }
+  RC=0   # -K: a remote symlinked dir in the root stays a symlink (written through, or rsync exit 23 — never replaced)
+  rsy -azR -u -K --safe-links $DRY --exclude='.wandb_env' --exclude='.venv*/' --exclude='__pycache__/' --exclude='.git' \
+    "${RP[@]}" "$XHOST:$ROOT/./" || RC=$?
+  [ "$RC" = 0 ] || { echo "[$T_NAME] rsync exit $RC — nothing retried; see the rsync message above (a root that does not exist" \
+    "is never created: check OUTPUT_ROOT / ${T_TAG}_OUTPUT_ROOT in ./$CONF)" >&2; exit "$RC"; }
+  echo "[$T_NAME] ${DRY:+dry run: nothing written; }root push done -> $XHOST:$ROOT  (${RP[*]})"; exit 0
+fi
 
 # Excludes (lib/common.sh rs_sync_excludes): generated/output dirs anchored to the repo root, junk at any depth, every
 # target's deploy dir, EXTRA_EXCLUDES. -D never prunes these either. SYNC_ALSO=.git still force-pushes a real .git dir.

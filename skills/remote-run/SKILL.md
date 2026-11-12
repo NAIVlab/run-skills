@@ -45,7 +45,7 @@ rsk exec -T <t> -- <cmd> [args]                   # ONE bounded read in the remo
 rsk watch <table> [--act] [--once] [--for S]      # many jobs or long waits: run-watch under the project's lease (procedure §5); --act: every row checked against the denies
 rsk watch <table> --approve "<the user's words>"  # their OK of the shown rows + `#@ allow` (Slurm); --act / --approve go through rsk watch only
 rsk cancel <run> [--job <id|pid>] [--approve "<their words>" [--asked "<your question>"]] [--wait S]   # identity check, then scancel / TERM → KILL
-rsk pull -T <t> [-n] <path>...                    # copy results back (run-pull; -n = count + size first)
+rsk pull -T <t> [-n] [--root] <path>...           # copy results back (run-pull; -n = count + size first; --root: under OUTPUT_ROOT)
 rsk grant add|deny|list|revoke …                  # the user's standing words (§3); rsk adopt: ledger a run rsk did not start
 rsk doctor                                        # offline check of this install (skill, packs, targets, grants, ssh aliases); rsk update: when the user asks
 ```
@@ -62,7 +62,7 @@ whatever ssh's own words were (a fallback route of a session that ran can print 
 `plan <id> is free again` = the target proved nothing went out: fix the cause, `rsk launch --plan <id>` retries it under the same record.
 Moving a run: `rsk cancel <run> --wait 120`, then plan it on the new target; `not ended yet` or a refusal saying a
 cancel's end is not seen yet (often: the old target was unreadable) → `rsk status` again, never `--same-name-ok`; no
-checkpoint moves by itself (procedures §5). Slurm: free is not schedulable (priority, caps, your other jobs): a long wait → compare targets (`rsk avail`) rather than stacking submits.
+checkpoint moves by itself (procedures §6). Slurm: free is not schedulable (priority, caps, your other jobs): a long wait → compare targets (`rsk avail`) rather than stacking submits.
 Slurm: `references/procedure-slurm.md` (sync → bootstrap → plan → submit → monitor, the storage model, what `submit.sh`
 checks). Workstation: `references/procedure-nohup.md` (sync → bootstrap → GPUs → plan → launch → monitor). Conf keys:
 `references/conf-keys.md`. Naming, run classes, wandb, checkpoint/resume: `references/experiment-conventions.md` — read
@@ -151,11 +151,13 @@ restore `grants.json`, or move it and its `.prev` aside and `rsk grant recount`:
 - Never create a conda env: if `ENV_NAME` is missing on the target, stop and ask. uv venvs are different —
   `run-bootstrap` builds them from the project's own `pyproject.toml`, so running it is safe. `ENV_KIND=uv` is the
   default; scaffold new `.ws.conf` files as uv unless the user asks for conda.
-- Everything a run produces stays under the project's remote dir (the harness pins caches, tmp, logs, ckpts there).
+- Everything a run produces stays under the project's remote dir (the harness pins caches, tmp, logs, ckpts there) —
+  or under the root outside it that its conf declares (`OUTPUT_ROOT`, `conf-keys.md`), reached only with `--root`.
 - A submit or launch whose ssh died or printed nothing is never retried blind: `rsk status` settles it from the remote
   `.rs/attempts/<NONCE>/result` + `receipt` (procedure §4).
 - Files cross the wire only through `run-sync` (up) and `run-pull` (back) (`rsk sync` / `rsk pull`), via the target's
   transfer host where the site requires one. Never hand-roll `rsync`/`scp`/`sftp` to `<host>`; ssh is for commands and bounded reads.
+  No checkpoint moves by itself: carry it before resuming on another target (`--root` under `OUTPUT_ROOT`; procedure §6).
 - Experiments checkpoint and resume: Slurm jobs go out with `--requeue`, so the run command must pick up from its
   latest checkpoint when re-run (check it before a long submit); nothing restarts a nohup run after a crash or reboot,
   so the command must pick up from its latest checkpoint on relaunch. Smoke tests always run `WANDB_MODE=disabled`.

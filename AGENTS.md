@@ -29,7 +29,8 @@ read-only, one ssh per target, discovery by WorkDir / `logs/*.pid`; a failed rea
 SUBMIT_UNKNOWN reconciled from the remote journal, and per Slurm target this user's jobs in other dirs, counted (`other_dirs`)); `ledger.py` + `grants.py` (the per-project ledger and the one authorisation
 record type, below); `launch.py` (`rsk launch`), `cancel.py` (`rsk cancel`, `--wait S` = follow an accepted scancel to its observed end) — both end with ONE stdout
 verdict line `rsk launch|cancel: exit N (…)[ — the error]` (`cli.verdict_line`), and their plan / submit / cancel ssh probe the project dir first (`observe._DIRPROBE`: a hung mount = exit 5, nothing run); `watch.py` (`rsk watch` = the lease around
-`bin/run-watch`), `adopt.py` (`rsk adopt`), `wrappers.py` (`rsk sync|bootstrap|pull|avail` exec `bin/run-*`, no logic), `legacy.py`
+`bin/run-watch`), `adopt.py` (`rsk adopt`), `wrappers.py` (`rsk sync|bootstrap|pull|avail` exec `bin/run-*`, no logic; `sync_modes`
+= run-sync's grammar: `--also` / `--root` take the next word, `--root` alone is no deletion), `legacy.py`
 (`rsk doctor --legacy-refs`); `errors.py` = the exit codes (0 ok 1 failed 2 usage 3 refused 4 needs user 5 unknown 6 conflict 7 lease
 ended 8 placement). The wheel force-includes the harness under `remote_run/_harness/` (`pyproject.toml`): a new top-level dir the
 harness needs at run time goes there too, and `tests/pkg-wheel.sh` lists what must be in it (`install.sh` copies every dir the docs name under `~/.agents/run-skills`: 70-docs). Unit tests: `tests/py/`
@@ -110,6 +111,12 @@ nohup `<TAG>_REMOTE_DIR` else `WS_REMOTE_DIR` — never guessed. Jobs go out wit
 login-node reader `unset`s the keys it reads (generic + `<TAG>_`) before sourcing the conf (`rs_load_conf KEY...` in
 bin/*, submit.sh's list); env.sh trusts that cleared environment. Extend those lists when adding a key. submit.sh sources the
 conf (after profile.sh) in a child `bash --noprofile --norc` and imports only that list as NUL-separated data, never eval'd: a conf's function/alias/PATH never reaches the policy.
+`OUTPUT_ROOT` (prefixable for both kinds; run-pull / run-sync unset it) = the project's own root OUTSIDE its dir, opt-in, never guessed:
+`rs_output_root` (absolute or `$HOME`-relative, plain, not `/` / home / above it, never the project dir or inside / around it, compared
+by `rs_rpath`: a path under the local `$HOME` = `~/…`, an unquoted `$HOME` in the sourced conf) and `rs_root_rel` (env/harness state or a
+credential dir in ANY component refused); read only by `run-pull --root` (paths relative to it) and `run-sync --root PATH` (only those
+paths: the root listed first, `-n` too, then `-azR -u -K` to `<root>/./`: a missing root is never created; no ssh, no deploy, stamp or
+`.wandb_env`; with `-D` / `--also` / `--take-over` exit 2); `tests/48-output-root.sh`.
 
 ### The fail-closed sentinel — preserve this shape
 
@@ -256,7 +263,7 @@ workstation plan on a busy GPU; `--approve` words repeating a standing grant's q
 either inside the other, weight ≥ 24, grant > 1 h old) are exit 4 for every `--approve`, a grant add/import gets a FLAG;
 `rsk launch` first reads every target holding a ledger-live attempt of the run (`launch.refresh`); `--check-after S`
 judges each submission S s later (`launch.check_after`: ended otherwise = exit 1 + the digest);
-`rsk sync -D` (run-sync's grammar: `--also -n` is a path) / `rsk bootstrap --job` (any `--job` word) need `--approve`
+`rsk sync -D` (run-sync's grammar: `--also -n`, `--root -n` are paths) / `rsk bootstrap --job` (any `--job` word) need `--approve`
 (audited); never at all: someone else's job or process. A provably unsent submit (refused / failed with no receipt, no attempt dir, run-launch
 before its ssh; nohup: the journal decides first — a receipt with gate `go` is launched whatever the exit) is NOT_SUBMITTED:
 the use is refunded and the plan's claim released (`rsk launch --plan P` retries it under the same record); a slurm

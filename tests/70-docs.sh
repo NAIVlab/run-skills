@@ -941,6 +941,41 @@ for k in $(C 'echo $RS_PREFIXABLE_SLURM $RS_PREFIXABLE_NOHUP' | tr ' ' '\n' | so
   [ "$(printf '%s\n' "$CK" | grep -c "^| \`$k\` |")" = 1 ] && ok "conf-keys: one row for $k" || bad "conf-keys: one row for $k"; done
 for t in _template-slurm _template-nohup; do has "$(cat "$RS_HOME/targets/$t/profile.sh")" '^T_XFER_HOST=' "$t profile documents T_XFER_HOST"; done
 
+echo "-- OUTPUT_ROOT: the docs, and the code facts they promise (behaviour: tests/48-output-root.sh) --"
+CKT=$(printf '%s\n' "$CK" | tr '\n' ' ' | tr -s ' ')
+for w in '| `OUTPUT_ROOT` | yes | the project.s own output root OUTSIDE its remote dir' 'Unset = off: never guessed, no default' \
+         'rsk reads and writes there ONLY on `--root`' 'never deletes, never creates the root, no ssh' 'in any component is refused' \
+         'not `/`, the home dir or above it' 'a target whose home differs from yours cannot be compared' \
+         'a credential dir (`\.ssh`, `\.gnupg`, `\.aws`, `\.netrc`)' 'it lists the root first: a missing one is exit ≠ 0, `-n` too'; do
+  has "$CKT" "$w" "conf-keys: OUTPUT_ROOT — $w"; done
+for k in RS_PREFIXABLE_SLURM RS_PREFIXABLE_NOHUP; do has " $(C "echo \$$k") " ' OUTPUT_ROOT ' "conf-keys says prefixable for both kinds: $k lists it"; done
+for s in run-pull run-sync; do has "$(grep '^rs_load_conf ' "$RS_HOME/bin/$s")" ' OUTPUT_ROOT' "AGENTS: $s unsets OUTPUT_ROOT before sourcing the conf"; done
+has "$(grep '^usage()' "$RS_HOME/bin/run-sync")" '| \[-n\] --root PATH\.\.\.' "run-sync's usage line: [-n] --root PATH..."
+has "$(grep '^usage()' "$RS_HOME/bin/run-pull")" '\[--root\]' "run-pull's usage line: [--root]"
+has "$(grep -A1 '^  rsy -azR -u -K --safe-links' "$RS_HOME/bin/run-sync")" '"$XHOST:$ROOT/\./"' "run-sync --root: -u -K, destination <root>/./ (the docs: never creates the root)"
+has "$(cat "$RS_HOME/bin/run-sync")" "^  rsy --list-only --exclude='\*' \"\$XHOST:\$ROOT/\.\" >/dev/null || RC=" "run-sync --root lists the root first, rsync only (the docs: -n too)"
+has "$(grep -A1 '^rs_root_rel()' "$RS_HOME/lib/common.sh"; grep '^ *\.ssh|' "$RS_HOME/lib/common.sh")" '\.ssh|\.gnupg|\.aws|\.netrc)' "rs_root_rel refuses the credential dirs conf-keys names"
+has "$CLI" 'elif w in ("--also", "--root"):' "wrappers.sync_modes: --root takes the next word, as --also"
+for f in "$PSLT" "$PNOT"; do
+  for w in '\*\*Carrying a checkpoint to another target\*\*: no checkpoint moves by itself, and a target without one trains from step 0' \
+           '`<TAG>_OUTPUT_ROOT` for the old and the new one, each in that target.s own conf (`\.hpc\.conf` for a cluster, `\.ws\.conf` for a workstation' \
+           'never creates the root — exit ≠ 0 on a missing one, `-n` too' '`rsk pull -T <old> --root -n <path>` (size first' \
+           '`rsk pull -T <old> --root <path>`, `rsk sync -T <new> --root <path>` (only that path' \
+           'confirm the trainer.s resume line (resumed from that step, not 0)' '`--root` when it lies under the conf.s `OUTPUT_ROOT`' \
+           '`rsk sync -T <t> \[-n\] --root <path>` is no sync: it pushes only that local path into the conf.s `OUTPUT_ROOT`'; do
+    has "$f" "$w" "a procedure: $w"; done; done
+has "$ST" 'No checkpoint moves by itself: carry it before resuming on another target (`--root` under `OUTPUT_ROOT`; procedure §6)' "SKILL: no checkpoint moves by itself"
+has "$ST" 'or under the root outside it that its conf declares (`OUTPUT_ROOT`, `conf-keys.md`), reached only with `--root`' "SKILL: the one declared exception to in-project outputs"
+has "$S" 'rsk pull -T <t> \[-n\] \[--root\] <path>' "SKILL: rsk pull [--root]"
+has "$E" 'Outside the project dir only under the conf.s `OUTPUT_ROOT` (carried with `--root`)' "conventions §6: checkpoints outside the project dir"
+has "$DT" '\*\*The one declared exception: `OUTPUT_ROOT`\.\*\*' "DESIGN: the one declared exception"
+has "$DT" 'never creates the root: it lists `<root>/\.` first, rsync only (under `-n` rsync.s receiver skips the mkdir and itemizes the root as created' "DESIGN: why the root is listed first"
+has "$DT" 'then writes to `<root>/\./`, whose mkdir fails when the root is missing — `tests/48`, with the real rsync' "DESIGN: why a missing root is never created, and its test"
+has "$DT" 'the comparison reads a path at or under the local `$HOME` as the target.s home (`rs_rpath`)' "DESIGN: an unquoted \$HOME / ~ is compared as the home"
+has "$AT" '`OUTPUT_ROOT` (prefixable for both kinds; run-pull / run-sync unset it)' "AGENTS: Config precedence names OUTPUT_ROOT"
+has "$AT" '`sync_modes` = run-sync.s grammar: `--also` / `--root` take the next word' "AGENTS: the wrappers line names run-sync's --root"
+for t in hpc ws; do has "$(cat "$RS_HOME/templates/$t.conf.example")" '^# [A-Z]*_OUTPUT_ROOT=' "templates/$t.conf.example shows <TAG>_OUTPUT_ROOT"; done
+
 echo "-- INDEX stub == rs_gen_index (no overlay, root placeholder) --"
 RS_USER_DIR=/nonexistent RS_PACKS_DIR=/nonexistent C "rs_gen_index '$T/idx.md' '~/.agents/run-skills'" >/dev/null
 if cmp -s "$T/idx.md" "$RS_HOME/$IDX"; then ok "$IDX matches rs_gen_index"
@@ -962,7 +997,7 @@ for f in "$PSLT" "$PNOT"; do
            'holding whitespace or a control character is exit 2 before anything is planned' '(a hung mount?)` means the project dir hung before anything ran there' \
            '\*\*Moving a run to another target\*\*' 'never `--same-name-ok` for it' 'rsk copies no checkpoint between targets' \
            '`rsk pull -T <old> -n ckpts/<dir>`' '`rsk sync -T <new> --also ckpts/<dir>` (a one-off force-push of that excluded path)' \
-           'A run that starts fresh instead says so in its notes' '\*\*Looking after runs under a standing grant\*\*' \
+           'a run that starts fresh instead says so in its notes' '\*\*Looking after runs under a standing grant\*\*' \
            'the grant says what rsk lets through, not what is wise' 'was someone.s decision' 'read one log (`rsk logs`) before relaunching any' \
            'Bound the relaunches you start yourself' 'the same failure twice after a fix → stop and escalate'; do
     has "$f" "$r" "procedure-slurm / -nohup: $r"; done; done
@@ -1041,7 +1076,12 @@ for f in "$RS_HOME"/bin/* "$RS_HOME"/lib/*.sh "$RS_HOME"/remote/* "$RS_HOME"/tar
 done
 budget() { [ -f "$RS_HOME/$1" ] || { bad "$1 exists"; return; }; local n; n=$(wc -l < "$RS_HOME/$1")
   [ "$n" -le "$2" ] && ok "$1 within $2 lines ($n)" || bad "$1 within $2 lines ($n)"; }
-budget lib/common.sh 141; budget remote/env.sh 170; budget remote/bootstrap.sh 100; budget remote/submit.sh 444; budget remote/job.sbatch 70   # common +3: rs_ref, rs_deploy_profile; +8: rs_legacy_routing (a legacy rule keeps its kind)
+budget lib/common.sh 178; budget remote/env.sh 170; budget remote/bootstrap.sh 100; budget remote/submit.sh 444; budget remote/job.sbatch 70   # common +3: rs_ref, rs_deploy_profile; +8: rs_legacy_routing (a legacy rule keeps its kind)
+# 2026-11-12: common +30 (141 → 171) — OUTPUT_ROOT: rs_rpath (one spelling of a remote path, +5), rs_output_root (opt-in, never
+# guessed; absolute or $HOME-relative, plain, never the project dir or inside / around it; each refusal its own message, +14),
+# rs_root_rel (a --root path, env/harness state refused in ANY component — a root is shared, +11)
+# 2026-11-12 review: common +7 (171 → 178) — rs_rspell split from rs_rpath, which now reads a path under the local $HOME as
+# '~/…' (an unquoted $HOME / ~ in the sourced conf, +5); the home dir or above it refused (+1); credential dirs under --root (+1)
 # P2 (the attempt journal): submit.sh +75 (claim/replay, the body in a subshell, child-shell conf, duplicate guard, lint, receipt); bootstrap.sh +10, job.sbatch +5 (snapshots)
 # P3 (api=3): submit.sh +40 (the --rs-mode/--rs-expect/--rs-chain pre-scan, rs_bound + rs_plan = the block and the expect check, the chain conflict)
 # P3 review: submit.sh +25 (--rs-warnings + the recount, SBATCH_EXTRA --time vs MaxTime, env_hook/venv_dir/uv_sync_args bound, squeue fail-closed under --rs-expect)
@@ -1058,7 +1098,10 @@ budget lib/common.sh 141; budget remote/env.sh 170; budget remote/bootstrap.sh 1
 # over SB_ARGS as the scan reads it (+4) and its comment (+4), gpu_avail's [excluded] mark (+2), the NOTEs for a value that is no plain
 # host list and for several --exclude (+3), the check's comment (+2)
 budget remote/status.sh 175   # generous on purpose: every lookup has an explicit failure branch; compressing them hides bugs
-budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 266; budget AGENTS.md 365; budget INSTALL.md 238 # AGENTS +2: cancel --wait / the verdict line / the dir probe / other_dirs; +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
+budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 266; budget AGENTS.md 371; budget INSTALL.md 238 # AGENTS +2: cancel --wait / the verdict line / the dir probe / other_dirs; +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
+# 2026-11-12: AGENTS +6 (OUTPUT_ROOT in Config precedence: prefixable for both kinds, unset by its readers, rs_output_root /
+# rs_root_rel, run-pull --root and run-sync --root's contract, tests/48 (+5); the wrappers line: sync_modes reads --root (+1))
+# 2026-11-12 review: AGENTS +1 (369 → 370) — rs_rpath's local-$HOME reading, credential dirs, the root listed first (-n too)
 # P3-P7 docs: AGENTS +25 (the rsk modules, tests/62, the authorisation model, the P7 nudge, the new rails); README +10 (what is asked and
 # what is not, the honest limit, the rsk launch step, src/); INSTALL +5 (doctor --legacy-refs, earlier permissions, standing words)
 # 2026-11-06 follow-ups: AGENTS +6 (relaunch_after, recycled quotes, the refresh, --check-after, logs --grep); README +1 (re-runs handed over)
@@ -1091,7 +1134,7 @@ budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget RE
 # _spaced), status --json's INVALID records (+5); cancel words naming the job, cancel.named / unnamed (+2)); README +0
 # NF8: AGENTS +3 (warnings_gpu in the block and never grant-covered, grants.gpu_warn_miss (+1); a .wandb_env naming HF_HOME /
 # ACCELERATE_ (NF7, +1); --asked and ranges in the cancel approval (+1)); README +0
-budget skills/remote-run/SKILL.md 172; budget bin/run-watch 1102   # round 3: SKILL +11 (the -y rule with grant kinds, --allow-warnings availability|any,
+budget skills/remote-run/SKILL.md 174; budget bin/run-watch 1102   # round 3: SKILL +11 (the -y rule with grant kinds, --allow-warnings availability|any,
 # derived actions and the sticky class, relaunch only after an infrastructure end, cancel approvals bound / 1 h / used up, rsk watch --act vs
 # denies (also in §3), `plan <id> is free again`); run-watch +116 lines (881 → 997), D11 — target column and same-target inheritance, sticky unknowns from any state file
 # (foreign/settled/R_FU, the journal hands back the row's own status), fail-stop inherited with rows plus --release of a non-row trigger, pending
@@ -1128,6 +1171,8 @@ budget skills/remote-run/SKILL.md 172; budget bin/run-watch 1102   # round 3: SK
 # 2026-11-11: SKILL +8 (job management, awareness not rules: reading rsk — the verdict line, scripts branch on the exit code, options
 # literal or an array (+3); moving a run — cancel --wait, an unconfirmed cancel, checkpoints, free is not schedulable (+3); a standing
 # grant: a CANCELLED end, many failures at once, bounded relaunches (+2)); --wait on the cancel line (+0)
+# 2026-11-12: SKILL +2 (OUTPUT_ROOT: the one declared root outside the project dir, reached only with --root (+1); no checkpoint
+# moves by itself — carry it before resuming on another target (+1); rsk pull [--root] (+0))
 budget skills/remote-run/references/experiment-conventions.md 144;   # +4: the run-watch exception (§3, §6, §7); +1: a USR1 death is FAILED; +3: the authorised exceptions (§5, §6, §7)
 # 2026-11-07: conventions +4 (a new run's name outside §2 a NOTE / --free-name; the §4 NOTE; a smoke refused only when certain, else a WARNING)
 budget skills/remote-run/references/project-setup.md 100

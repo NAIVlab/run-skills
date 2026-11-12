@@ -105,6 +105,30 @@ class Wrappers(ScratchHome):
         done = self._rsk("bootstrap", "-C", str(self.proj), "-T", "fx", "-p", "cpu", "--job")   # any --job: gated
         self.assertEqual(done.returncode, 4, done.stderr)
 
+    def test_root_push_is_no_deletion_and_takes_the_next_word(self):
+        # run-sync --root PATH (and --root=PATH) consumes the next word like --also: `--root -n` and `--root -D` are paths;
+        # a root push alone needs no --approve; a -D next to it is still read as one (run-sync refuses the pair itself)
+        self.assertEqual(wrappers.sync_modes(["--root", "ckpts/r1"]), (False, False))
+        self.assertEqual(wrappers.sync_modes(["--root", "-n"]), (False, False))             # -n is --root's PATH
+        self.assertEqual(wrappers.sync_modes(["-D", "--root", "-n"]), (False, True))
+        self.assertEqual(wrappers.sync_modes(["--root", "-D"]), (False, False))             # -D is a path here
+        self.assertEqual(wrappers.sync_modes(["--root=-D", "-n", "--root", "x"]), (True, False))
+        for argv in (("--root", "ckpts/r1"), ("--root", "-D"), ("-n", "--root=ckpts/r1", "--root", "res")):
+            done = self._rsk("sync", "-C", str(self.proj), "-T", "fx", *argv)
+            self.assertEqual(done.returncode, 7, (argv, done.stdout, done.stderr))      # ran: no --approve needed
+            self.assertIn("ARGS=" + " ".join(argv), done.stdout)
+        done = self._rsk("sync", "-C", str(self.proj), "-T", "fx", "-D", "--root", "-n")
+        self.assertEqual(done.returncode, 4, done.stderr)
+        self.assertNotIn("ARGS=", done.stdout)
+        with mock.patch.object(paths, "harness_src", return_value=self.src):
+            argv, _, _ = wrappers.plan(parse("pull", "-C", str(self.proj), "-T", "fx", "--root", "-n", "ckpts/r1"))
+            self.assertEqual(argv[2:], ["--root", "-n", "ckpts/r1"])                    # rsk pull passes --root through
+            argv, _, _ = wrappers.plan(parse("sync", "-C", str(self.proj), "-T", "fx", "--root", "-n", "--root=x"))
+            self.assertEqual(argv[2:], ["--root", "-n", "--root=x"])
+        done = self._rsk("pull", "-C", str(self.proj), "-T", "fx", "--root", "ckpts/r1")
+        self.assertEqual(done.returncode, 7, done.stderr)
+        self.assertIn("ARGS=--root ckpts/r1", done.stdout)
+
     def test_unknown_arguments_still_refused_elsewhere(self):
         buf = io.StringIO()
         with contextlib.redirect_stderr(buf), self.assertRaises(SystemExit) as cm:

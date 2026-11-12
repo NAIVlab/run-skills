@@ -6,8 +6,8 @@
 RS_USER_DIR="${RS_USER_DIR:-$HOME/.config/run-skills}"
 RS_PACKS_DIR="${RS_PACKS_DIR:-$RS_USER_DIR/packs}"   # each subdir is a target pack: targets/<t>/ [+ routing/remote-run.md]
 RS_USER="${USER:-$(id -un)}"
-RS_PREFIXABLE_SLURM='REMOTE_DIR ENV_NAME RUN DEFAULT_PARTITION DEFAULT_GPU_TYPE DEFAULT_GPUS DEFAULT_CPUS DEFAULT_MEM DEFAULT_TIME ACCOUNT SBATCH_EXTRA JOB_NAME VENV_DIR'
-RS_PREFIXABLE_NOHUP='REMOTE_DIR ENV_NAME RUN DEFAULT_NGPU GPU_EXCLUDE NICE JOB_NAME VENV_DIR'
+RS_PREFIXABLE_SLURM='REMOTE_DIR ENV_NAME RUN DEFAULT_PARTITION DEFAULT_GPU_TYPE DEFAULT_GPUS DEFAULT_CPUS DEFAULT_MEM DEFAULT_TIME ACCOUNT SBATCH_EXTRA JOB_NAME VENV_DIR OUTPUT_ROOT'
+RS_PREFIXABLE_NOHUP='REMOTE_DIR ENV_NAME RUN DEFAULT_NGPU GPU_EXCLUDE NICE JOB_NAME VENV_DIR OUTPUT_ROOT'
 
 die() { echo "ERROR: $*" >&2; exit 2; }
 rs_tag() { printf %s "$1" | tr -cd '[:alnum:]' | tr '[:lower:]' '[:upper:]'; }
@@ -66,6 +66,43 @@ rs_remote_dir() {
   fi
   printf %s "$d"
 }
+rs_rspell() {   # rs_rspell PATH: a remote path as rsync names it: '/…' stays; '~', '$HOME', '${HOME}' (+ '/…') and a relative path
+  # (rsync and ssh resolve it in the login dir: WS_REMOTE_DIR) become '~/…' ('~' alone); '/./', '//', a trailing '/' dropped
+  local p=$1
+  case "$p" in /*|'~/'*) ;; '~'|'$HOME'|'${HOME}') p='~' ;; '$HOME/'*) p="~/${p:6}" ;; '${HOME}/'*) p="~/${p:8}" ;; *) p="~/$p" ;; esac
+  printf '%s\n' "$p" | sed -e 's|/\./|/|g' -e 's|/\./|/|g' -e 's|//*|/|g' -e 's|/\.$||' -e 's|\(.\)/*$|\1|'; }
+rs_rpath() {   # rs_rpath PATH: one spelling for comparing two remote paths: rs_rspell, then an absolute path at or under the LOCAL
+  # $HOME -> '~' / '~/…' (what an unquoted $HOME or ~ in the sourced conf became); a remote home that differs is not comparable
+  local p h; p=$(rs_rspell "$1"); h=$(rs_rspell "${HOME:-/}")
+  case "$h" in /?*) case "$p" in "$h") p='~' ;; "$h"/*) p="~/${p#"$h"/}" ;; esac ;; esac
+  printf '%s\n' "$p"; }
+rs_output_root() {   # the conf's OUTPUT_ROOT (<TAG>_ first): this project's own output root OUTSIDE its dir, as rsync names it
+  # (absolute, or $HOME-relative from '$HOME/…' / '~/…'); dies (exit 2) when unset — never guessed — not a plain dedicated dir,
+  # the home dir or above it, or equal to / containing / inside the project dir (compared by rs_rpath; that dir has its own commands)
+  local r b c d h o; r=$(ovr OUTPUT_ROOT)
+  [ -n "$r" ] || die "declare OUTPUT_ROOT or ${T_TAG}_OUTPUT_ROOT in ./$(rs_conf_file) — the root this project's runs write to outside its dir on $T_NAME"
+  case "$r" in /*) b=${r#/} ;; '~'|'$HOME'|'${HOME}') b= ;; '~/'*|'$HOME/'*|'${HOME}/'*) b=${r#*/} ;;
+    *) die "OUTPUT_ROOT '$r' is not absolute: '/…', or '\$HOME/…' / '~/…' single-quoted (unquoted, your local shell expands them)" ;; esac
+  while :; do case "$b" in */) b=${b%/} ;; *) break ;; esac; done
+  c=$(rs_rpath "$r"); [ -n "$b" ] && [ "$c" != '~' ] || die "OUTPUT_ROOT '$r' is / or your home dir — name the dir this project's runs write to"
+  case "/$b/" in *[!A-Za-z0-9._/+=,@-]*|*//*|*/./*|*/../*) die "OUTPUT_ROOT '$r': a plain path (no '.', '..', '//', spaces, wildcards or shell characters)" ;; esac
+  d=$(rs_remote_dir) || exit 2; d=$(rs_rpath "$d"); h=$(rs_rspell "${HOME:-/}")
+  case "$c/" in "$d/"*) die "OUTPUT_ROOT '$r' is the project dir or inside it ($d) — rsk pull / rsk sync reach that without --root" ;; esac
+  case "$d/" in "$c/"*) die "OUTPUT_ROOT '$r' contains the project dir ($d) — name the dir outside it that the runs write to" ;; esac
+  case "$c" in /*) case "$h/" in "$c/"*) die "OUTPUT_ROOT '$r' contains your home dir ($h) — name the dir the runs write to" ;; esac ;; esac
+  o=$(rs_rspell "$r"); case "$o" in '~/'*) printf '%s\n' "${o:2}" ;; *) printf '%s\n' "$o" ;; esac; }   # as written: never re-homed
+rs_root_rel() {   # rs_root_rel PATH: a --root path (run-pull, run-sync) normalised — relative to OUTPUT_ROOT, plain, and no component
+  # env/harness state (a root may hold other projects' trees: a .venv, .git or deploy dir anywhere is refused); else die (exit 2)
+  local p=$1 q x dd; dd=" .ws $(rs_targets | sed 's/^/./' | tr '\n' ' ')"
+  while :; do case "$p" in ./*) p=${p#./} ;; */) p=${p%/} ;; *) break ;; esac; done
+  case "$p" in ''|.|/*|-*|..|../*|*/..|*/../*|*/./*|*/.|*//*|*[!A-Za-z0-9._/+=,@-]*)   # no globs, spaces, shell chars
+    die "--root '$p' — give a plain path inside OUTPUT_ROOT (relative, no '..', no wildcards)" ;; esac
+  q=$p; while :; do x=${q%%/*}
+    case "$x" in .venv|.venv-*|.cache|.local|.config|.git|.wandb_env|.hpc.conf|.ws.conf|.rs|.run-source) die "--root '$p': $x is env/harness state, never copied" ;;
+      .ssh|.gnupg|.aws|.netrc) die "--root '$p': $x holds credentials (a root is never a home dir), never copied" ;; esac
+    case "$dd" in *" $x "*) die "--root '$p': $x is a deployed harness dir, never copied" ;; esac
+    case "$q" in */*) q=${q#*/} ;; *) break ;; esac; done
+  printf '%s\n' "$p"; }
 rs_sync_excludes() {   # run-sync's exclude patterns, one per line (static on purpose: hand-built .venv-foo must survive -D).
   # Generated/output dirs are ANCHORED (leading /) so a same-named SOURCE dir (mypkg/data/) is kept; junk matches at any depth.
   printf '%s\n' .git .claude/ .codex/ .agent/ .agents/ '.vscode*/' .idea/ __pycache__/ '*.pyc' .pytest_cache/ .mypy_cache/ \

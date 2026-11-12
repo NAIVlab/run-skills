@@ -3,16 +3,18 @@ the project as cwd and TARGET set — no logic of their own (bash stays the one 
 script's). The harness is this rsk's own tree (paths.harness_src(), the one harness.py drives), so what a sync
 deploys matches what this rsk speaks. RS_VIA_RSK=1 tells the scripts they were reached through rsk.
 
-    rsk sync -T T [-C DIR] [run-sync args: -n -D --also PATH --take-over] [--approve "the user's words"]
+    rsk sync -T T [-C DIR] [run-sync args: -n -D --also PATH --take-over | -n --root PATH] [--approve "the user's words"]
     rsk bootstrap -T T [-C DIR] [--job [submit.sh flags]] [--approve "the user's words"]
-    rsk pull -T T [-C DIR] [-n] PATH...
+    rsk pull -T T [-C DIR] [-n] [--root] PATH...      (--root: PATH relative to the conf's OUTPUT_ROOT, run-pull's)
     rsk avail [-T T]... [-C DIR] [--type X] [--min N] [--timeout S]     (-T = the targets run-avail reads)
 Every argument rsk does not know is passed on as it stands (after `--` too).
 Two of them are the user's call every time (no grant covers them): `rsk sync -D` (deletes files in the remote dir
 the local tree lacks; with a real -n / --dry-run it only lists them) and `rsk bootstrap --job` (a Slurm job no plan
 card showed). Which call is which is read with the script's own grammar, word by word, never by set membership:
-run-sync takes -n|--dry-run, -D|--delete, --also PATH (the next word, whatever it is: `--also -n` is a path, not a
-dry run), --also=PATH and --take-over — anything else it refuses itself (exit 2, nothing done); run-bootstrap is in
+run-sync takes -n|--dry-run, -D|--delete, --also PATH and --root PATH (the next word, whatever it is: `--also -n` and
+`--root -n` are paths, not a dry run), --also=PATH, --root=PATH and --take-over — anything else it refuses itself (exit
+2, nothing done). A root push (`--root`: local paths into the conf's OUTPUT_ROOT, -u, never --delete) is no deletion;
+with -D run-sync refuses it (exit 2), and the gate still reads that -D as one (asks first). run-bootstrap is in
 job mode when its first word is --job (any --job word is gated). They run only with --approve "the user's words"
 (non-empty), recorded in the ledger's audit.jsonl with the command line (event `approved_command`) before the script
 starts; without it — or with words that repeat a standing grant's quote (grants.recycled) — `needs user: …`, exit 4,
@@ -57,9 +59,9 @@ def plan(args: argparse.Namespace) -> tuple[list[str], dict[str, str], Path]:
 
 
 def sync_modes(words: list[str]) -> tuple[bool, bool]:
-    """(dry run, delete) as bin/run-sync's parser reads WORDS: -n|--dry-run, -D|--delete, --also PATH (it consumes the
-    next word whatever it is), --also=PATH, --take-over; any other word is run-sync's usage error (it then does
-    nothing) and is skipped here."""
+    """(dry run, delete) as bin/run-sync's parser reads WORDS: -n|--dry-run, -D|--delete, --also PATH and --root PATH
+    (each consumes the next word whatever it is), --also=PATH, --root=PATH, --take-over; any other word is run-sync's
+    usage error (it then does nothing) and is skipped here."""
     dry = delete = False
     i = 0
     while i < len(words):
@@ -68,7 +70,7 @@ def sync_modes(words: list[str]) -> tuple[bool, bool]:
             dry = True
         elif w in ("-D", "--delete"):
             delete = True
-        elif w == "--also":
+        elif w in ("--also", "--root"):
             i += 1
         i += 1
     return dry, delete
@@ -119,9 +121,9 @@ def cmd_wrap(args: argparse.Namespace) -> int:
 
 
 def add_parsers(sub) -> None:
-    helps = {"sync": "push the project and deploy the harness (bin/run-sync)",
+    helps = {"sync": "push the project and deploy the harness (bin/run-sync; --root PATH: only PATH, into OUTPUT_ROOT)",
              "bootstrap": "build the project's env on the target (bin/run-bootstrap)",
-             "pull": "copy results back (bin/run-pull)",
+             "pull": "copy results back (bin/run-pull; --root: paths relative to OUTPUT_ROOT)",
              "avail": "free GPUs on every target now (bin/run-avail)"}
     for name, text in helps.items():
         p = sub.add_parser(name, help=text, allow_abbrev=False,
