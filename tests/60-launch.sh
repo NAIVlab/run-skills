@@ -142,7 +142,7 @@ if [ -n "$OLD" ]; then
     : > "$T/ssh-host.log"; O=$( cd "$W" && PATH="$T/bin:$PATH" bash "$T/old/bin/run-launch" -N t $f -- c 2>&1 ); RC=$?
     [ "$RC" = 2 ] && noss && ok "the OLD run-launch rejects $f (exit 2, no ssh)" || bad "the OLD run-launch rejects $f (rc=$RC)"; done
 else echo "  SKIP: no git history with the pre-attempt run-launch (an installed copy)"; fi
-if OLD=$(git -C "$RS_HOME" show 8560838:bin/run-launch 2>/dev/null) && [ -n "$OLD" ]; then   # the P2 run-launch: no api=3 flags
+if OLD=$(git -C "$RS_HOME" show 6df6e56:bin/run-launch 2>/dev/null) && [ -n "$OLD" ]; then   # the P2 run-launch: no api=3 flags
   mkdir -p "$T/old2/bin"; ln -s "$RS_HOME/lib" "$T/old2/lib"; printf '%s\n' "$OLD" > "$T/old2/bin/run-launch"
   for f in '--rs-mode plan' "--rs-expect $HX" --gpu-busy-ok; do
     : > "$T/ssh-host.log"; O=$( cd "$W" && PATH="$T/bin:$PATH" bash "$T/old2/bin/run-launch" -N t $f -- c 2>&1 ); RC=$?
@@ -234,14 +234,14 @@ RUN=c'
   [ "$RC" = 0 ] && has "$O" '^\[ws-box\] started PID' "...--rs-expect <its bound_hash>: launches" || bad "run-launch --rs-expect (rc=$RC)"
   O=$(launch "$W" -N pl2 -n 2 --rs-expect "$PH" -- "touch $T/rl-plan-ran"); RC=$?
   [ "$RC" = 6 ] && has "$O" 'differs from the approved plan' "...another name with that hash: exit 6" || bad "run-launch --rs-expect mismatch (rc=$RC)"
-  if OLDL=$(git -C "$RS_HOME" show 2fd4991:remote/launch.sh 2>/dev/null) && [ -n "$OLDL" ]; then   # api=3 by its API file, without the marker
+  if OLDL=$(git -C "$RS_HOME" show dbd3255:remote/launch.sh 2>/dev/null) && [ -n "$OLDL" ]; then   # api=3 by its API file, without the marker
     cp "$W/.ws/launch.sh" "$T/launch.sh.new"; printf '%s\n' "$OLDL" > "$W/.ws/launch.sh"
     O=$(launch "$W" -N pl3 -n 2 --rs-attempt old3 --rs-mode plan -- "touch $T/rl-old-ran"); RC=$?
-    [ "$RC" = 2 ] && has "$O" 'does not speak rs-api=3' "C: a deployed launch.sh without the '# rs-api=3' line (2fd4991): rsk's plan exits 2, names it" || bad "old launch.sh + plan (rc=$RC)"
+    [ "$RC" = 2 ] && has "$O" 'does not speak rs-api=3' "C: a deployed launch.sh without the '# rs-api=3' line (dbd3255): rsk's plan exits 2, names it" || bad "old launch.sh + plan (rc=$RC)"
     [ ! -e "$W/.rs/attempts/old3" ] && ok "...never run (no attempt claimed)" || bad "...the old launch.sh ran"
     O=$(launch "$W" -N pl4 -n 2 -- "touch $T/rl-old-ran"); RC=$?; [ "$RC" = 0 ] && ok "...a plain launch (no rsk words) still runs it" || bad "plain launch on the old launch.sh (rc=$RC)"
     cp "$T/launch.sh.new" "$W/.ws/launch.sh"
-  else echo "  SKIP: no git history (2fd4991): the marker check against an old launch.sh runs in the clone"; fi
+  else echo "  SKIP: no git history (dbd3255): the marker check against an old launch.sh runs in the clone"; fi
   printf 'GPU-aaaa0000-0002, %s\n' "$$" > "$T/apps"; export RS_TEST_APPS=$T/apps
   O=$(launch "$W" -N bz -n 1 -- c); has "$O" 'GPU(s) \[3\]' "GPU 2 busy (the compute-apps stub), 0,1 excluded: -n 1 goes around it to 3"
   O=$(launch "$W" -N bz2 -n 2 -- c); [ "$?" = 1 ] && has "$O" 'only 1 GPU id(s) free' "...-n 2 there: exit 1, only 1 free" || bad "busy shortfall via run-launch"; unset RS_TEST_APPS

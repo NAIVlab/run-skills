@@ -980,7 +980,7 @@ if fulltmp_ok; then
   [ "$RC" = 6 ] && has "$O" '^ERROR: -d GPU(s) 0 already run a compute process' "TMPDIR full, BASH_COMPAT=42: -d onto busy GPU 0 is still exit 6" || bad "full TMPDIR: -d busy (rc=$RC)"
   O=$(cd "$H/projects/n" && fulltmp env HOME="$H" PATH="$T/bin:$PATH" TARGET=ws-box bash .ws/launch.sh --rs-mode plan -N ft -n 4 -- c 2>&1); RC=$?
   [ "$RC" = 1 ] && has "$O" 'only 2 GPU id(s) free' "...and -n 4 with 2 busy: exit 1, only 2 free" || bad "full TMPDIR: -n 4 (rc=$RC)"
-  rm -f "$T/apps"   # the wrapper is written without a heredoc too: a launch on a full TMPDIR starts (2fd4991: cannot write …/run)
+  rm -f "$T/apps"   # the wrapper is written without a heredoc too: a launch on a full TMPDIR starts (dbd3255: cannot write …/run)
   O=$(cd "$H/projects/n" && fulltmp env HOME="$H" PATH="$T/bin:$PATH" TARGET=ws-box bash .ws/launch.sh -N ftl -d 2 -- sleep 30 2>&1); RC=$?; A=$(latt "$N")
   [ "$RC" = 0 ] && has "$O" '^\[ws-box\] started PID [0-9]* on GPU(s) 2 ' "TMPDIR full, BASH_COMPAT=42: a launch still writes its wrapper and starts" || { bad "full TMPDIR: launch (rc=$RC)"; printf '%s\n' "$O" | tail -3 | sed 's/^/    | /'; }
   [ -n "$A" ] && head -n 1 "$A/run" 2>/dev/null | grep -q '^_rw_a=' && tail -n 1 "$A/run" | grep -qx '_rw_fin "$_rw_rc" ""' && ok "...the wrapper file: its variables, then the whole literal" || bad "...the wrapper file"
@@ -988,20 +988,20 @@ if fulltmp_ok; then
 else echo "  SKIP: no user namespace here (unshare -rm) or heredocs do not fail on a full TMPDIR: the full-TMPDIR check runs on Linux"; fi
 
 echo "-- an OLD launch.sh (P2) given the api=3 flags exits 2 and starts nothing --"
-if OLDL=$(git -C "$RS_HOME" show 8560838:remote/launch.sh 2>/dev/null) && [ -n "$OLDL" ]; then
+if OLDL=$(git -C "$RS_HOME" show 6df6e56:remote/launch.sh 2>/dev/null) && [ -n "$OLDL" ]; then
   OL=$(mkp oldl 'WS_REMOTE_DIR=projects/oldl
 ENV_KIND=none'); printf '%s\n' "$OLDL" > "$OL/.ws/launch.sh"
   for a in '--rs-mode plan' "--rs-expect $H1" '--gpu-busy-ok'; do
     O=$(L oldl $a -N o1 -d 0 -- "touch $T/old-ran"); RC=$?; [ "$RC" = 2 ] && has "$O" 'unknown arg' "P2 launch.sh + '${a:0:24}': exit 2 (unknown arg)" || bad "P2 launch.sh + '$a' (rc=$RC)"; done
   sleep 0.5; [ ! -e "$T/old-ran" ] && ! ls "$OL"/logs/o1-* >/dev/null 2>&1 && ok "...nothing launched" || bad "...nothing launched"
 else echo "  SKIP: no git history (an installed copy): the old-launch.sh check runs in the clone"; fi
-if OLDL=$(git -C "$RS_HOME" show e612ef6:remote/launch.sh 2>/dev/null) && [ -n "$OLDL" ]; then
+if OLDL=$(git -C "$RS_HOME" show b746431:remote/launch.sh 2>/dev/null) && [ -n "$OLDL" ]; then
   OL=$(mkp oldl3 'WS_REMOTE_DIR=projects/oldl3
 ENV_KIND=none'); printf '%s\n' "$OLDL" > "$OL/.ws/launch.sh"
   O=$(L oldl3 --rs-expect "$H1" --rs-warnings 0 -N o3 -d 0 -- "touch $T/old3-ran"); RC=$?
-  [ "$RC" = 2 ] && has "$O" "unknown arg '--rs-warnings'" "e612ef6 launch.sh (api=3 before --rs-warnings) + --rs-warnings: exit 2" || bad "e612ef6 launch.sh + --rs-warnings (rc=$RC)"
-  sleep 0.5; [ ! -e "$T/old3-ran" ] && ok "...nothing launched" || bad "...nothing launched (e612ef6)"
-else echo "  SKIP: no git history (e612ef6): the old-launch.sh check runs in the clone"; fi
+  [ "$RC" = 2 ] && has "$O" "unknown arg '--rs-warnings'" "b746431 launch.sh (api=3 before --rs-warnings) + --rs-warnings: exit 2" || bad "b746431 launch.sh + --rs-warnings (rc=$RC)"
+  sleep 0.5; [ ! -e "$T/old3-ran" ] && ok "...nothing launched" || bad "...nothing launched (b746431)"
+else echo "  SKIP: no git history (b746431): the old-launch.sh check runs in the clone"; fi
 
 echo "-- CUDA numbers GPUs as nvidia-smi does under PCI_BUS_ID (opt-in, needs a real GPU: RS_GPU_TEST=1 bash selftest.sh) --"
 # libcuda via ctypes (stdlib only): with CUDA_DEVICE_ORDER=PCI_BUS_ID, CUDA_VISIBLE_DEVICES=<nvidia-smi ids> lists exactly

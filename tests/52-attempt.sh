@@ -571,7 +571,7 @@ for a in '--rs-warnings' '--rs-warnings x' '--rs-warnings -1' "--rs-warnings $WX
   O=$(subo "$P" $a -- echo hi); RC=$?; [ "$RC" = 2 ] && ok "'${a:0:50}' refused (exit 2)" || bad "'${a:0:50}' refused (exit 2, got $RC)"; done
 [ "$(natt "$P")" = "$B0" ] && ok "...none of them claimed an attempt dir" || bad "...an invalid --rs-warnings claimed a dir"; nosub "...nor submitted"
 O=$(subo "$PP" --rs-expect "$H1" --rs-warnings "$WX" "${PA[@]}"); rc_is 0 $? "--rs-warnings <the digest of nothing> = no warning: as without it" "$O"
-for c in e612ef6 2fd4991; do   # api=3 with a COUNT: the hex digest is not a count (exit 2); P2 and older: not a flag at all
+for c in b746431 dbd3255; do   # api=3 with a COUNT: the hex digest is not a count (exit 2); P2 and older: not a flag at all
   if OS=$(git -C "$RS_HOME" show "$c:remote/submit.sh" 2>/dev/null) && [ -n "$OS" ]; then
     OP=$(mk_proj fx-slurm 'REMOTE_DIR=/x'); printf '%s\n' "$OS" > "$OP/.fx-slurm/submit.sh"
     O=$(subo "$OP" --rs-expect "$H1" --rs-warnings "$WX" -- echo hi); RC=$?
@@ -741,8 +741,8 @@ for a in '-n --rs-chain --exp' '-p --rs-chain' '-t --rs-mode plan' "-g --rs-expe
 [ "$(natt "$P")" = "$B0" ] && ok "...before the claim" || bad "...an --rs- value claimed a dir"; nosub "...nothing submitted (no --dependency=singleton smuggled in)"
 O=$(subo "$P" -y --rs-chain -n okc -- echo hi); RC=$?; rc_is 0 "$RC" "after a flag that takes no value (-y), --rs-chain is the flag" "$O"; has "$O" '^ARG:--dependency=singleton$' "...a singleton"
 
-echo "-- OLD submit.sh (P2 8560838, pre-P2 650d7d6) given --rs-mode plan / --rs-expect H: exit 2, nothing submitted --"
-for c in 8560838 650d7d6; do
+echo "-- OLD submit.sh (P2 6df6e56, pre-P2 8c8129e) given --rs-mode plan / --rs-expect H: exit 2, nothing submitted --"
+for c in 6df6e56 8c8129e; do
   if OS=$(git -C "$RS_HOME" show "$c:remote/submit.sh" 2>/dev/null) && [ -n "$OS" ]; then
     OP=$(mk_proj fx-slurm 'REMOTE_DIR=/x'); printf '%s\n' "$OS" > "$OP/.fx-slurm/submit.sh"
     for a in '--rs-mode plan -- echo hi' "--rs-expect $H1 -- echo hi" '-p gpu -y --rs-mode plan -g 1 -- echo hi' "--rs-chain --rs-mode plan --rs-expect $H1 -- echo hi"; do

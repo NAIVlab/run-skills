@@ -281,10 +281,10 @@ for r in 'only by an `--act` run and only while the table.s approved `#@ allow` 
 has "$(cat "$RS_HOME/src/remote_run/watch.py")" '6 another watcher holds the lease' "...rsk watch's exit list has 6 too"
 has "$PSLT" 'update the installed harness (`rsk update`, then `rsk setup`), never edit the line' "procedure-slurm: an older run-watch vs conf= ok lines: update, never edit"
 # ...the older copies' behaviour it describes, from the history (skipped when the clone lacks those commits)
-if O1=$(git -C "$RS_HOME" show 8560838:bin/run-watch 2>/dev/null) && O2=$(git -C "$RS_HOME" show 2fd4991:bin/run-watch 2>/dev/null); then
-  has "$O1" "malformed '#@ ok' line (write it with --approve)" "8560838's run-watch: the message procedure-slurm quotes"
-  hasnt "$(printf '%s\n' "$O1" | grep 'ok_re=')" 'conf=' "8560838's run-watch: its ok-line pattern has no conf= (refuses rsk watch --approve's lines)"
-  has "$O2" '!= 17 && NF != 15) { lost = 1' "2fd4991's run-watch: a state line of another width (this one's 18) is lost"
+if O1=$(git -C "$RS_HOME" show 6df6e56:bin/run-watch 2>/dev/null) && O2=$(git -C "$RS_HOME" show dbd3255:bin/run-watch 2>/dev/null); then
+  has "$O1" "malformed '#@ ok' line (write it with --approve)" "6df6e56's run-watch: the message procedure-slurm quotes"
+  hasnt "$(printf '%s\n' "$O1" | grep 'ok_re=')" 'conf=' "6df6e56's run-watch: its ok-line pattern has no conf= (refuses rsk watch --approve's lines)"
+  has "$O2" '!= 17 && NF != 15) { lost = 1' "dbd3255's run-watch: a state line of another width (this one's 18) is lost"
   has "$PSLT" "malformed '#@ ok' line (write it with --approve)" "procedure-slurm quotes it"
 else ok "older run-watch copies not in this clone's history: SKIP"; fi
 echo "-- round 4: what the docs now promise, each beside the code that does it (docs @@ code) --"

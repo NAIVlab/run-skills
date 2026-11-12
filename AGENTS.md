@@ -139,7 +139,7 @@ about to run, run-launch checks `.ws/launch.sh` before passing any `--rs-` word 
 `remote/API` (`api=3`, in MANIFEST) is still deployed but proves nothing (an older run-sync leaves it while rewriting the
 script). Both pre-scan `--rs-mode plan`, `--rs-expect <64 hex>` and `--rs-warnings <warnings_id: 64 hex>` (with `--rs-expect`
 only; submit.sh also `--rs-chain`) as separate words before `--` — an older parser exits 2 (tested against `git show
-8560838:` / `650d7d6:` / `e612ef6:` submit.sh and launch.sh; rsk maps its `unknown arg` to `needs: sync`, exit 6); an unknown
+6df6e56:` / `8c8129e:` / `b746431:` submit.sh and launch.sh; rsk maps its `unknown arg` to `needs: sync`, exit 6); an unknown
 `--rs-*`, and an `--rs-` word as an option's value, is exit 2 (submit.sh, launch.sh, run-launch, rsk launch). Plan mode runs
 every check (`FORCE=1`: a -y gate prints its `WARNING:` and goes on; submit.sh probes the policy first, below; launch.sh
 checks the env gate read-only — the venv's python executable, a conda env that activates in a throwaway shell, the `ENV_HOOK`

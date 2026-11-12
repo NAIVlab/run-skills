@@ -652,7 +652,7 @@ q; acct "1000|a|PREEMPTED|0:0|$P"; touch "$WORLD/prev-other"; O=$(rw t.tsv --onc
 has "$O" 'WARN name=a .*reason=submit-skipped n=1 -- prev-identity name=a workdir=/elsewhere/proj' "the submit ssh re-checks the job's name and WorkDir too"
 [ "$(nsub):$(st a 4)" = 0:0 ] && ok "  ...nothing submitted, budget refunded" || bad "  ...$(nsub):$(st a 4)"
 reset; approved "#@ allow preempt=1" "a fx-slurm - $ROW"; q "1000|a|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --adopt a=1000 >/dev/null
-cut -f1-17 "$P/logs/run-watch/t.state" > "$T/old.state"; cp "$T/old.state" "$P/logs/run-watch/t.state"   # as 2fd4991 wrote it (one #target)
+cut -f1-17 "$P/logs/run-watch/t.state" > "$T/old.state"; cp "$T/old.state" "$P/logs/run-watch/t.state"   # as dbd3255 wrote it (one #target)
 table "#@ allow preempt=1" "a fx-y - $ROW"; rwy t.tsv --approve "a on fy now" >/dev/null
 q; acct "1000|a|PREEMPTED|0:0|$P"; echo 5000 > "$WORLD/nextjid"; O=$(rwy t.tsv --once --act)
 has "$O" 'NOTE name=a target=fx-y target-changed from=fx-slurm status-there=active job-there=1000' "a 17-field line, the row moved to another target: its target is the file's one #target"
@@ -752,11 +752,11 @@ receipt "$N" 1001 b; O=$(rw t.tsv --once --act --max-active 4); has "$O" 'ADOPT 
 l6; printf '#failstop z 1999\n' >> "$P/logs/run-watch/t.state"; rw t.tsv --once >/dev/null   # rewritten by this copy: each stop with its own pending line
 [ "$(grep '^#failstop' "$P/logs/run-watch/t.state" | paste -sd'|' -)" = '#failstop a 1000|#failstop-pending b|#failstop z 1999|#failstop-pending ' ] \
   && ok "two stops in a state file: each '#failstop' line followed by its own '#failstop-pending' (an empty one too)" || bad "layout: $(grep '^#failstop' "$P/logs/run-watch/t.state" | paste -sd'|' -)"
-mkdir -p "$T/old5/bin" "$T/old5/lib"   # the run-watch before R5-7 (c1e8864) reads one stop: the last pair
-if git -C "$RS_HOME" show c1e8864:bin/run-watch > "$T/old5/bin/run-watch" 2>/dev/null && git -C "$RS_HOME" show c1e8864:lib/common.sh > "$T/old5/lib/common.sh" 2>/dev/null; then
+mkdir -p "$T/old5/bin" "$T/old5/lib"   # the run-watch before R5-7 (678091e) reads one stop: the last pair
+if git -C "$RS_HOME" show 678091e:bin/run-watch > "$T/old5/bin/run-watch" 2>/dev/null && git -C "$RS_HOME" show 678091e:lib/common.sh > "$T/old5/lib/common.sh" 2>/dev/null; then
   receipt "$N" 1001 b; O=$( cd "$P" && PATH="$T/bin:$PATH" RS_WATCH_OBS_TIMEOUT=15 RS_WATCH_SUBMIT_TIMEOUT=15 bash "$T/old5/bin/run-watch" t.tsv --once --act --max-active 4 2>&1 )
-  [ ! -s "$WORLD/scancel.log" ] && [ "$(nsub)" = 0 ] && ok "c1e8864's run-watch on that file: the table stays held, b's pending (a's) is not taken as z's" || bad "older copy: scancel $(cat "$WORLD/scancel.log" 2>/dev/null) sbatch $(nsub)"
-else ok "c1e8864 not in this clone's history: the older-copy check SKIP"; fi
+  [ ! -s "$WORLD/scancel.log" ] && [ "$(nsub)" = 0 ] && ok "678091e's run-watch on that file: the table stays held, b's pending (a's) is not taken as z's" || bad "older copy: scancel $(cat "$WORLD/scancel.log" 2>/dev/null) sbatch $(nsub)"
+else ok "678091e not in this clone's history: the older-copy check SKIP"; fi
 
 echo "-- round 5 (R5-8): a row's target is a target name, spelled as rs_targets lists it --"
 reset; q
@@ -825,7 +825,7 @@ reset; approved "#@ allow launch errors=0 fail-stop" "a fx-slurm - $ROW" "b fx-s
 q "1000|a|RUNNING|None|0|$NOW|$P|" "1001|b|RUNNING|None|0|$NOW|$P|"; rw t.tsv --once --act --max-active 2 --adopt a=1000 --adopt b=1001 >/dev/null
 printf '%b\n' '#@ run-watch v1' '#@ allow launch errors=0 fail\0-stop' "$(grep '^#@ ok' "$P/t.tsv")" "a fx-slurm - $ROW" "b fx-slurm - $ROW" > "$P/t.tsv"
 q "1001|b|RUNNING|None|0|$NOW|$P|"; acct "1000|a|FAILED|1:0|$P"; : > "$WORLD/ssh.log"; O=$(rw t.tsv --once --act --max-active 2); RC=$?
-[ "$RC" = 2 ] && [ ! -s "$WORLD/ssh.log" ] && [ ! -s "$WORLD/scancel.log" ] && ok "  ...that NUL put into an approved table: --act refused before any ssh, b never cancelled (2ea37db cancelled it)" \
+[ "$RC" = 2 ] && [ ! -s "$WORLD/ssh.log" ] && [ ! -s "$WORLD/scancel.log" ] && ok "  ...that NUL put into an approved table: --act refused before any ssh, b never cancelled (74b15fb cancelled it)" \
   || bad "  ...approved table + NUL: rc=$RC scancel=$(cat "$WORLD/scancel.log" 2>/dev/null)"
 reset; q; printf '%b\n' '#@ run-watch v1' '#@ allow launch' "a\0 fx-slurm - $ROW" > "$P/t.tsv"; O=$(rw t.tsv --approve go); RC=$?
 [ "$RC" = 2 ] && [ "$(grep -ac '^#@ ok' "$P/t.tsv")" = 0 ] && has "$O" "line 3 holds 0x00, " "a row 'a<NUL>' (bash: a; rsk: 'a\\x00', missing a deny of a): --approve refused" || bad "NUL in a row name (rc=$RC)"

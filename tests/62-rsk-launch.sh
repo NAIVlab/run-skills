@@ -217,7 +217,7 @@ CWD=$P2; O=$(rsk launch -T fx-slurm -n old1 -- c); RC=$?
 [ ! -d "$P2/.rs/attempts" ] && ok "...the old submit.sh never ran" || bad "...the old submit.sh never ran"
 P3=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\nWANDB_MODE=disabled\n' "$P3" > "$P3/.hpc.conf"; CWD=$P3
 O=$(rsk launch -T fx-slurm -n exp--smoke--sk--scratch--s0--a01 -g 1 -- python t.py); PSK=$(pid_of "$O")
-if OLDS=$(git -C "$RS_HOME" show 8560838:remote/submit.sh 2>/dev/null) && [ -n "$OLDS" ]; then printf '%s\n' "$OLDS" > "$P3/.fx-slurm/submit.sh"
+if OLDS=$(git -C "$RS_HOME" show 6df6e56:remote/submit.sh 2>/dev/null) && [ -n "$OLDS" ]; then printf '%s\n' "$OLDS" > "$P3/.fx-slurm/submit.sh"
 else nomark "$P3/.fx-slurm/submit.sh"; fi                     # C-stale-API: an older run-sync rewrote submit.sh, not API
 : > "$T/sbatch.log"; O=$(rsk launch --plan "$PSK" --approve "yes, run it"); RC=$?
 [ "$RC" = 6 ] && has "$O" '^needs: sync' "C-stale-API: the approved submit to an older submit.sh -> exit 6, needs: sync" || { bad "C-stale-API (rc=$RC)"; printf '%s\n' "$O" | tail -4 | sed 's/^/    | /'; }
