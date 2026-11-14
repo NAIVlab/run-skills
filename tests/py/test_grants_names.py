@@ -1,7 +1,7 @@
 """grants.py, from two days of agents on Slurm: (a) a run whose name holds a space (a zsh word-splitting slip let one
 through: the ledger attempt keeps the decoded name, request.bound.name the %q form `a\\ b`) — check() read the decoded
 name as a %q value, two words, unreadable, so cancel_own could never cover the run; the bound form is read now (the
-decoded name, quoted, only as the fallback). (b) I4: a relaunch_after-any grant blocked by an attempt whose cancel was
+decoded name, quoted, only as the fallback) — S5: a cancel needs no record now, but a deny's names still read it. (b) I4: a launch grant's relaunch (judged as a launch) blocked by an attempt whose cancel was
 sent but whose end no read has shown says so (CANCELLING / CANCELLING?), pointing at rsk status / rsk cancel --wait S,
 never at --same-name-ok."""
 
@@ -35,7 +35,7 @@ def block(**kv: str) -> dict:
 
 
 def grant(scope: dict, actions=("launch", "cancel_own"), **lim) -> dict:
-    return G.new_grant("stop your own runs yourself", scope, list(actions),
+    return G.new_grant(scope, list(actions),
                        **{"max_live": None, "max_launches": None, "expires": None, **lim})
 
 
@@ -54,7 +54,7 @@ class SpacedName(ScratchHome):
     def cancel(self, *recs: dict, job: str = "7") -> G.Decision:
         st = self.led.state()
         st.grants = list(recs)
-        return G.check(st, "cancel", job=job, run=self.run, ident=G.cancel_ident("slurm", "fx", job, RAW, "/r/proj"),
+        return G.check(st, "cancel", job=job, run=self.run,
                        plan={"target": "fx", "kind": "slurm", "name": RAW, "warnings": "0"})   # as cancel.py passes it
 
     def test_the_ledger_is_shaped_like_the_real_one(self):
@@ -63,36 +63,32 @@ class SpacedName(ScratchHome):
         self.assertEqual(G.facts({"name": RAW}).unreadable, ("name",))      # the decoded name as %q: two words
         self.assertEqual(G.facts({"name": G.att_name(att)}).name, RAW)
 
-    def test_cancel_own_covers_it_now(self):
-        for scope in ({"targets": ["fx"]}, {"names": ["x--pilot--*"]}, {"names": ["x--pilot--a?b--scratch--s42"]},
-                      {"classes": ["pilot"]}):     # (a scope item never holds a space: validate() refuses it)
-            with self.subTest(scope=scope):
-                d = self.cancel(g := grant(scope))
+    def test_the_agents_own_cancel_needs_no_record(self):   # S5: a live ledger run, whatever grants exist
+        for recs in ((), (grant({"targets": ["other"]}),), (grant({"names": ["y--*"]}, actions=("launch",)),)):
+            with self.subTest(recs=recs):
+                d = self.cancel(*recs)
                 self.assertTrue(d.covered, d.reasons)
-                self.assertEqual(d.record["id"], g["id"])
+                self.assertIsNone(d.record)
 
     def test_a_deny_glob_still_matches_it(self):
         for names in (["x--pilot--*"], ["x--pilot--a?b*"], ["x--pilot--a?b--scratch--s42--a01"],
                       ["x--pilot--a?b--scratch--s42--a*"]):     # the run, an attempt's job name, every attempt (R7-1)
             with self.subTest(names=names):
-                d = self.cancel(grant({"targets": ["fx"]}), G.new_deny("never stop those", {"names": names}, ["cancel"]))
+                d = self.cancel(G.new_deny({"names": names}, ["cancel"]))
                 self.assertTrue(d.denied, d.reasons)
-        own_off = G.new_deny("only I stop those", {"names": ["x--pilot--*"]}, ["cancel_own"])
-        d = self.cancel(grant({"targets": ["fx"]}), own_off)
-        self.assertFalse(d.covered)
-        self.assertIn("cancel_own is denied", " ".join(d.reasons))
-        d = self.cancel(grant({"targets": ["fx"]}), G.new_deny("not those", {"names": ["y--*"]}, ["cancel"]))
+        own_off = G.new_deny({"names": ["x--pilot--*"]}, ["cancel_own"])
+        d = self.cancel(own_off)
+        self.assertEqual((d.covered, d.denied), (False, True))
+        self.assertIn("only the user's OK", " ".join(d.reasons))
+        d = self.cancel(G.new_deny({"names": ["y--*"]}, ["cancel"]))
         self.assertTrue(d.covered, d.reasons)                               # another run's deny: not this one
 
-    def test_a_scope_it_is_outside_still_does_not_cover_it(self):
-        for scope, why in (({"names": ["y--*"]}, f"name {RAW} matches none of y--*"),
-                           ({"targets": ["other"]}, "target fx not in other"),
-                           ({"classes": ["train"]}, "class pilot not in train")):
+    def test_a_deny_scope_it_is_outside_does_not_match_it(self):
+        for scope in ({"names": ["y--*"]}, {"targets": ["other"]}, {"classes": ["train"]}):
             with self.subTest(scope=scope):
-                d = self.cancel(grant(scope))
-                self.assertFalse(d.covered)
-                self.assertIn(why, " ".join(d.reasons))
-        self.assertFalse(self.cancel(grant({"targets": ["fx"]}, actions=("launch",))).covered)   # no cancel_own
+                d = self.cancel(G.new_deny(scope, ["cancel"]))
+                self.assertTrue(d.covered, d.reasons)
+        self.assertTrue(self.cancel(G.new_deny({"classes": ["pilot"]}, ["cancel"])).denied)
 
     def test_without_a_bound_name_the_decoded_one_is_read(self):   # an attempt from before request.bound held it
         def drop(rec: dict) -> None:
@@ -100,19 +96,17 @@ class SpacedName(ScratchHome):
         self.led.update_run(self.run, drop)
         att = self.led.read_run(self.run).data["attempts"][self.aid]
         self.assertEqual(G.facts({"name": G.att_name(att)}).name, RAW)
-        self.assertTrue(self.cancel(grant({"names": ["x--pilot--*"]})).covered)
-        self.assertTrue(self.cancel(grant({}), G.new_deny("no", {"names": ["x--pilot--*"]}, ["cancel"])).denied)
+        self.assertTrue(self.cancel().covered)
+        self.assertTrue(self.cancel(G.new_deny({"names": ["x--pilot--*"]}, ["cancel"])).denied)
+        self.assertTrue(self.cancel(G.new_deny({"names": ["y--*"]}, ["cancel"])).covered)
 
-    def test_two_forms_naming_different_runs_are_unreadable(self):   # fail closed: no grant, every names deny
+    def test_two_forms_naming_different_runs_are_unreadable(self):   # fail closed: every names deny matches
         def swap(rec: dict) -> None:
             rec["attempts"][self.aid]["request"]["bound"]["name"] = "z--other--s1"
         self.led.update_run(self.run, swap)
         att = self.led.read_run(self.run).data["attempts"][self.aid]
         self.assertEqual(G.facts({"name": G.att_name(att)}).unreadable, ("name",))
-        d = self.cancel(grant({"targets": ["fx"]}))
-        self.assertFalse(d.covered)
-        self.assertIn("unreadable plan field(s): name", " ".join(d.reasons))
-        self.assertTrue(self.cancel(grant({}), G.new_deny("no", {"names": ["q--*"]}, ["cancel"])).denied)
+        self.assertTrue(self.cancel(G.new_deny({"names": ["q--*"]}, ["cancel"])).denied)
 
     def test_att_name_forms(self):
         for att, want in (({"name": "a--a01", "request": {"bound": {"name": "a--a01"}}}, "a--a01"),
@@ -140,7 +134,7 @@ class CancelSent(ScratchHome):
         self.run, self.aid = self.led.record_attempt(name=f"{self.RUN}--a01", target="fx", kind="slurm", nonce="n-1",
                                                      submit="submitted", plan=p, plan_id="p-1", grant="g-x",
                                                      action="launch", cls="train", job="7")
-        self.g = grant({"targets": ["fx"], "relaunch_after": "any"}, actions=("launch", "relaunch"))
+        self.g = grant({"targets": ["fx"]}, actions=("launch",))     # S1: a launch grant judges a relaunch as one
 
     def relaunch(self, **extra) -> G.Decision:
         st = self.led.state()

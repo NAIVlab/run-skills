@@ -26,12 +26,12 @@ signalled; try again once the mount answers), unlike a reply lost after the laun
 ## 1. Sync — push code, deploy the harness
 ```
 rsk sync -T <t> [-n] [--also <path>]      # = TARGET=<t> bash $ROOT/bin/run-sync …; additive; -n dry-run; -D also delete
-                                          #   remote files gone locally: only on the user's words at the time, never a grant
+                                          #   remote files gone locally: only with the user's OK at the time, never a grant
 ```
 First line printed: `[<t>] remote: <host>:<dir>  tag: <TAG>  deploy: .ws`. Never deletes remote `.venv* .cache
 .local .config bin tmp wandb wandb-artifacts logs run_logs ckpts checkpoints runs outputs videos data .wandb_env .rs`
 (the launch journal) or any `.<target>/` dir. Pushes the conf, the profile and your wandb key file as `.wandb_env` (mode 600).
-`rsk sync -D` runs only with `--approve "<their words>"` (audited) unless a real `-n` / `--dry-run` makes it a listing —
+`rsk sync -D` runs only with `--approve` (the user's OK at the time; audited) unless a real `-n` / `--dry-run` makes it a listing —
 read with run-sync's own grammar: `--also -n` pushes a path named `-n`, it is no dry run.
 With a transfer host (`T_XFER_HOST`) it prints `transfer host: <xfer>` and ends `sync done -> … ; files via <xfer>`.
 Every sync stamps `<REMOTE_DIR>/.run-source` (local path, host, branch, commit, dirty-file count, time; never pruned):
@@ -62,8 +62,8 @@ ssh <host> "ps -eo pid,etime,cmd | grep -i '[p]ython'"      # what is already ru
 ```
 Auto-pick takes the **idlest** GPUs by `memory.used` among those with no compute process (`launch.sh` asks
 `nvidia-smi --query-compute-apps` once and names them `GPU(s) in use (id:user:pid)`); memory alone is not "free": read the
-table and use `-d` when the pick would land on a busy card. **`rsk launch` (§4) plans first and checks whether the
-user's recorded words already cover that plan** (SKILL.md §3): covered → it launches and you report which record
+table and use `-d` when the pick would land on a busy card. **`rsk launch` (§4) plans first and checks whether what
+the user already allowed covers that plan** (SKILL.md §3): covered → it launches and you report which record
 covered it; not covered (exit 4) → show its card verbatim (GPU request, `busy now` = who uses which GPU) with `ref:
 <reference path>` (re-read it if only a summary of it is in context) and wait for the user's words. Installed
 without rsk: the same check against the user's words; outside them, print a one-line plan (target / GPU ids / run
@@ -85,7 +85,7 @@ before the first long launch.
 ## 4. Launch (nohup, detached)
 ```
 rsk launch -T <t> [-d 0,1 [--gpu-busy-ok] | -g <count>] [-N <name>] [--nice N] [--same-name-ok] [--class C] [-- <RUN>]
-rsk launch --plan <id> [--plan <id>]... --approve "<the user's words>"     # the card(s) the user approved: launch
+rsk launch --plan <id> [--plan <id>]... --approve                        # the card(s) the user approved: launch
 rsk launch … --check-after 20                                              # + the start milestone: PID alive, or failed at once
 TARGET=<t> bash $ROOT/bin/run-launch [-d 0,1 | -n <count>] [-N <name>] [--same-name-ok] [--gpu-busy-ok] -- <RUN>   # without rsk
 ```
@@ -100,13 +100,13 @@ starts with `-` (exit 2). The action is the plan's: a run that already has attem
 `run-launch` rsk never saw); a block without it, or `unknown`, counts as one too (fail closed; the card's `prior` line
 says which). A deny that names the run and lists `relaunch` or `resubmit` stops every launch of it, a first one too, on
 any target in its scope (rsk cannot see every earlier attempt: procedure-slurm §4, Denies); a deny written with an
-attempt's name (`<run>--a02`, or a glob over them such as `<run>--a*`) stands for the whole run. A relaunch grant covers it
-only after a REBOOT ended the run's latest attempt that ran in the ledger, and only for a plan that repeats that attempt's
-configuration — its bound fields, `launch_cfg` (below) included: an edited launcher config is `not the configuration of
-aNN it resumes: launch_cfg …`, and an attempt recorded before rsk kept `launch_cfg` has none, so a relaunch whose plan
-reads a config needs the user once; the user's approval of the card after any end, and a grant with `--relaunch-after
-any` after any end too, judged as a launch, never while an earlier attempt rsk can see may be live (procedure-slurm §4:
-also the re-read before the decision, `--check-after` and recycled `--approve` words). Exit as for Slurm
+attempt's name (`<run>--a02`, or a glob over them such as `<run>--a*`) stands for the whole run. A relaunch is
+covered by the user's approval of the card, or by a grant that allows `launch`, after any end, judged as a launch, never
+while an earlier attempt rsk can see may be live (procedure-slurm §4: also the re-read before the decision and
+`--check-after`). A grant that allows `relaunch` but not `launch` covers it only after a REBOOT ended the run's latest
+attempt that ran in the ledger, and only for a plan that repeats that attempt's configuration — its bound fields,
+`launch_cfg` (below) included: an edited launcher config is `not the configuration of aNN it resumes: launch_cfg …`, and
+an attempt recorded before rsk kept `launch_cfg` has none, so a relaunch whose plan reads a config needs the user once. Exit as for Slurm
 (procedure-slurm §4: 0 launched, 1 failed — also a plan whose env would fail the gate —,
 2 usage — also a RUN that picks GPUs, below —, 3 refused, 4 needs the user, 5 reply lost = SUBMIT_UNKNOWN, 6 stale plan /
 drift / a live ledger run of that name / a busy `-d` GPU / `grants unreadable` / `needs: sync`, e.g. a box deployed
@@ -210,8 +210,7 @@ this launch's CUDA_VISIBLE_DEVICES and may see GPUs its runtime picks (any on th
 launch's GPU(s) [<ids>]: name the GPUs it will use to the user` (apptainer / singularity: `drop those flags (it then
 keeps these), or …`). Only the user's approval of that card covers it — never a standing grant, whatever its
 `--allow-warnings` (`any` too: such a run may use more GPUs than its `--max-gpus`, another user's too): the plan block
-counts these WARNINGs apart as `warnings_gpu=N`, the card says `NO GRANT   N launcher / container / env-dropping
-warning(s)`, and a block without `warnings_gpu` (an older `launch.sh`: `rsk sync`) counts as unknown — so no grant
+counts these WARNINGs apart as `warnings_gpu=N`, the card says so on its `NO GRANT` line, and a block without `warnings_gpu` (an older `launch.sh`: `rsk sync`) counts as unknown — so no grant
 covers a GPU container run (`docker run --gpus …`) either. Let the launcher use the landing (no GPU flags or
 settings: it then uses the ids launch.sh picked), or name the GPUs it will use to the user. The spellings rest on
 argparse (`tests/61` 'R5-2': unique prefixes and attached short values for deepspeed's runner, no abbreviations for
@@ -326,47 +325,37 @@ selftest lists it among its SKIP lines). Once the pid is gone status.sh reads th
 launched before launch.sh existed has neither: there `proc=gone` + the last lines + the final artifact ARE the evidence. Idle = ALL of the run's GPUs under ~5 % util
 AND the log not advancing across two checks — never one sample. A nohup'd run survives ssh disconnect, not a reboot:
 relaunch with the next `a<attempt>` (`rsk launch --relaunch <run>`, conventions §3) and confirm it resumed. `rsk status`
-shows that end as `REBOOT` (pid gone, no `.rc`, the box's boot id is not the run's) — the one end a `relaunch` grant
+shows that end as `REBOOT` (pid gone, no `.rc`, the box's boot id is not the run's) — the one end a `relaunch`-only grant
 resumes after.
-**Stop a run only through `rsk cancel <run> [--job <pid>] [--approve "<the user's words>" [--asked "<your question>"]]`**:
-the same ssh first checks
+**Stop a run only through `rsk cancel <run> [--job <pid>] [--approve]`**: the same ssh first checks
 the pid against the run's receipt (pid, process start time, boot id, your user, the group leader); someone else's
 process: never (exit 3). A ledgered run whose pid is gone, reused by another process (its start time differs) or whose
 box rebooted (boot id differs) has ended: exit 0 `nothing to cancel … ended`, nothing signalled, its end recorded in the
 ledger now (REBOOT for a changed boot id); exit 6 = its identity is not proven (the receipt's start or boot id is not the
 ledger's, no receipt, not the group leader), nothing signalled. `rsk cancel --job <pid>` of a run the ledger shows ended
 is checked against THAT run's own receipt (a pid reused since: `nothing to cancel … had ended already`, nothing
-signalled) and needs the user's words (`cancel_own` never covers an ended attempt); a pid the ledger does not know is
-checked against the one receipt whose start and boot id match that process now (several: exit 6 `ambiguous`). Then it sends TERM to the run's process group, waits
-`--grace` (30 s) and KILLs what is left; `<log>.rc` is read back. It acts on the user's words naming that run — an
-approval bound to its identity (target, pid, start, boot id), for 1 h, used up by its first cancel whatever came of it
-— or, for your own judgment that it should stop, on a `cancel_own` grant (runs rsk launched only); else exit 4: ask.
-The `--approve` words must name what is stopped, as a whole word: the pid (`--job <pid>`; a numeric range holding it
-counts: `4101-4103`) or the run's id or name (`rsk cancel <run>`: the run, or its pid); a token inside a longer one does
-not count (`sw1` is not named by `sw10`). When the words answer a question you asked ("sw1 has diverged — stop it?" →
-"yes"), pass that question verbatim with `--asked`: it may name the run instead, and is recorded beside the words (the
-approval's `source`, the audit) — never ask the user again. "stop it" with no question naming the run names nothing:
-exit 4 `needs user: the words do not name <pid|run> — "<words>" names none of: pid P = run <run> (<name>) on <t>;
-nothing recorded or cancelled`, no approval, no ssh — ask which run they mean. A check against a slip (a yes to "stop
-sw1?" passed for sw2 is exit 4 too), not proof of consent: the question is your own text and rsk does not read whether
-the answer was a yes — pass it only for the user's agreement; a `cancel_own` grant is unchanged.
-A `cancel_own` grant's cancels count against its `max_launches`; a deny of plans (`rsk grant deny --run <hash>`, one that
-covers cancels) matches every cancel of a run the ledger has no plan for. An answer cut off after the cancel started, or none at all (a timeout,
-ssh's own 255, a signal), says `the cancel may have been sent: rsk status` (exit 5; a use is kept) — and so does ssh's
-own 255 before `@@start`, whatever its stderr says (`… — ssh's own words are no proof that the body never ran; the use
-is kept`: a fallback route or a login shell can print `Connection refused` on a session that ran). Exit 1 = processes
+signalled); a pid the ledger does not know is checked against the one receipt whose start and boot id match that process
+now (several: exit 6 `ambiguous`). Then it sends TERM to the run's process group, waits `--grace` (30 s) and KILLs what
+is left; `<log>.rc` is read back. A live run of this project's ledger (rsk launched or adopted it: your own) is stopped
+with no grant and no question; a process the ledger does not hold needs the user's OK for this command (`--approve`;
+without it exit 4: ask) — nothing is stored for a later cancel. A deny of cancel still refuses (exit 3), and a deny of
+plans (`rsk grant deny --run <hash>`, one that covers cancels) matches every cancel of a run the ledger has no plan for.
+An answer cut off after the cancel started, or none at all (a timeout, ssh's own 255, a signal), says `the cancel may
+have been sent: rsk status` (exit 5) — and so does ssh's own 255 before `@@start`, whatever its stderr says (`… — ssh's
+own words are no proof that the body never ran; the use is kept`: a fallback route or a login shell can print
+`Connection refused` on a session that ran). Exit 1 = processes
 left in the run's group (`FAILED: … process(es) still in its group after TERM …`). Without
 rsk, on the same terms: `ssh <host> "kill <pid>"` (the `<log>.pid` wrapper: it forwards TERM to the run once and records
 `term=1`), and only if the run's group outlives that, `ssh <host> "kill -- -<pid>"` (the whole process group).
 `rsk cancel … --wait S` is accepted and changes nothing here: the cancel already waits `--grace` and records the end.
 **Moving a run to another target**: `rsk cancel <run>` (its answer is the end), then plan it on the new target (`rsk
-launch -T <new> …` — a `relaunch`: after a stop only the user's approval of the card or a `--relaunch-after any` grant
+launch -T <new> …` — a `relaunch`: after a stop the user's approval of the card or a `launch` grant
 covers it). An answer that left the end unknown (exit 5) keeps the run live in the ledger: a launch of it on that box is
 refused, on another target rsk prints a NOTE (the old copy may still run) — `rsk status` again once the box answers,
 never `--same-name-ok` for it (two live copies would share the run's logs and checkpoints), and tell the user when you
 launch elsewhere before the old end is seen. rsk copies no checkpoint between targets by itself: carry it first (§6,
 "Carrying a checkpoint"); a run that starts fresh instead says so in its notes (conventions §4) and in your report.
-**Looking after runs under a standing grant** (`relaunch`, `--relaunch-after any`, `cancel_own`): the grant says what
+**Looking after runs under a standing grant** (`launch`, `relaunch`): the grant says what
 rsk lets through, not what is wise. A run that was stopped — `CANCELLED` (rsk cancel), or `term=1` in its `<log>.rc` (a
 TERM: the user, another session) — was someone's decision: never relaunch it unprompted, even where a grant would cover
 it; ask. Several runs ending at the same moment point at the box (a reboot, a full disk, the driver) or a shared input
@@ -423,7 +412,7 @@ is exported only when every step succeeded; launch.sh refuses without it.
 
 ## Safety rails (every time)
 - Files move only through `run-sync` / `run-pull` (the target's transfer host, if any); no hand-rolled `rsync`/`scp`.
-- Check the user's recorded words before every launch or stop (`rsk launch` / `rsk cancel`); outside them, ask. Never
+- Check the user's recorded authorisation before every launch or stop (`rsk launch` / `rsk cancel`); outside it, ask. Never
   launch onto a busy GPU without the user's words naming it; never signal someone else's process (shared boxes).
 - wandb: your key only (`.wandb_env`), never the box's `~/.netrc`; no key → offline. Never create conda envs.
   Keep outputs/caches under the project dir; report PID + log after every launch.

@@ -17,7 +17,7 @@ It also reads the local ledger (ledger.py) and records what it saw there — nev
   the watch lease and a run-watch lock holder (alive here, on another host, or stale), every active grant with its
   balance (and, as rsk grant list shows them, the WARNING for a record naming a target the harness does not know and
   the NOTE for a partition its profile's T_PARTITIONS display list does not name: R7-6), and `needs user:` lines. A
-  needs-user line names the decision, never a ready-to-run --approve command (the user's words come first). A ledger that cannot be written (read-only state dir, a full disk) is a warning: the
+  needs-user line names the decision, never a ready-to-run --approve command (the user's OK comes first). A ledger that cannot be written (read-only state dir, a full disk) is a warning: the
   view is still printed, nothing recorded;
 - per Slurm target read in full, one line counting this user's live jobs there from OTHER dirs (other projects, other
   tabs) by state and pending reason (others_line; --json `other_dirs`, null when the
@@ -362,7 +362,7 @@ def view(led: L.Ledger, state: L.LedgerState, obs: list[observe.Observation], da
                             f", no receipt{', a process still names it' if a.get('procs') else ''}")
                 needs.append(f"{run} {aid} on {att.get('target')}: SUBMIT_UNKNOWN (nonce {sub.get('nonce')}: {what}; "
                              f"no job carries rs={sub.get('nonce')}) — only the user can say it may be marked not "
-                             "submitted (rsk adopt --not-submitted, with their words); never resubmit it blind")
+                             "submitted (rsk adopt --not-submitted, with their OK); never resubmit it blind")
     for o in obs:
         if not o.ok:
             continue
@@ -485,7 +485,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     else:
         print("  no ledger runs on " + ", ".join(sorted(targets)) + f" (live or ended in {args.days}d)")
     print("== grants ==")
-    print("\n".join(grants.lines(st, known=tl)) or "  none recorded — every launch and cancel needs the user's approval")
+    print("\n".join(grants.lines(st, known=tl)) or "  none recorded — every launch needs the user's approval")
     if tl_note:
         print(tl_note)
     print(_lease_line(v))

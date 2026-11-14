@@ -209,18 +209,15 @@ at `rsk launch`) — a nudge, not a guard; `tests/lib.sh` exports `RS_VIA_RSK`.
 ### Authorisation (`grants.py`, `ledger.py`; used by `launch.py`, `cancel.py`; docs/DESIGN.md "Authorization")
 
 The user's policy: never ask again for what they already allowed, but check every action against it. Every launch, relaunch,
-chain and cancel calls `grants.check()` first — a deny → 3 (its quote), a covering record → act and record the use, else
-`needs user:` → 4. One record type in the ledger's `grants.json` (`<state>/projects/<sha256(realpath)[:16]>/`, flock, atomic
+chain and cancel calls `grants.check()` first — a deny → 3, a covering record → act and record the use, else
+`needs user:` → 4. rsk stores no user words: `--approve` is a flag (an optional value is accepted and ignored, as is
+cancel's old question flag), `rsk grant … --quote` is optional, and audit events carry no words. One record type in the ledger's `grants.json` (`<state>/projects/<sha256(realpath)[:16]>/`, flock, atomic
 writes with `.prev`, single-use `plans/`, append-only `audit.jsonl`): `approval` (the plan ids + bound hashes of the cards
-the user approved, claimed and recorded in one lock hold, expiring with the plans (24 h) — a sweep is one record — or named
-jobs to cancel, each bound to its identity in `scope.idents` (Slurm target, job id, run name, WorkDir; nohup target, pid,
-start, boot_id), for 1 h, used up by its first cancel that passed authorisation, never refunded; one without `idents`
-covers nothing; the `--approve` words — or the agent's question they answer, `--asked` (its `source`, NF8) — must name
-each job — its id / pid or a range holding it, its run's id or name — as a whole token, else exit 4, nothing recorded:
-`cancel.named` / `cancel.unnamed`, R8-2; `cancel.ranges`), `grant` (a standing predicate: scope + actions +
-`max_live` / `max_launches` / `expires`, all three stated, `none` = the user set none; `resubmit` is refused in a new
-one; `allow_warnings` = `availability` (warnings == warnings_avail) | `any`, a stored `true` = `any`; `cancel_own`
-cancels count against `max_launches`, refunded only when the answer proves nothing was signalled), `deny` (always wins;
+the user approved, claimed and recorded in one lock hold, expiring with the plans (24 h) — a sweep is one record),
+`grant` (a standing predicate: scope + actions + `max_live` / `max_launches` / `expires`, all three stated, `none` = the
+user set none; `resubmit` is refused in a new one; `allow_warnings` = `availability` (warnings == warnings_avail) | `any`,
+a stored `true` = `any`; `launch` covers relaunches too, as `scope.relaunch_after: any` did — still accepted, now
+implied; `cancel_own` stays valid but is not needed and counts nothing), `deny` (always wins;
 one of `launch` stops relaunch/chain too; its name globs also match the run id,
 and a glob ending in an attempt's `--aNN` (2+ digits) or in a glob that can match one (`x--a*`) stands for its run —
 every attempt, cancels and `rsk watch` rows included (`grants.run_glob(s)`, R7-1; a NOTE at `rsk grant deny|import`);
@@ -243,7 +240,7 @@ scope (`grants.run_deny`; a launch grant right after it: FLAG). A deny `validate
 damaged `kind` is a deny matching everything until fixed or revoked (a non-object: until removed by hand); any
 other invalid record covers nothing; an unreadable `grants.json` (no good `.prev`) is exit 6 `grants unreadable` for launch,
 cancel and watch `--act`/`--approve`, and while it is recovered or missing every deny in `audit.jsonl` still counts
-(`rsk grant recount` restores those denies and the revocations; a lost grant or approval needs the user's words again). The action
+(`rsk grant recount` restores those denies and the revocations; a lost grant or approval needs the user again). The action
 is derived (`launch.plan_actions`): a run with attempts that may have run (not only NOT_SUBMITTED, not the plan's own) in
 the ledger, or `info_prior` > 0, or no readable `info_prior` (`launch.info_prior`) → relaunch, `chain=1` → chain; every one applies (a deny of any matches, a record must allow all). The class is the name's,
 set only at the run's first attempt (none there: a later one is exit 2). A NEW run (no ledger attempt that may have run, `info_prior`
@@ -251,32 +248,32 @@ not > 0) named outside experiment-conventions §2's shape, or with an opaque wor
 (`launch.name_problems` / `name_notes`; `--free-name`: the user's own name, unchecked); a smoke is exit 2 only when its command's env
 words (`launch.env_scan`, GNU env's reading: a box line from its first word) or a Slurm conf (bound `wandb_mode`) leave the tracker on
 for certain, else a card WARNING where rsk cannot tell (`launch.smoke_problem`: a box's conf, a compound line, an expansion, an env
-option, a conf value an ENV_HOOK / conda / `info_wandb_env` may change); a formal launch with it on prints §4's wandb fields (`launch.tracker_note`). Never grant-covered: warnings the grant's
-`allow_warnings` kind does not cover (`-y` is sent only for a card that showed warnings, under a record that covers them), a
-policy flag (`flags=`), `--same-name-ok`, a `conf_extra` word outside `grants.EXTRA_ALLOW` (the card's `NO GRANT`; policy
-words never count), a time over `max_time_s` in any limit sbatch could read (0 / UNLIMITED = unlimited), a relaunch whose
-latest attempt that ran did not end in `INFRA_END` (PREEMPTED NODE_FAIL BOOT_FAIL REBOOT) or that does not repeat that
-attempt's configuration (a plan named after an older attempt is the next aNN) — unless `scope.relaunch_after` is `any`
-(with `launch` too: the user handed re-runs over): judged as a launch, never while an earlier attempt may be live
-(`grants._any_misses`: `is_live` on any target, or `info_prior_here` above the ledger's count there / unreadable) —, a
-workstation plan on a busy GPU; `--approve` words repeating a standing grant's quote (`grants.recycled`: normalised,
-either inside the other, weight ≥ 24, grant > 1 h old) are exit 4 for every `--approve`, a grant add/import gets a FLAG;
+option, a conf value an ENV_HOOK / conda / `info_wandb_env` may change); a formal launch with it on prints §4's wandb fields (`launch.tracker_note`). A covering grant also covers policy flags (`flags=`),
+`--same-name-ok` and `conf_extra` words outside `grants.EXTRA_ALLOW` (each a card NOTE; policy words never count), and a
+relaunch under `launch` is judged as a launch whatever the end and the configuration — never while an earlier attempt
+may be live (`grants._any_misses`: `is_live` on any target, or `info_prior_here` above the ledger's count there /
+unreadable). Never grant-covered: warnings the grant's `allow_warnings` kind does not cover (`-y` is sent only for a card
+that showed warnings, under a record that covers them), a workstation's `warnings_gpu`, a time over `max_time_s` in any
+limit sbatch could read (0 / UNLIMITED = unlimited), under a `relaunch`-only grant a relaunch whose latest attempt that
+ran did not end in `INFRA_END` (PREEMPTED NODE_FAIL BOOT_FAIL REBOOT) or that does not repeat that attempt's
+configuration (a plan named after an older attempt is the next aNN), a workstation plan on a busy GPU;
 `rsk launch` first reads every target holding a ledger-live attempt of the run (`launch.refresh`); `--check-after S`
 judges each submission S s later (`launch.check_after`: ended otherwise = exit 1 + the digest);
-`rsk sync -D` (run-sync's grammar: `--also -n`, `--root -n` are paths) / `rsk bootstrap --job` (any `--job` word) need `--approve`
-(audited); never at all: someone else's job or process. A provably unsent submit (refused / failed with no receipt, no attempt dir, run-launch
+`rsk sync -D` (run-sync's grammar: `--also -n`, `--root -n` are paths) / `rsk bootstrap --job` (any `--job` word) /
+`rsk adopt --not-submitted` need `--approve` (audited); `rsk cancel` of a live attempt in this project's ledger (launched or
+adopted) needs no grant or approval, anything else of this user's needs `--approve` for that command (else 4; nothing
+stored), a deny of cancel still refuses; never at all: someone else's job or process. A provably unsent submit (refused / failed with no receipt, no attempt dir, run-launch
 before its ssh; nohup: the journal decides first — a receipt with gate `go` is launched whatever the exit) is NOT_SUBMITTED:
 the use is refunded and the plan's claim released (`rsk launch --plan P` retries it under the same record); a slurm
 submit's ssh 255 with no receipt is SUBMIT_UNKNOWN whatever ssh's stderr says (a ProxyCommand's fallback route or a login
-shell prints `Connection refused` on a session that ran: use kept, plan used). `cancel_own`
-covers only live ledger attempts rsk launched; no `@@start` from an ssh that did not end with the remote's own status is exit
-5, use kept, whatever ssh's stderr says (`test_cancel` / `test_launch` `test_r6_4_…`, `tests/62` `ssh.fallback`); a
-non-zero scancel is exit 5 `CANCELLING?`, use kept, its own line quoted (`cancel.scancel_line`: the one naming that job id,
+shell prints `Connection refused` on a session that ran: use kept, plan used). A cancel with
+no `@@start` from an ssh that did not end with the remote's own status is exit 5 whatever ssh's stderr says (`test_cancel` / `test_launch` `test_r6_4_…`, `tests/62` `ssh.fallback`); a
+non-zero scancel is exit 5 `CANCELLING?`, its own line quoted (`cancel.scancel_line`: the one naming that job id,
 else one naming none), unless scancel's own line for that id says `Invalid job id` / `already completing or completed` (`scancel_moot`:
-exit 0, `COMPLETING`, use back; the words: `tests/vgate/slurm-remote.sh` `scancel_ended=` / `scancel_invalid=`). run-watch keeps its own approvals (`#@ ok`, bash) — `rsk watch` adds the lease, checks every row against the
+exit 0, `COMPLETING`; the words: `tests/vgate/slurm-remote.sh` `scancel_ended=` / `scancel_invalid=`). run-watch keeps its own approvals (`#@ ok`, bash; `rsk watch --approve` hands it a fixed note as its words) — `rsk watch` adds the lease, checks every row against the
 denies for every action run-watch could take (`--act` / `--approve`; a deny scoped by job ids only for a table whose `#@ allow` has `fail-stop`; and at each lease refresh: TERM, exit 3), refuses a table that is not plain text (a NUL or a control character but tab, CR included: exit 2 in every mode, before the lease, in run-watch's words; R7-7), sets
 `RS_VIA_RSK=1 RS_WATCH_PARENT=<its pid>`, and refuses (6) beside an orphaned run-watch lock. A record is bookkeeping, not
-proof of consent: an agent can write any quote; rsk constrains only what goes through it.
+proof of consent: an agent can pass any flag; rsk constrains only what goes through it.
 
 ### Storage policy (env.sh, driven by `T_*`)
 
@@ -309,7 +306,7 @@ docs/packs.md): `echo 'WARNING: …' >&2; [ "$FORCE" = 1 ] || exit 1` — print,
 `-y` submit show it too; never the P2 form `[ "$FORCE" = 1 ] || { echo …; exit 1; }`, silent under -y (`tests/52` 'R5-10'). A bash fact (70-docs, and
 `tests/vgate/slurm-remote.sh` `bash_exit_fn=`): a function named `exit` outranks the builtin outside POSIX mode; under
 `set -o posix` bash refuses it and the probe fails closed, exit 2. Unknown `--word` flags land in `T_FLAGS` (bound
-`flags=`: never grant-covered), `--*-user-asked` sets `ACK=1`. Then: (probe) partition → `-g` range → cpu/mem heuristics →
+`flags=`: a card NOTE, grant-coverable), `--*-user-asked` sets `ACK=1`. Then: (probe) partition → `-g` range → cpu/mem heuristics →
 MaxTime (`P_MAXTIME` else `T_MAXTIME`; explicit limits only) → payload guard → `SBATCH_EXTRA` scan (`-p`, `T_FORBIDDEN_QOS`,
 every word an option or its option's value, no trailing value option) → every `--time`/`-t` in `SB_ARGS` vs MaxTime → sinfo
 availability (`WARNING: only … Re-run -y`; the nodes of `SB_ARGS`' last `--exclude`/`-x` not counted, a hostlist range: a NOTE) → duplicate guard (`--same-name-ok`, singleton chains and `--rs-chain` skip it) →
@@ -359,10 +356,11 @@ mention another target (cross-target routing lives only in INDEX's Routing secti
 ## Editing the docs
 The rails in `SKILL.md` / `procedure-*.md` / `experiment-conventions.md` (check the existing authorisation before every
 submit/launch/cancel and ask only outside it — the user's table in docs/DESIGN.md; cancel only after the identity check, never
-someone else's job or process; a grant records the user's words, never invented or widened, and is no proof of consent; never
+someone else's job or process; a grant records what the user allowed, never invented or widened, and is no proof of consent; never
 create a conda env, never guess the remote dir, own wandb key only, smokes run `WANDB_MODE=disabled`, formal runs checkpoint +
 auto-resume, monitoring = bounded reviews, adaptive cadence, explicit wake-up capability, detect-only — its exceptions are
-`run-watch --act` on user-approved rows within their budget and rsk actions a user's grant covers) are the product — do not trim
+`run-watch --act` on user-approved rows within their budget, rsk actions a user's grant covers and `rsk cancel` of the
+project's own ledger runs) are the product — do not trim
 them (70-docs pins them). Facts live
 once: values in `profile.sh`, limits in `policy.sh`, prose in `reference.md`, keys in `conf-keys.md`. The INDEX stub
 must equal `rs_gen_index OUT ROOT` output with no targets (test `70-docs`): regenerate under bash into a temp file

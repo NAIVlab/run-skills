@@ -162,23 +162,23 @@ class Denies(ScratchHome):
 
     def test_a_deny_stops_act_before_anything_starts(self):
         self.assertEqual(self.guard()(), "")
-        G.add(self.led, G.new_deny("never launch anything on fx-slurm any more", {"targets": ["fx-slurm"]}))
+        G.add(self.led, G.new_deny({"targets": ["fx-slurm"]}))
         seen = self.home / "seen"
         with self.assertRaises(RskError) as c:
             Wt.run_watch(self.led, ["t.tsv", "--act"], str(self.proj), dict(os.environ),
                          ["bash", "-c", f"touch {seen}"], guard=self.guard())
         self.assertEqual(c.exception.code, REFUSED)
-        self.assertIn("never launch anything on fx-slurm", str(c.exception))
+        self.assertIn("denied by d-", str(c.exception))
         self.assertFalse(seen.exists())
         self.assertIsNone(self.led.lease().data)
 
     def test_r4_4_a_deny_matches_a_row_for_every_action_whatever_the_allow_line(self):
         """NEW-watch-actions / N1-release-bypasses-deny: the guard used to check only what `#@ allow` lets run-watch
         do — a --release (launch / resubmit outside it) or an SBATCH_EXTRA singleton (a chain) slipped past."""
-        G.add(self.led, G.new_deny("leave the b smoke alone", {"names": ["exp--smoke--b"]}, ["cancel"]))
+        G.add(self.led, G.new_deny({"names": ["exp--smoke--b"]}, ["cancel"]))
         self.assertIn("row exp--smoke--b on fx-slurm (cancel)", self.guard()())   # no fail-stop line: checked anyway
         self.led.write_grants({"version": 1, "records": [], "budgets_unknown": None})
-        G.add(self.led, G.new_deny("never chain jobs", {}, ["chain"]))
+        G.add(self.led, G.new_deny({}, ["chain"]))
         self.assertIn("(chain)", self.guard()())                     # a conf singleton makes any launch a chain
         (self.proj / "w.tsv").write_text("#@ run-watch v1\n#@ allow launch\nw ws-box - -g 1 -- python w.py\n")
         self.assertEqual(Wt.deny_hit(self.led, self.proj, ["w.tsv", "--act"], {"ws-box": "nohup"}), "")  # never
@@ -186,49 +186,49 @@ class Denies(ScratchHome):
         self.led.write_grants({"version": 1, "records": [], "budgets_unknown": None})
         (self.proj / "t.tsv").write_text("#@ run-watch v1\n#@ ok 2026-11-05 sum=1 \"go\"\n"
                                          "a fx-slurm - -p gpu -g 1 -- python train.py\n")     # no `#@ allow` at all
-        G.add(self.led, G.new_deny("do not run a again", {"names": ["a"]}, ["resubmit", "relaunch"]))
+        G.add(self.led, G.new_deny({"names": ["a"]}, ["resubmit", "relaunch"]))
         why = Wt.deny_hit(self.led, self.proj, ["t.tsv", "--act", "--release", "a"], self.kinds)
         self.assertIn("row a on fx-slurm (launch)", why)            # R6-1: a relaunch deny naming a: every launch of a
-        self.assertIn("do not run a again", why)
+        self.assertIn("denied by d-", why)
         self.assertIn("rsk cannot see every earlier attempt", why)
 
     def test_r4_4_a_gpu_type_deny_matches_every_row_of_its_target(self):
         """N3-forced-gpu-type-evades-watch-deny: `-G a100` on a partition whose policy forces h100 is submitted as
         h100; rsk cannot see the policy, so a GPU-type deny matches every row of its target, and says why."""
-        G.add(self.led, G.new_deny("never use the gt-z GPUs", {"targets": ["fx-slurm"], "gpu_types": ["gt-z"]}))
+        G.add(self.led, G.new_deny({"targets": ["fx-slurm"], "gpu_types": ["gt-z"]}))
         why = self.guard()()
         self.assertIn("row a on fx-slurm (launch)", why)
         self.assertIn("GPU type is not certain here", why)
         self.led.write_grants({"version": 1, "records": [], "budgets_unknown": None})
-        G.add(self.led, G.new_deny("never gt-z elsewhere", {"targets": ["other"], "gpu_types": ["gt-z"]}))
+        G.add(self.led, G.new_deny({"targets": ["other"], "gpu_types": ["gt-z"]}))
         self.assertEqual(self.guard()(), "")                         # another target's deny: not these rows
 
     def test_a_partition_deny_matches_every_row_of_its_target(self):
         """not_fixed (round 4, R4-4 partitions): a row's -p was taken as certain, but the policy.sh API lets t_policy
         rewrite PART — `-p gpu` may go out on the denied partition. Like a GPU type: a partition deny matches every
         Slurm row of its target, and says why."""
-        G.add(self.led, G.new_deny("never the vip partition", {"targets": ["fx-slurm"], "partitions": ["vip"]}))
+        G.add(self.led, G.new_deny({"targets": ["fx-slurm"], "partitions": ["vip"]}))
         why = self.guard()()
         self.assertIn("row a on fx-slurm (launch)", why)
         self.assertIn("it asks -p gpu, but the target's policy may rewrite it", why)
         self.led.write_grants({"version": 1, "records": [], "budgets_unknown": None})
-        G.add(self.led, G.new_deny("never vip elsewhere", {"targets": ["other"], "partitions": ["vip"]}))
+        G.add(self.led, G.new_deny({"targets": ["other"], "partitions": ["vip"]}))
         self.assertEqual(self.guard()(), "")                         # another target's deny: not these rows
         (self.proj / "w.tsv").write_text("#@ run-watch v1\n#@ allow launch\nw ws-box - -g 1 -- python w.py\n")
         self.led.write_grants({"version": 1, "records": [], "budgets_unknown": None})
-        G.add(self.led, G.new_deny("never vip on the box", {"targets": ["ws-box"], "partitions": ["vip"]}))
+        G.add(self.led, G.new_deny({"targets": ["ws-box"], "partitions": ["vip"]}))
         self.assertEqual(Wt.deny_hit(self.led, self.proj, ["w.tsv", "--act"], {"ws-box": "nohup"}), "")  # no -p there
 
     def test_r5_8_a_row_target_spelled_otherwise_is_compared_as_its_name(self):
         """WATCH-target-spelling-evades-deny: a row on `fx-slurm/` (rs_target_dir finds the same profile, the deploy dir
         is the same) passed a `-T fx-slurm` deny — rsk compared the raw string. Now a normalised name; a spelling that
         is not one plain name may be any target."""
-        G.add(self.led, G.new_deny("never launch anything on fx-slurm any more", {"targets": ["fx-slurm"]}))
+        G.add(self.led, G.new_deny({"targets": ["fx-slurm"]}))
         for t in ("fx-slurm/", "fx-slurm/.", "fx-slurm//", "./fx-slurm", "FX-SLURM", "x/../fx-slurm"):
             (self.proj / "s.tsv").write_text(f"#@ run-watch v1\n#@ allow launch\na {t} - -p gpu -g 1 -- python a.py\n")
             why = Wt.deny_hit(self.led, self.proj, ["s.tsv", "--act"], self.kinds)
             self.assertIn(f"row a on {t} (launch)", why, t)
-            self.assertIn("never launch anything on fx-slurm any more", why)
+            self.assertIn("denied by d-", why)
             self.assertIn(f"the row's target {t!r} is not a target name as spelled", why)
         self.assertEqual(Wt.kind_of(self.kinds, "fx-slurm/"), "slurm")              # chain is checked as for fx-slurm
         self.assertEqual(Wt.kind_of(self.kinds, "a/b"), "")
@@ -241,15 +241,15 @@ class Denies(ScratchHome):
         for) matched every row of every table for the cancel action (a row's job is not known: fail closed), so every
         `rsk watch --act` refused (exit 3) — also a table that never cancels. Such a deny now counts only for a table
         whose `#@ allow` line has fail-stop (the one cancel run-watch makes)."""
-        G.add(self.led, G.new_deny("do not cancel job 555 (the other project's eval)", {"jobs": ["555"]}, ["cancel"]))
+        G.add(self.led, G.new_deny({"jobs": ["555"]}, ["cancel"]))
         self.assertEqual(self.guard()(), "")                         # `#@ allow launch preempt=2`: no cancel there
         (self.proj / "f.tsv").write_text(self.TABLE.replace("preempt=2", "preempt=2 fail-stop"))
         why = Wt.deny_hit(self.led, self.proj, ["f.tsv", "--act"], self.kinds)
         self.assertIn("row a on fx-slurm (cancel)", why)             # fail-stop: the row's job is not known here
-        self.assertIn("do not cancel job 555", why)
+        self.assertIn("denied by d-", why)
         self.assertIn("(cancel)", Wt.deny_hit(self.led, self.proj, ["t.tsv", "f.tsv", "--act"], self.kinds))
         self.led.write_grants({"version": 1, "records": [], "budgets_unknown": None})
-        G.add(self.led, G.new_deny("leave the b smoke alone", {"names": ["exp--smoke--b"]}, ["cancel"]))
+        G.add(self.led, G.new_deny({"names": ["exp--smoke--b"]}, ["cancel"]))
         self.assertIn("row exp--smoke--b on fx-slurm (cancel)", self.guard()())   # a deny naming no job: as before
         self.led.write_grants({"version": 1, "records": [], "budgets_unknown": None})
         stored = {"id": "d-20261105-bbbbbb", "kind": "deny", "quote": "job 555 is broken: do not resubmit it",
@@ -260,24 +260,24 @@ class Denies(ScratchHome):
 
     def test_r4_1_a_deny_of_a_plan_matches_every_row_in_its_scope(self):
         """N2-run-hash-deny-never-matches-watch-rows: a row has no bound hash — a deny of plans matches it."""
-        G.add(self.led, G.new_deny("never run this exact configuration", {"runs": ["a" * 64]}))
+        G.add(self.led, G.new_deny({"runs": ["a" * 64]}))
         why = self.guard()()
         self.assertIn("row a on fx-slurm (launch)", why)
         self.assertIn("a deny of plans matches every row", why)
 
     def test_r4_1_an_unknown_class_matches_a_class_deny(self):
-        G.add(self.led, G.new_deny("leave the smokes alone", {"classes": ["smoke"]}, ["cancel"]))
+        G.add(self.led, G.new_deny({"classes": ["smoke"]}, ["cancel"]))
         self.assertIn("row a on fx-slurm (cancel)", self.guard()())   # `a` carries no class: it may be a smoke
         self.led.write_grants({"version": 1, "records": [], "budgets_unknown": None})
-        G.add(self.led, G.new_deny("no train runs", {"classes": ["train"]}))
+        G.add(self.led, G.new_deny({"classes": ["train"]}))
         self.assertIn("row a on fx-slurm", self.guard()())
         self.led.write_grants({"version": 1, "records": [], "budgets_unknown": None})
-        G.add(self.led, G.new_deny("no train b", {"classes": ["train"], "names": ["exp--smoke--b"]}))
+        G.add(self.led, G.new_deny({"classes": ["train"], "names": ["exp--smoke--b"]}))
         self.assertEqual(self.guard()(), "")                         # b's name says smoke: not train
 
     def test_r4_15_unreadable_grants_are_exit_6_before_and_during(self):
         """N7-damaged-grants-drop-denies: a grants.json that does not parse (no .prev) acted as 'no deny'."""
-        G.add(self.led, G.new_deny("never on fx-slurm", {"targets": ["fx-slurm"]}))
+        G.add(self.led, G.new_deny({"targets": ["fx-slurm"]}))
         (self.led.dir / "grants.json").write_text('{"version": 1, "records": [')
         (self.led.dir / "grants.json.prev").unlink(missing_ok=True)
         seen = self.home / "seen"
@@ -321,7 +321,7 @@ class Denies(ScratchHome):
     def test_a_new_deny_terms_run_watch_and_exits_3(self):
         def later():
             time.sleep(0.4)
-            G.add(self.led, G.new_deny("stop now", {"names": ["a"]}))
+            G.add(self.led, G.new_deny({"names": ["a"]}))
         t = threading.Thread(target=later)
         t.start()
         try:
@@ -334,11 +334,27 @@ class Denies(ScratchHome):
         self.assertIn("run-watch was stopped (TERM)", str(c.exception))
         self.assertIsNone(self.led.lease().data)
 
+    def test_s4_approve_is_a_flag_and_run_watch_gets_fixed_words(self):
+        A = Wt.APPROVED_WORDS
+        for argv, want in ((["t.tsv", "--approve"], ["t.tsv", "--approve", A]),
+                           (["t.tsv", "--approve", "the user's words"], ["t.tsv", "--approve", A]),
+                           (["--approve", "t.tsv"], ["--approve", A, "t.tsv"]),          # a table: not words
+                           (["t.tsv", "--approve=yes go"], ["t.tsv", "--approve", A]),
+                           (["t.tsv", "--approve", "--once"], ["t.tsv", "--approve", A, "--once"]),
+                           (["t.tsv", "--act"], ["t.tsv", "--act"])):
+            self.assertEqual(Wt.approve_argv(argv, self.proj), want, argv)
+            self.assertEqual(Wt.tables(Wt.approve_argv(argv, self.proj)), ["t.tsv"], argv)
+        seen = {}
+        with mock.patch.object(Wt, "run_watch", lambda led, argv, cwd, env, guard=None: [seen.update(argv=argv), 0][1]):
+            rc, text = run("watch", "-C", str(self.proj), "t.tsv", "--approve", "words the user said")
+        self.assertEqual(rc, OK, text)
+        self.assertEqual(seen["argv"], ["t.tsv", "--approve", A])        # the words never reach run-watch's table
+
     def test_approve_refuses_rows_a_deny_matches(self):
-        G.add(self.led, G.new_deny("never launch a", {"names": ["a"]}, ["launch"]))
+        G.add(self.led, G.new_deny({"names": ["a"]}, ["launch"]))
         rc, text = run("watch", "-C", str(self.proj), "t.tsv", "--approve", "ok")
         self.assertEqual(rc, REFUSED, text)
-        self.assertIn("never launch a", text)
+        self.assertIn("denied by d-", text)
         self.assertEqual((self.proj / "t.tsv").read_text(), self.TABLE)
 
     def test_g4_5_an_orphaned_run_watch_lock_is_a_conflict(self):
@@ -385,7 +401,7 @@ class Round7(ScratchHome):
         """bash `read` drops a NUL that Python kept: `fail\\0-stop` was fail-stop to run-watch (it cancelled job 1001)
         and no fail-stop to rsk (R6-7 then dropped the user's "do not cancel job 1001"); a row `a\\0` was `a` to
         run-watch and never matched a `--name a` deny. Now exit 2 in every mode, nothing run, no lease."""
-        G.add(self.led, G.new_deny("do not cancel job 1001, whatever happens to the group", {"jobs": ["1001"]},
+        G.add(self.led, G.new_deny({"jobs": ["1001"]},
                                    ["cancel"]))
         (self.proj / "t.tsv").write_bytes(b"#@ run-watch v1\n#@ allow launch errors=0 fail\x00-stop\n"
                                           b"a fx-slurm - -p gpu -g 1 -- python a.py\n")
@@ -393,7 +409,7 @@ class Round7(ScratchHome):
             self.guard()()
         self.assertEqual(c.exception.code, USAGE)
         self.assertEqual(str(c.exception), f"t.tsv: line 2 holds 0x00, {self.WORDS}")
-        G.add(self.led, G.new_deny("never launch a", {"names": ["a"]}, ["launch"]))
+        G.add(self.led, G.new_deny({"names": ["a"]}, ["launch"]))
         (self.proj / "t.tsv").write_bytes(b"#@ run-watch v1\n#@ allow launch\na\x00 fx-slurm - -p gpu -- python a.py\n")
         ran = []
         with mock.patch.object(Wt, "run_watch", lambda *a, **k: ran.append(a) or 0):

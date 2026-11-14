@@ -9,10 +9,10 @@
     rsk exec -T T -- <cmd> [args]   read-only allowlist (squeue sacct sinfo nvidia-smi ps df ls stat head/tail -c …)
     rsk grant add|deny|list|revoke|import|recount   what the user allowed / forbade for this project (the ledger)
     rsk adopt -T T (--job J | --log L) --as RUN     record an existing job of this project (identity checked)
-    rsk adopt -T T --not-submitted NONCE --approve "the user's words"     close an unknown submit
+    rsk adopt -T T --not-submitted NONCE --approve     close an unknown submit (the user's OK)
     rsk launch -T T [flags] -- CMD  plan on the target → a record that covers it, else the card + exit 4 (needs user)
-    rsk launch --plan ID [--plan ID]... --approve "the user's words"     submit approved plan(s) (a sweep: one approval)
-    rsk cancel RUN | --job J -T T [--approve "the user's words"]   identity checked, then scancel / kill (recorded)
+    rsk launch --plan ID [--plan ID]... --approve     submit the plan(s) the user approved (a sweep: one approval)
+    rsk cancel RUN | --job J -T T [--approve]   a live ledger run, or the user's OK; identity checked, then scancel / kill
     rsk watch TABLE... [run-watch flags]   bin/run-watch under the project's watch lease (one watcher per project)
     rsk sync|bootstrap|pull -T T [args] / rsk avail [args]   the harness's bin/run-* (cwd = project, TARGET set)
     rsk doctor                      offline checks: install, the remote-run skill, packs, targets, ledger grants naming an

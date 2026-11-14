@@ -3,6 +3,7 @@ for fixture repos (never the user's)."""
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 import tempfile
@@ -50,3 +51,17 @@ def make_repo(path: Path, files: dict[str, str]) -> Path:
     git(path, "add", "-A")
     git(path, "commit", "-q", "-m", "init")
     return path
+
+
+@contextlib.contextmanager
+def no_sleep(module):
+    """MODULE's own time.sleep as a mock (yielded), the real time module everywhere else: patching time.sleep itself
+    also caught subprocess's internal wait loop (its 0.001 … 0.05 s polls on a loaded machine), so a test asserting
+    how often rsk slept failed at random."""
+    import time as _time
+    from unittest import mock as _mock
+    fake = _mock.MagicMock(wraps=_time)
+    fake.sleep = _mock.Mock()
+    with _mock.patch.object(module, "time", fake):
+        yield fake.sleep
+

@@ -11,6 +11,7 @@ import unittest
 from unittest import mock
 
 import test_status as TS
+from helpers import no_sleep
 
 from remote_run import harness, observe, paths
 from remote_run import launch as X
@@ -126,7 +127,7 @@ class CheckAfterReason(TS.Base):
         a = self.led.record_attempt(name="exp--a01", target="fx-slurm", kind="slurm", nonce="n-a", submit="submitted",
                                     job="101")
         buf = io.StringIO()
-        with contextlib.redirect_stdout(buf), mock.patch.object(X.time, "sleep") as sl:
+        with contextlib.redirect_stdout(buf), no_sleep(X) as sl:
             code = X.check_after(self.led, paths.harness_src(), self.proj,
                                  [(*b, "fx-slurm", "n-b"), (*a, "fx-slurm", "n-a")], 5, 60.0, OK)
         text = buf.getvalue()

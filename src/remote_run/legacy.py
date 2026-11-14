@@ -4,7 +4,7 @@ Looks at CLAUDE.md / AGENTS.md (also .claude/CLAUDE.md) under each DIR (default 
 .claude, environments, caches, logs and checkpoints are skipped; symlinked dirs are not followed; a file reached
 twice, e.g. CLAUDE.md -> AGENTS.md, is read once) and prints one line per hit:
   - the replaced skills by name: hpc-run, ws-run (now the one skill remote-run);
-  - a raw `ssh … submit.sh` recipe, or a raw `run-launch` recipe (now rsk launch: plan → the user's words → submit).
+  - a raw `ssh … submit.sh` recipe, or a raw `run-launch` recipe (now rsk launch: plan → the user's OK → submit).
 The engine's own clone (src/remote_run + remote/submit.sh) is skipped: its docs describe the replacement. Nothing is
 written anywhere; exit 0 whatever it finds (the lines are the report).
 """

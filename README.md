@@ -38,15 +38,15 @@ guard rails built in, and gives the agent a short, per-site reference instead of
   a busy cluster is a warning that needs an explicit `-y`; site policies can refuse a submission outright.
 - **Your authorisation, checked first — asked only when it is missing.** Every submit, launch and cancel is checked
   against what you already allowed: a plan you approved, a sweep (one approval for the set), or a standing permission
-  ("smoke runs on mybox are fine", "auto-resume preemptions up to 3 times" — a resume only after an infrastructure end:
-  a preemption, a node failure, a reboot; never after a cancel, a failure or a timeout, unless your words hand the agent
-  re-runs too: "you decide, don't ask again" → `--relaunch-after any`) with the limits you set. The
-  agent asks only outside that — a charged partition, more resources, a wider scope, its own idea that a run should
-  stop. Your words are recorded verbatim (`rsk grant`), and a "never" of yours also stops `rsk watch --act` ("never
-  relaunch a" stops every launch of a in its scope: rsk cannot see every earlier attempt); "cancel job 123" must name
-  the job (its id, or the run's name; or answer the agent's question naming it), bound to that job, for an hour, once;
-  a cancel checks the job is this project's and yours; another user's is never touched. The record keeps you from being
-  asked twice; it is bookkeeping, not proof that you agreed, and it cannot make an agent comply (only `rsk` is bound).
+  ("smoke runs on mybox are fine" — a run it covers may also be re-run after a fix, never while an earlier copy may
+  still run; "auto-resume preemptions up to 3 times" — a resume only after an infrastructure end: a preemption, a node
+  failure, a reboot) with the limits you set. The agent asks only outside that — a charged partition, more resources, a
+  wider scope. rsk records what you allowed (`rsk grant`: scope and limits, not your words), and a "never" of yours
+  also stops `rsk watch --act` ("never relaunch a" stops every launch of a in its scope: rsk cannot see every earlier
+  attempt). The agent may stop the runs it launched for this project without asking; anything else it stops — "cancel
+  job 123" — only with your OK for that command; a cancel checks the job is this project's and yours; another user's is
+  never touched. The record keeps you from being asked twice; it is bookkeeping, not proof that you agreed, and it cannot
+  make an agent comply (only `rsk` is bound).
 - **Cheap, honest monitoring.** One deployed script, `status.sh`, returns a ~2 KB digest of a run: scheduler or PID
   state, restarts, exit footer, error/OOM/NaN hint counts, the wandb URL and the last lines — all from byte-bounded
   reads. The agent reviews often while a run is young or odd and backs off while it is healthy.
@@ -152,11 +152,11 @@ trainer that cannot resume from a checkpoint. Nothing runs until you say go.
    │                  + deploy the harness into <remote dir>/.<target>/ (Slurm) or .ws/ (workstation)
    │                  + stamp the commit it pushed; refuse a dir another checkout of the project owns
    ├─ run-bootstrap   uv sync into the target's venv (--job: on a compute node) — or verify the conda env exists
-   ├─ rsk launch      plan on the target (every check below, nothing submitted) → the card → covered by your
-   │                  recorded words? submit : wait for them (rsk launch --plan <id> --approve "<your words>")
+   ├─ rsk launch      plan on the target (every check below, nothing submitted) → the card → covered by a
+   │                  recorded permission? submit : wait for your OK (rsk launch --plan <id> --approve)
    ├─ submit          Slurm: submit.sh → site policy → partition limits → MaxTime → availability → sbatch
    │                  workstation: run-launch → nohup on the idlest free GPUs (never one another job uses unasked)
-   ├─ monitor         rsk status / rsk logs (the status.sh digest), byte-bounded; stopping a run is your call
+   ├─ monitor         rsk status / rsk logs (the status.sh digest), byte-bounded; stopping a run: the agent's own, or your call
    └─ run-pull        copy results back (the same transfer path as run-sync; never deletes local files)
 ```
 
@@ -222,8 +222,8 @@ These are part of the skill's instructions and are enforced by the harness where
 - Smoke tests run with `WANDB_MODE=disabled`; real runs checkpoint and resume.
 - Monitoring is detect-only and byte-bounded; findings are reported, decisions stay with you. The exceptions are what
   you authorised: `run-watch --act` resubmits preempted jobs (or first-submits rows) of a run table you approved,
-  within its budget (`rsk watch --act` first checks every row against your "never"s, for anything it could do), and
-  `rsk cancel` / a relaunch that a permission of yours covers.
+  within its budget (`rsk watch --act` first checks every row against your "never"s, for anything it could do), a
+  relaunch that a permission of yours covers, and `rsk cancel` of the runs the agent launched for this project.
 
 ## Repository layout
 

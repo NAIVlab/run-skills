@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helpers import ScratchHome
+from helpers import ScratchHome, no_sleep
 
 from remote_run import cli, harness, observe
 from remote_run import grants as G
@@ -244,37 +244,71 @@ class Flow(Fixture):
         att = self.led.read_run("exp--train--a--scratch--s0").data["attempts"]["a01"]
         self.assertEqual((att["submissions"][0]["submit"], att["submissions"][0]["job"]), ("submitted", "101"))
         ap = next(r for r in self.led.state().grants if r["kind"] == "approval")
-        self.assertEqual((ap["created_via"], ap["quote"], len(ap["used"])), ("plan-approve", "go ahead", 1))
+        self.assertEqual((ap["created_via"], len(ap["used"])), ("plan-approve", 1))
+        self.assertNotIn("quote", ap)                                   # S4: the words are never recorded
+        self.assertNotIn("go ahead", (self.led.dir / "audit.jsonl").read_text())
         self.assertEqual(att["request"]["grant"], ap["id"])
         self.assertEqual(self.cli("launch", "--plan", pid, "--approve", "again")[0], CONFLICT)
 
+    def test_s4_approve_is_a_bare_flag_before_or_after_the_plans(self):
+        for n, order in enumerate((("--plan", "{p}", "--approve"), ("--approve", "--plan", "{p}"),
+                                   ("--plan", "{p}", "--approve", "words, accepted and dropped"))):
+            name = f"exp--train--f{n}--scratch--s0--a01"
+            self.answers = [self.plan_reply(name=name)]
+            rc, text = self.cli("launch", "-T", "fx", "-n", name, "--", "c")
+            self.assertEqual(rc, NEEDS_USER, text)
+            pid = self.plan_id(text)
+            self.answers = [self.submitted(str(201 + n))]
+            rc, text = self.cli("launch", *(w.format(p=pid) for w in order))
+            self.assertEqual(rc, OK, (order, text))
+        self.assertNotIn("accepted and dropped", (self.led.dir / "audit.jsonl").read_text())
+        self.assertTrue(all("quote" not in r for r in self.led.state().grants))
+
     def test_a_covering_grant_submits_at_once(self):
-        G.add(self.led, G.new_grant("train runs are fine", {"targets": ["fx"]}, ["launch"], max_live=2,
+        G.add(self.led, G.new_grant({"targets": ["fx"]}, ["launch"], max_live=2,
                                     max_launches=5, expires=None))
         self.answers = [self.plan_reply(), self.submitted()]
         rc, text = self.cli("launch", "-T", "fx", "-n", "exp--train--a--scratch--s0--a01", "--", "python", "t.py")
         self.assertEqual(rc, OK, text)
         self.assertIn("covered by g-", text)
 
-    def test_a_user_asked_policy_flag_is_never_a_grants_call(self):
-        G.add(self.led, G.new_grant("train runs are fine", {"targets": ["fx"]}, ["launch"], max_live=None,
+    def test_a_user_asked_policy_flag_is_grant_covered(self):
+        G.add(self.led, G.new_grant({"targets": ["fx"]}, ["launch"], max_live=None,
                                     max_launches=None, expires=None))
-        self.answers = [self.plan_reply(flags="--gate-user-asked")]       # submit.sh binds T_FLAGS as flags=
+        self.answers = [self.plan_reply(flags="--gate-user-asked"), self.submitted()]   # submit.sh binds T_FLAGS as flags=
         rc, text = self.cli("launch", "-T", "fx", "--gate-user-asked", "--", "c")
-        self.assertEqual(rc, NEEDS_USER, text)
-        self.assertIn("policy flag(s) --gate-user-asked", text)
-        self.assertIn("  policy     --gate-user-asked  (bound", text)
-        self.answers = [self.submitted()]
-        rc, text = self.cli("launch", "--plan", self.plan_id(text), "--approve", "yes, I asked for the gate")
-        self.assertEqual(rc, OK, text)
+        self.assertEqual(rc, OK, text)                                      # S3: a policy flag is grant-coverable
+        self.assertIn("covered by g-", text)
         self.assertIn("--gate-user-asked", self.calls[-1])
 
-    def test_a_deny_refuses_with_its_quote(self):
-        G.add(self.led, G.new_deny("never on fx", {"targets": ["fx"]}))
+    def test_a_deny_refuses(self):
+        d = G.add(self.led, G.new_deny({"targets": ["fx"]}))
         self.answers = [self.plan_reply()]
         rc, text = self.cli("launch", "-T", "fx", "--", "c")
         self.assertEqual(rc, REFUSED, text)
-        self.assertIn("never on fx", text)
+        self.assertIn(f"denied by {d['id']} — the user forbade it", text)
+
+    def test_s3_a_grant_covers_policy_flags_conf_extra_and_same_name_ok(self):
+        G.add(self.led, G.new_grant({"targets": ["fx"]}, ["launch"], max_live=None, max_launches=None, expires=None))
+        self.answers = [self.plan_reply(flags="--whole-node", extra="--nodes=2 --exclusive"), self.submitted("101")]
+        rc, text = self.cli("launch", "-T", "fx", "--whole-node", "--", "c")
+        self.assertEqual(rc, OK, text)
+        self.assertIn("  NOTE       policy flags: a covering grant covers them too", text)
+        self.assertIn("  NOTE       SBATCH_EXTRA word(s) --nodes=2 --exclusive", text)
+        self.assertNotIn("NO GRANT", text)
+        self.assertIn("--whole-node", self.calls[-1])
+        self.answers = [self.plan_reply(name="exp--train--b--scratch--s0--a01"), self.submitted("102")]
+        rc, text = self.cli("launch", "-T", "fx", "-n", "exp--train--b--scratch--s0--a01", "--same-name-ok", "--", "c")
+        self.assertEqual(rc, OK, text)
+        self.assertIn("  NOTE       --same-name-ok: a covering grant covers it too", text)
+        capped = G.new_grant({"targets": ["fx"], "max_time_s": 3600}, ["launch"], max_live=None, max_launches=None,
+                             expires=None)
+        self.led.write_grants({"version": 1, "records": [capped], "budgets_unknown": None})
+        self.answers = [self.plan_reply(name="exp--train--c--scratch--s0--a01", time="30",
+                                        extra="--time=7-00:00:00")]
+        rc, text = self.cli("launch", "-T", "fx", "-n", "exp--train--c--scratch--s0--a01", "--", "c")
+        self.assertEqual(rc, NEEDS_USER, text)                         # KEEP: every time limit vs max_time_s
+        self.assertIn("time > 1:00:00", text)
 
     def test_a_chain_is_one_approval_n_submits_in_one_attempt(self):
         self.answers = [self.plan_reply(chain="1")]
@@ -292,7 +326,7 @@ class Flow(Fixture):
         self.assertEqual((ap["actions"], ap["limits"]["max_launches"], len(ap["used"])), (["chain"], 3, 3))
 
     def test_a_grant_without_room_for_the_whole_chain_does_not_cover_it(self):
-        G.add(self.led, G.new_grant("chains ok", {"targets": ["fx"]}, ["chain"], max_live=None, max_launches=2,
+        G.add(self.led, G.new_grant({"targets": ["fx"]}, ["chain"], max_live=None, max_launches=2,
                                     expires=None))
         self.answers = [self.plan_reply(chain="1")]
         rc, text = self.cli("launch", "-T", "fx", "--chain", "3", "--", "c")
@@ -371,26 +405,23 @@ class Flow(Fixture):
         self.assertEqual(rc, CONFLICT, text)
         self.assertIn("needs: sync (the deploy predates rsk launch: rsk sync -T fx)", text)
 
-    def test_relaunch_is_the_next_attempt_and_needs_its_own_cover(self):
-        G.add(self.led, G.new_grant("go", {"targets": ["fx"]}, ["launch"], max_live=None, max_launches=None,
+    def test_relaunch_is_the_next_attempt_and_a_launch_grant_covers_it(self):
+        G.add(self.led, G.new_grant({"targets": ["fx"]}, ["launch"], max_live=None, max_launches=None,
                                     expires=None))
         self.answers = [self.plan_reply(), self.submitted("101")]
         self.cli("launch", "-T", "fx", "--", "python", "t.py")
-        self.led.observe("exp--train--a--scratch--s0", "a01", "101", "PREEMPTED", "sacct",
-                         end={"state": "PREEMPTED", "rc": "0:0", "evidence": "sacct"})
-        self.answers = [self.plan_reply(name="exp--train--a--scratch--s0--a02")]
+        self.led.observe("exp--train--a--scratch--s0", "a01", "101", "FAILED", "sacct",
+                         end={"state": "FAILED", "rc": "1:0", "evidence": "sacct"})
+        self.answers = [self.plan_reply(name="exp--train--a--scratch--s0--a02", prior="1"), self.submitted("102")]
         rc, text = self.cli("launch", "--relaunch", "exp--train--a--scratch--s0")
-        self.assertEqual(rc, NEEDS_USER, text)
-        self.assertIn("-n", self.calls[-1])
-        self.assertEqual(self.calls[-1][self.calls[-1].index("-n") + 1], "exp--train--a--scratch--s0--a02")
-        self.assertIn("action relaunch not in launch", text)
-        G.add(self.led, G.new_grant("retry failures as they were", {"targets": ["fx"]}, ["relaunch"], max_live=None,
-                                    max_launches=3, expires=None))
-        self.answers = [self.plan_reply(name="exp--train--a--scratch--s0--a02"), self.submitted("102")]
-        rc, text = self.cli("launch", "--relaunch", "exp--train--a--scratch--s0")
-        self.assertEqual(rc, OK, text)
+        self.assertEqual(rc, OK, text)                       # S1: judged as a launch, whatever the end
+        self.assertIn("-n", self.calls[-2])
+        self.assertEqual(self.calls[-2][self.calls[-2].index("-n") + 1], "exp--train--a--scratch--s0--a02")
         self.assertIn("a02 job 102", text)
-
+        self.answers = [self.plan_reply(name="exp--train--a--scratch--s0--a03", prior="2")]
+        rc, text = self.cli("launch", "--relaunch", "exp--train--a--scratch--s0")
+        self.assertEqual(rc, CONFLICT, text)                 # a02 is live: never a second copy beside it
+        self.assertIn("is live on fx in the ledger", text)
 
 class ReviewFixes(Fixture):
     """The P3 review findings, each pinned (M3 H3 H1 M5 M6 L3 L5 H2 and an older api=3 deploy)."""
@@ -429,7 +460,7 @@ class ReviewFixes(Fixture):
         self.assertEqual(self.calls, [])
 
     def test_h1_a_free_landing_never_sends_gpu_busy_ok_and_a_grant_never_covers_a_busy_one(self):
-        G.add(self.led, G.new_grant("small runs on ws", {"targets": ["ws"]}, ["launch"], max_live=None,
+        G.add(self.led, G.new_grant({"targets": ["ws"]}, ["launch"], max_live=None,
                                     max_launches=None, expires=None))
         self.answers = [self.plan_reply(kind="nohup", target="ws", name=BOX, gpus_req="ids=1", info_gpus="1",
                                         busy="2:other:7", busy_ok=""),
@@ -481,8 +512,8 @@ class ReviewFixes(Fixture):
         self.assertEqual(rc, NEEDS_USER, text)                        # a new plan: a new card for the user
         self.assertIn("not one of the approved plans", text)
 
-    def test_m6_submit_unknown_blocks_even_same_name_ok_and_same_name_ok_is_never_a_grants_call(self):
-        G.add(self.led, G.new_grant("go", {"targets": ["fx"]}, ["launch", "relaunch"], max_live=None,
+    def test_m6_submit_unknown_blocks_even_same_name_ok_and_a_grant_covers_same_name_ok(self):
+        G.add(self.led, G.new_grant({"targets": ["fx"]}, ["launch", "relaunch"], max_live=None,
                                     max_launches=None, expires=None))
         self.answers = [self.plan_reply(), X.Reply(255, err="Connection reset")]
         self.assertEqual(self.cli("launch", "-T", "fx", "--", "c")[0], UNKNOWN)
@@ -494,12 +525,12 @@ class ReviewFixes(Fixture):
             self.assertIn("SUBMIT_UNKNOWN", text)
         self.assertEqual(len(self.calls), n)                           # before any ssh
         self.answers = [self.plan_reply(name="exp--train--z--scratch--s0--a01")]
+        self.answers.append(self.submitted("102"))
         rc, text = self.cli("launch", "-T", "fx", "-n", "exp--train--z--scratch--s0--a01", "--same-name-ok", "--", "c")
-        self.assertEqual(rc, NEEDS_USER, text)
-        self.assertIn("--same-name-ok (a second live copy sharing logs/ckpts) is never a standing grant's call", text)
+        self.assertEqual(rc, OK, text)                                 # S3: a grant covers --same-name-ok
 
     def test_l3_a_launch_line_the_payload_printed_is_never_proof(self):
-        G.add(self.led, G.new_grant("go", {"targets": ["ws"]}, ["launch"], max_live=None, max_launches=None,
+        G.add(self.led, G.new_grant({"targets": ["ws"]}, ["launch"], max_live=None, max_launches=None,
                                     expires=None))
         spoof = ("[ws] launching on GPU(s) [1] -> /h/logs/r-20261104-120000.log\n          RUN: x\n"
                  "[ws] started PID 1 on GPU(s) 1 ; log /h/logs/z-20261104-120000.log ; pid file /h/z.pid\n")
@@ -521,7 +552,7 @@ class ReviewFixes(Fixture):
         self.assertIsNone(X.started("  [ws] started PID 1 on GPU(s) 0 ; log logs/a.log ; pid file p", "ws"))
 
     def test_l5_a_chain_under_max_live_1_sends_every_segment(self):
-        G.add(self.led, G.new_grant("chain the long run, one at a time", {"targets": ["fx"]}, ["chain"], max_live=1,
+        G.add(self.led, G.new_grant({"targets": ["fx"]}, ["chain"], max_live=1,
                                     max_launches=10, expires=None))
         self.answers = [self.plan_reply(chain="1"), self.submitted("201"), self.submitted("202"), self.submitted("203")]
         rc, text = self.cli("launch", "-T", "fx", "--chain", "3", "--", "c")
@@ -533,7 +564,7 @@ class ReviewFixes(Fixture):
         rc, text = self.cli("launch", "-T", "fx", "--", "c")
         self.assertEqual(rc, NEEDS_USER, text)
         self.assertIn("  TIME       7-00:00:00 — an SBATCH_EXTRA / policy --time comes after the harness's", text)
-        self.assertIn("  NO GRANT   SBATCH_EXTRA word(s) --time=7-00:00:00 --nodes=8 — outside what a standing grant", text)
+        self.assertIn("  NOTE       SBATCH_EXTRA word(s) --time=7-00:00:00 --nodes=8 — beyond the usual", text)
 
     def test_an_api3_deploy_without_the_new_bound_keys_needs_a_sync(self):
         self.answers = [X.Reply(0, block(drop=("env_hook", "venv_dir", "uv_sync_args")), "", api="api=3")]
@@ -545,7 +576,7 @@ class ReviewFixes(Fixture):
     def test_r4_5_a_box_whose_launch_sh_lets_run_pick_the_gpus_needs_a_sync(self):
         """R4-5: launch.sh refuses a RUN that sets or clears a GPU variable and says so (info_run_gpu=checked); a
         deploy older than that would let RUN's leading CUDA_VISIBLE_DEVICES=… land beside the GPUs the plan shows."""
-        G.add(self.led, G.new_grant("anything on ws", {"targets": ["ws"]}, ["launch"], max_live=None,
+        G.add(self.led, G.new_grant({"targets": ["ws"]}, ["launch"], max_live=None,
                                     max_launches=None, expires=None))
         self.answers = [X.Reply(0, block(kind="nohup", target="ws", name="r", drop=("info_run_gpu",)), "")]
         rc, text = self.cli("launch", "-T", "ws", "-N", "r", "--", "c")
@@ -560,7 +591,7 @@ class Round3(Fixture):
     G-launch-line-regex-space, H1-msg) and the round-3 decisions D1 D3 D5 D9 D10."""
 
     def grant(self, quote="launches are fine", actions=("launch",), **scope) -> dict:
-        return G.add(self.led, G.new_grant(quote, {"targets": ["fx", "ws"], **scope}, list(actions), max_live=None,
+        return G.add(self.led, G.new_grant({"targets": ["fx", "ws"], **scope}, list(actions), max_live=None,
                                            max_launches=None, expires=None))
 
     def test_g2_9_no_word_before_the_double_dash_may_carry_rs(self):
@@ -580,13 +611,13 @@ class Round3(Fixture):
         self.assertEqual(self.cli("launch", "-T", "fx", "-n", "exp--smoke--x--none--s0", "--", "c")[0], OK)
         self.led.observe("exp--smoke--x--none--s0", "a01", "101", "FAILED", "sacct", end={"state": "FAILED", "rc": "1:0",
                                                                                 "evidence": "sacct"})
-        G.add(self.led, G.new_deny("do not relaunch exp--smoke--x, it is broken", {"names": ["exp--smoke--x--none--s0"]},
+        G.add(self.led, G.new_deny({"names": ["exp--smoke--x--none--s0"]},
                                    ["relaunch"]))
         self.answers = [self.plan_reply(name="exp--smoke--x--none--s0", wandb_mode="disabled")]
         rc, text = self.cli("launch", "-T", "fx", "-n", "exp--smoke--x--none--s0", "--", "c")
         self.assertEqual(rc, REFUSED, text)
         self.assertIn("— relaunch on fx", text)
-        self.assertIn("do not relaunch exp--smoke--x", text)
+        self.assertIn("denied by d-", text)
         self.assertEqual((len(self.calls), self.calls[-1][2]), (3, "--rs-mode"))   # planned, never submitted
 
     def test_d5_a_not_submitted_attempt_is_no_earlier_run(self):
@@ -612,7 +643,7 @@ class Round3(Fixture):
             self.assertEqual(rc, USAGE, (argv, text))
             self.assertIn("run bigrun is class train (recorded at its first attempt)", text)
         self.assertEqual(len(self.calls), n)                     # before any ssh
-        G.add(self.led, G.new_deny("no more train runs, they burn the budget", {"classes": ["train"]}))
+        G.add(self.led, G.new_deny({"classes": ["train"]}))
         self.answers = [self.plan_reply(name="bigrun--a02")]
         rc, text = self.cli("launch", "--relaunch", "bigrun")
         self.assertEqual(rc, REFUSED, text)
@@ -620,11 +651,11 @@ class Round3(Fixture):
 
     def test_d5_g2_6_an_sbatch_extra_singleton_is_a_chain(self):
         self.grant()
-        G.add(self.led, G.new_deny("never chain jobs", {}, ["chain"]))
+        G.add(self.led, G.new_deny({}, ["chain"]))
         self.answers = [self.plan_reply(chain="1", extra="--dependency=singleton")]
         rc, text = self.cli("launch", "-T", "fx", "--", "c")
         self.assertEqual(rc, REFUSED, text)
-        self.assertIn("never chain jobs", text)
+        self.assertIn("denied by d-", text)
         self.led.write_grants({"version": 1, "records": [r for r in self.led.state().grants if r["kind"] != "deny"],
                                "budgets_unknown": None})
         self.answers = [self.plan_reply(chain="1", extra="--dependency=singleton")]
@@ -777,7 +808,7 @@ class Round4(Fixture):
     """The round-4 decisions on launch.py / ledger.py, each pinned (R4-2 R4-3 R4-6 R4-8 R4-15)."""
 
     def grant(self, quote="launches are fine", actions=("launch",), **scope) -> dict:
-        return G.add(self.led, G.new_grant(quote, {"targets": ["fx", "ws"], **scope}, list(actions), max_live=None,
+        return G.add(self.led, G.new_grant({"targets": ["fx", "ws"], **scope}, list(actions), max_live=None,
                                            max_launches=None, expires=None))
 
     def test_r4_2_a_plan_named_after_an_older_attempt_is_a_new_attempt(self):
@@ -824,13 +855,13 @@ class Round4(Fixture):
         rc, text = self.cli("launch", "--relaunch", "bigrun")       # no label: as before
         self.assertEqual(rc, OK, text)
 
-    def test_r4_6_the_card_shows_the_bound_policy_flags_and_a_relaunch_replays_them(self):
+    def test_r4_6_s3_the_card_shows_the_bound_policy_flags_and_a_relaunch_replays_them(self):
         self.grant(max_gpus=1)
-        self.answers = [self.plan_reply(flags="--whole-node")]
+        self.answers = [self.plan_reply(flags="--whole-node"), self.submitted("101")]
         rc, text = self.cli("launch", "-T", "fx", "--whole-node", "--", "c")
-        self.assertEqual(rc, NEEDS_USER, text)                       # NEW-policy-flag: a 1-GPU grant never covers it
+        self.assertEqual(rc, OK, text)                               # S3: the grant covers the bound policy flags
         self.assertIn("  policy     --whole-node  (bound", text)
-        self.assertIn("policy flag(s) --whole-node", text)
+        self.assertIn("NOTE       policy flags", text)
         b = G.parse_plan(block(gres="gpu:1", flags="--whole-node --x-user-asked"))
         flags, _pay, _ = X._from_bound("slurm", G.bound(b), "r--a02")
         self.assertEqual(flags[-4:], ["-n", "r--a02", "--whole-node", "--x-user-asked"])
@@ -860,7 +891,7 @@ class Round4(Fixture):
     def test_r4_8_nohup_settle_reads_the_journal_before_it_concludes(self):
         """NEW-launch-killed-after-go: launch.sh killed (137) after its gate said go was taken for 'never started' —
         NOT_SUBMITTED, the use given back while the run ran. Now only the journal decides."""
-        g = G.add(self.led, G.new_grant("1 on ws", {"targets": ["ws"]}, ["launch"], max_live=1, max_launches=1,
+        g = G.add(self.led, G.new_grant({"targets": ["ws"]}, ["launch"], max_live=1, max_launches=1,
                                         expires=None))
         killed = X.Reply(137, self.REF + "[ws] launching on GPU(s) [2] -> /h/logs/k1-20261105-000000.log\n", "")
         go = self.journal(receipt={"pid": "4242", "pgid": "4242", "start": "77", "boot_id": "b", "gpu_ids": "2",
@@ -900,7 +931,7 @@ class Round4(Fixture):
     def test_r4_15_unreadable_grants_refuse_launch_with_exit_6(self):
         self.answers = [self.plan_reply()]
         pid = self.plan_id(self.cli("launch", "-T", "fx", "--", "c")[1])
-        G.add(self.led, G.new_deny("never on fx", {"targets": ["fx"]}))
+        G.add(self.led, G.new_deny({"targets": ["fx"]}))
         (self.led.dir / "grants.json").write_text('{"version": 1, "records": [')
         (self.led.dir / "grants.json.prev").unlink(missing_ok=True)
         rc, text = self.cli("launch", "--plan", pid, "--approve", "go")
@@ -920,25 +951,25 @@ class Round5(Fixture):
     and so does a block that cannot say (no readable info_prior: fail closed)."""
 
     def test_r5_4_a_run_the_target_knows_is_a_relaunch_though_the_ledger_never_saw_it(self):
-        G.add(self.led, G.new_grant("launch the a runs on fx", {"targets": ["fx"], "names": ["a*"]}, ["launch"],
+        G.add(self.led, G.new_grant({"targets": ["fx"], "names": ["a*"]}, ["launch"],
                                     max_live=None, max_launches=None, expires=None))
         self.answers = [self.plan_reply(name="a", prior="1")]
         rc, text = self.cli("launch", "-T", "fx", "-n", "a", "--", "python", "train.py")
         self.assertEqual(rc, NEEDS_USER, text)                       # was: covered, submitted (exit 0)
         self.assertIn(" — relaunch on fx (slurm)", text)
         self.assertIn("  prior      1 earlier attempt(s) of a on fx", text)
-        self.assertIn("action relaunch not in launch", text)
+        self.assertIn("the target's journal holds 1 earlier submission(s) of a, the ledger 0 there", text)   # S1
         self.assertEqual(self.led.runs(), {})                         # the ledger has no attempt of it
-        G.add(self.led, G.new_deny("do not relaunch a, it is broken", {"names": ["a"]}, ["relaunch"]))
+        G.add(self.led, G.new_deny({"names": ["a"]}, ["relaunch"]))
         self.answers = [self.plan_reply(name="a", prior="1")]
         rc, text = self.cli("launch", "-T", "fx", "-n", "a", "--", "python", "train.py")
         self.assertEqual(rc, REFUSED, text)
-        self.assertIn("do not relaunch a, it is broken", text)
+        self.assertIn("denied by d-", text)
         self.assertEqual(len(self.calls), 2)                          # plans only: nothing submitted
         self.assertTrue(all("--rs-mode" in c for c in self.calls))
 
     def test_r5_4_a_relaunch_grant_never_resumes_what_only_the_journal_shows(self):
-        G.add(self.led, G.new_grant("auto-resume preempted runs on fx", {"targets": ["fx"]}, ["launch", "relaunch"],
+        G.add(self.led, G.new_grant({"targets": ["fx"]}, ["relaunch"],
                                     max_live=None, max_launches=None, expires=None))
         self.answers = [self.plan_reply(name="a", prior="2")]
         rc, text = self.cli("launch", "-T", "fx", "-n", "a", "--", "python", "train.py")
@@ -947,7 +978,7 @@ class Round5(Fixture):
         self.assertIn("no previous attempt in the ledger to repeat", text)
 
     def test_r5_4_a_block_that_cannot_say_is_a_relaunch(self):
-        G.add(self.led, G.new_grant("launch on fx", {"targets": ["fx"]}, ["launch"], max_live=None, max_launches=None,
+        G.add(self.led, G.new_grant({"targets": ["fx"]}, ["launch"], max_live=None, max_launches=None,
                                     expires=None))
         for kw in ({"drop": ("info_prior",)}, {"prior": "x"}, {"prior": "-1"}, {"prior": "''"}, {"prior": "1e3"}):
             self.answers = [self.plan_reply(name="exp--train--b--scratch--s0", **kw)]
@@ -1036,7 +1067,7 @@ class Round6(Fixture):
         --gpus all …` or accelerate's config, and lets an `x; env -i …` RUN through: a standing launch grant would cover
         that card. Without info_launchers the plan is `needs: sync` (nothing launched), and a plan stored without it is
         refused at --plan."""
-        G.add(self.led, G.new_grant("anything on ws", {"targets": ["ws"]}, ["launch"], max_live=None,
+        G.add(self.led, G.new_grant({"targets": ["ws"]}, ["launch"], max_live=None,
                                     max_launches=None, expires=None))
         self.answers = [X.Reply(0, block(kind="nohup", target="ws", name="r", drop=("info_launchers",)), "")]
         rc, text = self.cli("launch", "-T", "ws", "-N", "r", "--", "docker", "run", "--gpus", "all", "img")
@@ -1085,7 +1116,7 @@ class Round7(Fixture):
         self.assertEqual(X._cfgs(""), "")
 
     def test_r7_5_a_block_without_launch_cfg_needs_a_sync(self):
-        G.add(self.led, G.new_grant("anything on ws", {"targets": ["ws"]}, ["launch"], max_live=None,
+        G.add(self.led, G.new_grant({"targets": ["ws"]}, ["launch"], max_live=None,
                                     max_launches=None, expires=None))
         self.answers = [X.Reply(0, block(kind="nohup", target="ws", name="r", drop=("launch_cfg",)), "")]
         rc, text = self.cli("launch", "-T", "ws", "-N", "r", "--", "accelerate", "launch", "t.py")
@@ -1106,9 +1137,8 @@ class Round7(Fixture):
         recorded: the same config relaunches under the grant, an edited one is a new configuration (the user
         decides)."""
         self.assertLessEqual(set(G.SLURM_BOUND) | set(G.NOHUP_BOUND), L.BOUND_KEYS)     # every bound key is recorded
-        G.add(self.led, G.new_grant("run and resume accelerate jobs on ws", {"targets": ["ws"],
-                                                                            "allow_warnings": "any"},
-                                    ["launch", "relaunch"], max_live=None, max_launches=None, expires=None))
+        g = G.add(self.led, G.new_grant({"targets": ["ws"], "allow_warnings": "any"},
+                                        ["launch"], max_live=None, max_launches=None, expires=None))
         cfg = f"ddp.yaml:{self.H1}"
         started = lambda nonce, words: X.Reply(0, "[ws] started PID 4242 on GPU(s) 1 ; log /h/projects/proj/logs/"   # noqa: E731
                                                   "ad-20261104-120000.log ; pid file /h/x.pid\n", "")
@@ -1121,6 +1151,9 @@ class Round7(Fixture):
         self.assertEqual(a01["request"]["bound"].get("launch_cfg"), cfg)
         self.led.observe("box--train--ad--scratch--s0", "a01", "logs/ad-20261104-120000.log", "REBOOT", "boot_id",
                          end={"state": "REBOOT", "rc": "", "evidence": "boot_id"})
+        G.revoke(self.led, g["id"])                                # a relaunch-only grant compares the configuration
+        G.add(self.led, G.new_grant({"targets": ["ws"], "allow_warnings": "any"}, ["relaunch"], max_live=None,
+                                    max_launches=None, expires=None))
         self.answers = [self.plan_reply(kind="nohup", target="ws", name="box--train--ad--scratch--s0--a02", launch_cfg=f"ddp.yaml:{self.H2}")]
         rc, text = self.cli("launch", "--relaunch", "box--train--ad--scratch--s0")
         self.assertEqual(rc, NEEDS_USER, text)                     # the config changed since a01: the user decides
@@ -1137,7 +1170,7 @@ class Nohup(Fixture):
                                                f"r-20261104-120000.log ; pid file /h/x.pid\n", "")
 
     def test_a_busy_gpu_is_never_a_grants_call(self):
-        G.add(self.led, G.new_grant("anything on ws", {"targets": ["ws"], "allow_warnings": True}, ["launch"],
+        G.add(self.led, G.new_grant({"targets": ["ws"], "allow_warnings": True}, ["launch"],
                                     max_live=None, max_launches=None, expires=None))
         self.answers = [self.plan_reply(kind="nohup", target="ws", name=BOX, gpus_req="ids=1", info_gpus="1",
                                         busy="1:other:99", busy_ok="1", warnings=1)]
@@ -1156,7 +1189,7 @@ class Nohup(Fixture):
         (and `docker run --gpus all`, `ssh otherbox …`) without the user. launch.sh now counts those WARNINGs apart
         (warnings_gpu=N): the card says NO GRANT, the plan needs the user (exit 4); their approval of the card launches
         it. A block without warnings_gpu (an older launch.sh) is unknown: uncovered too, and the card says why."""
-        G.add(self.led, G.new_grant("run the sweep, any warnings ok", {"targets": ["ws"], "max_gpus": 1,
+        G.add(self.led, G.new_grant({"targets": ["ws"], "max_gpus": 1,
                                                                        "allow_warnings": "any"}, ["launch"],
                                     max_live=4, max_launches=8, expires="2099-12-31"))
         self.answers = [self.plan_reply(kind="nohup", target="ws", name="box--train--d3--scratch--s0", warnings=1, warnings_avail=0,
@@ -1204,7 +1237,8 @@ def seen(place, state: str, job: str = "101", rc: str = "") -> observe.Observati
 
 
 class Followups(Fixture):
-    """2026-11-06: the ledger refreshed before a launch (#4), relaunch_after any (#5), recycled quotes, --check-after."""
+    """2026-11-06: the ledger refreshed before a launch (#4), a relaunch judged as a launch (#5; S1: every launch
+    grant), --check-after."""
 
     RUN = "exp--train--a--scratch--s0"
 
@@ -1244,28 +1278,29 @@ class Followups(Fixture):
         self.assertEqual(rc, CONFLICT, text)
         self.assertIn("is live on fx in the ledger: a01 (RUNNING)", text)
 
-    def test_relaunch_after_any_covers_a_fixed_relaunch_and_infra_does_not(self):
+    def test_s1_a_launch_grant_covers_a_fixed_relaunch_after_a_failed_end(self):
         self.submit_a01()
-        G.add(self.led, G.new_grant("decide yourself, don't ask again", {"targets": ["fx"]}, ["launch", "relaunch"],
-                                    max_live=None, max_launches=None, expires=None))
+        G.add(self.led, G.new_grant({"targets": ["fx"]}, ["launch"], max_live=None, max_launches=3, expires=None))
         with self.reads(("FAILED", "101", "2:0")):
-            self.answers = [self.plan_reply(name=f"{self.RUN}--a02", prior="1", payload="python t.py --fixed")]
+            self.answers = [self.plan_reply(name=f"{self.RUN}--a02", prior="1", payload="python t.py --fixed"),
+                            self.submitted("102")]
             rc, text = self.cli("launch", "-T", "fx", "-n", f"{self.RUN}--a02", "--", "python", "t.py", "--fixed")
-        self.assertEqual(rc, NEEDS_USER, text)               # default infra: a FAILED end is the user's call
-        self.assertIn("a relaunch grant resumes only an infrastructure end", text)
-        G.add(self.led, G.new_grant("fix the code and just run it, don't ask again", {"targets": ["fx"],
-                                    "relaunch_after": "any"}, ["launch", "relaunch"], max_live=None, max_launches=3,
-                                    expires=None))
-        self.answers = [self.plan_reply(name=f"{self.RUN}--a02", prior="1", payload="python t.py --fixed"),
-                        self.submitted("102")]
-        rc, text = self.cli("launch", "-T", "fx", "-n", f"{self.RUN}--a02", "--", "python", "t.py", "--fixed")
         self.assertEqual(rc, OK, text)                       # another command (the fix), after a FAILED end
         self.assertIn("a relaunch after any end too", text)
         att = self.led.read_run(self.RUN).data["attempts"]["a02"]
         self.assertEqual((att["request"]["action"], att["submissions"][0]["job"]), ("relaunch", "102"))
 
+    def test_s1_a_relaunch_only_grant_still_resumes_only_an_infrastructure_end(self):
+        self.submit_a01()
+        G.add(self.led, G.new_grant({"targets": ["fx"]}, ["relaunch"], max_live=None, max_launches=None, expires=None))
+        with self.reads(("FAILED", "101", "2:0")):
+            self.answers = [self.plan_reply(name=f"{self.RUN}--a02", prior="1")]
+            rc, text = self.cli("launch", "-T", "fx", "-n", f"{self.RUN}--a02", "--", "python", "t.py")
+        self.assertEqual(rc, NEEDS_USER, text)
+        self.assertIn("a relaunch grant resumes only an infrastructure end", text)
+
     def test_relaunch_after_any_never_beside_a_live_attempt(self):
-        rec = G.new_grant("decide yourself", {"relaunch_after": "any"}, ["launch", "relaunch"], max_live=None,
+        rec = G.new_grant({"relaunch_after": "any"}, ["launch", "relaunch"], max_live=None,
                           max_launches=None, expires=None)
         live = {"name": f"{self.RUN}--a01", "target": "other", "kind": "slurm", "created_at": L.now(),
                 "request": {"plan": "p-old", "bound": {}}, "observed": None, "result": None,
@@ -1278,7 +1313,7 @@ class Followups(Fixture):
         self.assertIn(f"earlier attempt(s) of {self.RUN} may still be live: a01 (SUBMITTED, other)", " ".join(d.reasons))
 
     def any_state(self, *atts, prior="1", age=None, **kw):
-        rec = G.new_grant("decide yourself", {"relaunch_after": "any"}, ["launch", "relaunch"], max_live=None,
+        rec = G.new_grant({"relaunch_after": "any"}, ["launch", "relaunch"], max_live=None,
                           max_launches=None, expires=None)
         st = L.LedgerState(grants=[rec], runs={self.RUN: {"attempts": dict(atts)}})
         plan = X.check_plan({"block": G.parse_plan(block(name=f"{self.RUN}--a09", prior=prior, **kw)), "run": self.RUN,
@@ -1331,7 +1366,7 @@ class Followups(Fixture):
         self.assertTrue(self.any_state(("a01", self.att("fx", "FAILED", job="6")), age=30).covered)
 
     def test_relaunch_after_any_keeps_the_budgets_of_a_launch(self):
-        rec = G.new_grant("decide yourself", {"relaunch_after": "any"}, ["launch", "relaunch"], max_live=None,
+        rec = G.new_grant({"relaunch_after": "any"}, ["launch", "relaunch"], max_live=None,
                           max_launches=1, expires=None)
         rec["used"] = [{"nonce": "n0", "action": "launch", "hash": "", "job": "", "at": L.now()}]
         st = L.LedgerState(grants=[rec], runs={self.RUN: {"attempts": {"a01": self.att("fx", "FAILED", job="6")}}})
@@ -1341,9 +1376,9 @@ class Followups(Fixture):
         self.assertIn("used 1 of 1 launches", " ".join(d.reasons))
 
     def test_relaunch_after_is_validated(self):
-        ok = G.new_grant("q", {"relaunch_after": "any"}, ["launch", "relaunch"], max_live=None, max_launches=None,
+        ok = G.new_grant({"relaunch_after": "any"}, ["launch", "relaunch"], max_live=None, max_launches=None,
                          expires=None)
-        for change, why in (({"actions": ["launch"]}, "needs relaunch in its actions"),
+        for change, why in (({"actions": ["cancel_own"]}, "needs launch or relaunch in its actions"),
                             ({"actions": ["relaunch"]}, "the grant allows launch too"),
                             ({"scope": {"relaunch_after": "always"}}, "must be one of infra, any"),
                             ({"kind": "deny", "id": "d-x1", "limits": {}}, "a deny takes"),
@@ -1352,110 +1387,22 @@ class Followups(Fixture):
                              "belongs to a standing grant")):
             with self.subTest(why=why):
                 self.assertIn(why, G.valid({**ok, **change}))
-        rc, text = run("grant", "add", "-C", str(self.proj), "--quote", "q", "--action", "launch", "--relaunch-after", "any",
-                            "--max-live", "none", "--max-launches", "none", "--expires", "none")
-        self.assertEqual(rc, USAGE, text)
-        rc, text = run("grant", "add", "-C", str(self.proj), "--quote", "decide yourself", "--action", "launch,relaunch",
-                            "--relaunch-after", "any", "--max-live", "none", "--max-launches", "5", "--expires", "none")
+        self.assertEqual(G.valid({**ok, "actions": ["launch"]}), "")     # S1: launch alone carries it (implied anyway)
+        rc, text = run("grant", "add", "-C", str(self.proj), "--action", "launch", "--relaunch-after", "any",
+                       "--max-live", "none", "--max-launches", "5", "--expires", "none")
         self.assertEqual(rc, OK, text)
         self.assertIn("a relaunch after any end too, judged as a launch", text)
-
-    def old_grant(self, quote: str, age_s: float = 7200) -> dict:
-        rec = G.new_grant(quote, {"targets": ["ws"]}, ["launch"], max_live=None, max_launches=None, expires=None)
-        rec["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - age_s))
-        return G.add(self.led, rec)
-
-    def test_recycled_quotes_are_not_an_approval(self):
-        g = self.old_grant("有空闲卡就训练模型吧，注意检查gpu内存")        # (on ws: it does not cover a plan on fx)
-        for words in ("有空闲卡就训练模型吧，注意检查gpu内存", "“有空闲卡就训练模型吧，注意检查gpu内存”",
-                      "有空闲卡就训练模型吧，注意检查"):          # the same text, quoted, or 12+ characters of it
-            with self.subTest(words=words):
-                self.assertIsNotNone(G.recycled(words, [g]))
-        for words in ("可以", "就训练模型吧", "行，就照这个方案跑"):   # short words found inside it: a fresh answer may
-            with self.subTest(words=words):                          # say them
-                self.assertIsNone(G.recycled(words, [g]))
-        fresh = self.old_grant("那就换另一台空闲机器跑吧", age_s=60)
-        self.assertIsNone(G.recycled("那就换另一台空闲机器跑吧", [fresh]))   # said just now: grant and answer at once
-        self.answers = [self.plan_reply()]
-        rc, text = self.cli("launch", "-T", "fx", "--", "c")
-        self.assertEqual(rc, NEEDS_USER, text)
-        pid = self.plan_id(text)
-        n = len(self.led.state().grants)
-        rc, text = self.cli("launch", "--plan", pid, "--approve", "有空闲卡就训练模型吧，注意检查gpu内存")
-        self.assertEqual(rc, NEEDS_USER, text)
-        self.assertIn(f"these words are the quote of standing grant {g['id']}", text)
-        self.assertEqual(len(self.led.state().grants), n)          # nothing recorded
-        self.assertIsNone(self.led.plan_claim(pid))                # the plan is still unused
-        self.answers = [self.submitted()]
-        self.assertEqual(self.cli("launch", "--plan", pid, "--approve", "就训练模型吧")[0], OK)   # a fresh answer
-
-    def test_recycled_thresholds(self):
-        now = time.time()
-
-        def grant(q, age=7200, kind="grant"):
-            return {"id": "g-x", "kind": kind, "quote": q,
-                    "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - age))}
-        twelve = "以后这类事由你来定无需问"                     # 12 CJK characters = weight 24 (RECYCLE_MIN)
-        self.assertEqual(G._weight(G._norm_words(twelve)), 24)
-        self.assertIsNotNone(G.recycled(twelve, [grant(twelve)], now))
-        self.assertIsNone(G.recycled(twelve[:11], [grant(twelve[:11])], now))       # weight 22: a short answer
-        for q in ("可以", "ok", "go ahead", "yes"):                                  # short standing words never block
-            self.assertIsNone(G.recycled(q, [grant(q)], now))
-        long_en = "Yes, go ahead and run it on any free GPU, don't ask me again"
-        for w in ("yes go ahead and run it on any free gpu", "“YES, go ahead and run it on any free GPU.”",
-                  "The user said: Yes, go ahead and run it on any free GPU, don't ask me again — a03"):
-            with self.subTest(w=w):                                                  # case, punctuation, embedded
-                self.assertIsNotNone(G.recycled(w, [grant(long_en)], now))
-        for w in ("go ahead and run it", "don't ask me again"):                      # under 24: fresh words
-            self.assertIsNone(G.recycled(w, [grant(long_en)], now))
-        self.assertIsNone(G.recycled(twelve, [grant(twelve, age=G.RECYCLE_AGE_S - 60)], now))   # said just now
-        self.assertIsNotNone(G.recycled(twelve, [grant(twelve, age=G.RECYCLE_AGE_S + 60)], now))
-        self.assertIsNone(G.recycled(twelve, [grant(twelve, kind="approval")], now))  # an approval's words are not
-        revoked = {**grant(twelve), "revoked": {"at": L.now(), "quote": "stop"}}     # a standing grant's
-        self.assertIsNotNone(G.recycled(twelve, [revoked], now))                     # old words stay old
-        odd = "以后这类事由你来定无需" + "a"                                       # weight 23: below the floor
-        self.assertIsNone(G.recycled(odd, [grant(odd)], now))
-        self.assertIsNotNone(G.recycled(odd + "b", [grant(odd + "b")], now))         # 24
-        self.assertIsNone(G.recycled(twelve, [grant(twelve, age=G.RECYCLE_AGE_S - 1)], now))
-        self.assertIsNotNone(G.recycled(twelve, [grant(twelve, age=G.RECYCLE_AGE_S + 1)], now))
-        short = "可以跑"                                                            # the quote inside longer words
-        self.assertIsNone(G.recycled("好的可以跑这个配置没有问题的请继续", [grant(short)], now))   # weighs the QUOTE
-        self.assertIsNotNone(G.recycled("★" + twelve + "♥", [grant(twelve)], now))   # symbols out
-        self.assertIsNotNone(G.recycled("ＧＯ ＡＨＥＡＤ ＡＮＤ ＲＵＮ ＩＴ ＯＮ ＡＮＹ ＦＲＥＥ ＧＰＵ",
-                                        [grant("go ahead and run it on any free GPU")], now))   # NFKC
-
-    def test_recycled_quotes_everywhere_an_approval_is_taken(self):
-        g = self.old_grant("以后这类事由你来定，无需再来问我。开始或者结束训练任务也都行")
-        rc, text = run("adopt", "-C", str(self.proj), "-T", "fx", "--not-submitted", "rsk-x", "--approve",
-                       "以后这类事由你来定，无需再来问我")
-        self.assertEqual(rc, NEEDS_USER, text)
-        self.assertIn(g["id"], text)
-        with mock.patch("os.execvpe", side_effect=AssertionError("run-sync would have run")):
-            rc, text = run("sync", "-C", str(self.proj), "-T", "fx", "-D", "--approve", "以后这类事由你来定，无需再来问我")
-        self.assertEqual(rc, NEEDS_USER, text)
-        self.assertIn(g["id"], text)
-        rc, text = run("grant", "add", "-C", str(self.proj), "--quote", "以后这类事由你来定，无需再来问我。开始或者结束训练任务也都行",
-                       "--action", "launch,relaunch", "--relaunch-after", "any", "--max-live", "none",
-                       "--max-launches", "none", "--expires", "none")
-        self.assertEqual(rc, OK, text)                               # recorded (the user may type it), but flagged
-        self.assertIn(f"FLAG: its words repeat grant {g['id']}", text)
-
-    def test_recycled_quotes_for_a_cancel_and_a_table(self):
-        g = self.old_grant("取消也行,由你来判断 — 仅限本项目里面多余的作业")
-        rc, text = self.cli("cancel", "--job", "101", "-T", "fx", "--approve", "取消也行,由你来判断 — 仅限本项目里面多余的作业",
-                            "--asked", "可以取消 job 101 吗？")
-        self.assertEqual(rc, NEEDS_USER, text)
-        self.assertIn(g["id"], text)
-        (self.proj / "t.tsv").write_text("#@ run-watch v1\nr fx - -p gpu -- c\n")
-        rc, text = self.cli("watch", "t.tsv", "--approve", "取消也行,由你来判断 — 仅限本项目里面多余的作业")
-        self.assertEqual(rc, NEEDS_USER, text)
+        rc, text = run("grant", "add", "-C", str(self.proj), "--quote", "decide yourself", "--action", "launch",
+                       "--max-live", "none", "--max-launches", "5", "--expires", "none")
+        self.assertEqual(rc, OK, text)                                    # no --relaunch-after: the same
+        self.assertIn("a relaunch after any end too, judged as a launch", text)
 
     def test_check_after_reports_a_run_that_failed_at_once(self):
         self.answers = [self.plan_reply()]
         rc, text = self.cli("launch", "-T", "fx", "-n", f"{self.RUN}--a01", "--", "python", "t.py")
         pid = self.plan_id(text)
         self.answers = [self.submitted()]
-        with self.reads(("FAILED", "101", "2:0")), mock.patch.object(X.time, "sleep") as sl, \
+        with self.reads(("FAILED", "101", "2:0")), no_sleep(X) as sl, \
                 mock.patch("remote_run.status.digest", return_value=OK) as dg:
             rc, text = self.cli("launch", "--plan", pid, "--approve", "go ahead", "--check-after", "30")
         self.assertEqual(rc, FAILED, text)
@@ -1483,7 +1430,7 @@ class Followups(Fixture):
         self.assertEqual(self.cli("launch", "-T", "fx", "--check-after", "-1", "--", "c")[0], USAGE)
         self.assertEqual(X.parse(["-T", "fx", "--check-after", "600", "--", "c"]).check_after, 600)
         reads = []
-        with mock.patch.object(X.time, "sleep") as sl, \
+        with no_sleep(X) as sl, \
                 mock.patch.object(observe, "observe", lambda places, *a, **k: reads.append(1) or
                                   [observe.Observation(p, why="x") for p in places]):
             self.submit_a01()                                # no --check-after: no wait, no read after the submit
@@ -1496,7 +1443,7 @@ class Followups(Fixture):
         rc, text = self.cli("launch", "-T", "fx", "--", "c")
         refused = X.Reply(3, "", "REFUSED: policy", api="api=3", result={"verdict": "refused", "rc": "3"})
         self.answers = [refused]
-        with mock.patch.object(X.time, "sleep") as sl:
+        with no_sleep(X) as sl:
             rc, text = self.cli("launch", "--plan", self.plan_id(text), "--approve", "go", "--check-after", "30")
         self.assertNotEqual(rc, OK, text)
         sl.assert_not_called()                               # nothing launched: no wait, no read
@@ -1549,7 +1496,7 @@ class Followups(Fixture):
         self.assertEqual(dg.call_args[0][1], "201")
 
     def test_check_after_on_a_grant_covered_launch_and_a_job_missing_from_the_read(self):
-        G.add(self.led, G.new_grant("smokes on fx", {"targets": ["fx"]}, ["launch"], max_live=None, max_launches=None,
+        G.add(self.led, G.new_grant({"targets": ["fx"]}, ["launch"], max_live=None, max_launches=None,
                                     expires=None))
         self.answers = [self.plan_reply(), self.submitted("401")]
         with self.jobs(("401", "FAILED", "1:0")), mock.patch.object(X.time, "sleep"), \
@@ -1565,7 +1512,7 @@ class Followups(Fixture):
         self.assertIn("(job 402): not in this read — state unknown", text)   # absence is no evidence
 
     def test_check_after_on_a_box(self):
-        G.add(self.led, G.new_grant("box runs", {"targets": ["ws"]}, ["launch"], max_live=None, max_launches=None,
+        G.add(self.led, G.new_grant({"targets": ["ws"]}, ["launch"], max_live=None, max_launches=None,
                                     expires=None))
         log = "logs/r-20261104-120000.log"
         for rc_, want, line in (("0", OK, "ENDED rc=0 10 s after the launch — ended as it should"),
@@ -1653,7 +1600,7 @@ class Conventions(Fixture):
     told what §4 asks of its wandb run."""
 
     def grant(self, actions=("launch",)):
-        return G.add(self.led, G.new_grant("run what the paper needs", {"targets": ["fx", "ws"]}, list(actions),
+        return G.add(self.led, G.new_grant({"targets": ["fx", "ws"]}, list(actions),
                                            max_live=None, max_launches=None, expires=None))
 
     @staticmethod
@@ -1722,7 +1669,8 @@ class Conventions(Fixture):
         self.assertNotIn("NOTE: run name", text)
         self.assertIn("  NAME       the user's own (--free-name): experiment-conventions.md §2 not checked", text)
         self.assertTrue(self.led.read_run("foo").data["attempts"]["a01"]["request"]["card"].count("--free-name"))
-        self.answers = [self.plan_reply(name="bar")]                 # a stored plan (--same-name-ok: the user's card)
+        self.led.write_grants({"version": 1, "records": [], "budgets_unknown": None})   # a stored plan: the user's card
+        self.answers = [self.plan_reply(name="bar")]
         pid = self.plan_id(self.cli("launch", "-T", "fx", "--free-name", "-n", "bar", "--same-name-ok", "--", "c")[1])
         rc, text = self.cli("launch", "--plan", pid, "--free-name")
         self.assertEqual(rc, USAGE, text)                             # a stored plan: nothing beside it

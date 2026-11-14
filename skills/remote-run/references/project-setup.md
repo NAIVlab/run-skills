@@ -92,4 +92,4 @@ Report the conf, what each old-script setting became, and the gaps from step 1 �
 checkpoints and auto-resumes (`experiment-conventions.md` §6; formal runs need it). Offer one smoke run following
 the procedure: `rsk launch` (the card) → the user's words → `WANDB_MODE=disabled`, smallest resources. Never launch it
 unasked. Permissions the user states while setting up ("smoke runs on `<target>` are fine") are recorded with `rsk
-grant add`, in their words and with the limits they stated (SKILL.md §3) — never ones you infer.
+grant add`, with the scope and limits they stated (SKILL.md §3) — never ones you infer.

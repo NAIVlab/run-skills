@@ -1,7 +1,7 @@
 """rsk cancel --wait S (I1: after an accepted scancel, the read rsk status makes, again until the job's end is seen or S
 s pass — `ended: …` / `not ended yet: …` + exit 5, the accounting unchanged) and the hung-mount probe of the cancel
 bodies (I8: a project dir whose filesystem gives no answer within FS_WAIT ends the call before @@start — nothing read,
-nothing sent, a cancel_own use given back). A stub ssh runs the bodies locally; the stub squeue answers the cancel's
+nothing sent). A stub ssh runs the bodies locally; the stub squeue answers the cancel's
 identity read and rsk status's read (told apart by their columns) from files the tests write."""
 
 import contextlib
@@ -19,7 +19,6 @@ from helpers import ScratchHome
 
 from remote_run import cancel as C
 from remote_run import cli, observe
-from remote_run import grants as G
 from remote_run import ledger as L
 from remote_run.errors import OK, UNKNOWN, USAGE
 
@@ -111,13 +110,6 @@ class Base(ScratchHome):
                                 submit=kw.pop("submit", "submitted"), job=job, plan_id=kw.pop("plan_id", "p-1"),
                                 action=kw.pop("action", "launch"), **kw)
 
-    def own_grant(self, target: str = "fx") -> dict:
-        return G.add(self.led, G.new_grant("stop your own runs when they go nowhere", {"targets": [target]},
-                                           ["cancel_own"], max_live=None, max_launches=None, expires=None))
-
-    def used(self, rec: dict) -> list:
-        return next(r for r in self.led.state().grants if r["id"] == rec["id"])["used"]
-
     def sub(self, run: str = "exp", aid: str = "a01") -> dict:
         return self.led.read_run(run).data["attempts"][aid]["submissions"][0]
 
@@ -146,14 +138,11 @@ class SlurmWait(Base):
 
     def test_an_end_only_sacct_shows(self):
         self.write("sacct", f"101|exp--a01|CANCELLED by 1000|0:15|1700000600|{self.remote}")
-        g = self.own_grant()
         rc, text = self.cancel("exp", "--wait", "30")
         self.assertEqual(rc, OK, text)
-        self.assertIn("ended: job 101 (exp a01) on fx: CANCELLED (sacct)", text)
-        self.assertEqual(len(self.used(g)), 1)              # the cancel's use, kept: it was cancelled
+        self.assertIn("ended: job 101 (exp a01) on fx: CANCELLED (sacct)", text)              # the cancel's use, kept: it was cancelled
 
     def test_wait_passing_first_is_exit_5_and_the_ledger_keeps_cancelling(self):
-        g = self.own_grant()
         t0 = time.monotonic()
         rc, text = self.cancel("exp", "--wait", "1")        # no read lists the job: absence is no end
         took = time.monotonic() - t0
@@ -165,8 +154,6 @@ class SlurmWait(Base):
         self.assertGreaterEqual(took, 1.0)
         self.assertEqual(self.sub()["seen"]["state"], "CANCELLING")
         self.assertTrue(L.is_live(self.led.read_run("exp").data["attempts"]["a01"]))
-        self.assertEqual(len(self.used(g)), 1, "the use stands: the cancel was accepted, only its end is unseen")
-        self.assertFalse(any(u.get("refunded") for u in self.used(g)))
 
     def test_the_state_a_read_saw_is_the_one_reported(self):
         self.write("obs.live", f"101|exp--a01|COMPLETING|None|0|1700000000|{self.remote}|")
@@ -229,8 +216,8 @@ class SlurmWait(Base):
 
     def test_a_cancel_accepted_earlier_is_only_waited_for(self):
         """I4 points a relaunch blocked by CANCELLING at `rsk cancel RUN --wait S`: that must not send scancel again
-        nor need the user's words again (the approval was used up by the cancel) — only the read."""
-        rc, text = self.cancel("exp", "--approve", "cancel the exp run")
+        nor need the user's OK again — only the read."""
+        rc, text = self.cancel("exp", "--approve")
         self.assertEqual(rc, OK, text)
         self.write("obs.end", f"101|exp--a01|CANCELLED|None|0|1700000000|{self.remote}|")
         os.environ["END_AT"] = "2"
@@ -240,10 +227,9 @@ class SlurmWait(Base):
         self.assertIn("ended: job 101 (exp a01) on fx: CANCELLED (squeue)", text)
         self.assertNotIn("needs user", text)
         self.assertEqual(self.log("scancel.log"), "101\n", "scancel sent once")
-        self.assertEqual(len([r for r in self.led.state().grants if r["kind"] == "approval"]), 1)
+        self.assertEqual(self.led.state().grants, [])
 
     def test_a_read_since_that_wrote_over_cancelling_still_counts(self):
-        g = self.own_grant()
         rc, text = self.cancel("exp")
         self.assertEqual(rc, OK, text)
         self.led.observe("exp", "a01", "101", "COMPLETING", "squeue")   # an rsk status read after the cancel
@@ -252,7 +238,6 @@ class SlurmWait(Base):
         self.assertIn("already cancelled: job 101 (exp a01)", text)
         self.assertIn("not ended yet: job 101 (exp a01) on fx: COMPLETING — the cancel was accepted", text)
         self.assertEqual(self.log("scancel.log"), "101\n")
-        self.assertEqual(len(self.used(g)), 1, "one cancel, one use: the wait took none")
         rc, text = self.cancel("exp")                       # without --wait: sent again, as before (scancel: moot)
         self.assertEqual(self.log("scancel.log"), "101\n101\n", text)
 
@@ -266,7 +251,6 @@ class SlurmWait(Base):
     def test_a_requeued_job_is_cancelled_again_not_only_waited_for(self):
         """review #0: a read since the accepted cancel that shows the job live in a state but COMPLETING (a requeue)
         drops the marker — --wait sends scancel again, authorised as a new cancel, never 'already cancelled'."""
-        g = self.own_grant()
         rc, text = self.cancel("exp")
         self.assertEqual(rc, OK, text)
         self.assertEqual(self.sub()["cancel"]["state"], "CANCELLING")      # the marker rsk cancel leaves
@@ -275,11 +259,9 @@ class SlurmWait(Base):
         rc, text = self.cancel("exp", "--wait", "1")
         self.assertNotIn("already cancelled", text)
         self.assertEqual(self.log("scancel.log"), "101\n101\n", text)
-        self.assertEqual(len(self.used(g)), 2, "a second cancel, a second use")
 
     def test_an_unconfirmed_cancel_is_sent_again_under_wait(self):
         """review #1/#6: after CANCELLING? (scancel's answer unclear) --wait does not skip the scancel."""
-        g = self.own_grant()
         os.environ["SC_RC"] = "1"
         os.environ["SC_ERR"] = "scancel: error: Socket timed out on send/recv operation"
         rc, text = self.cancel("exp")
@@ -326,8 +308,7 @@ class Hung(Base):
             rc, text = self.cancel(*argv)
         return rc, text, time.monotonic() - t0
 
-    def test_slurm_a_hung_dir_is_nothing_sent_and_the_own_use_given_back(self):
-        g = self.own_grant()
+    def test_slurm_a_hung_dir_is_nothing_sent(self):
         self.launched("exp--a01", "101")
         self.write("queue", f"101|exp--a01|{ME}|{self.remote}|RUNNING|")
         rc, text, took = self.hung_cancel("exp", "--wait", "30")
@@ -336,30 +317,26 @@ class Hung(Base):
                       "sent, nothing was cancelled", text)
         self.assertLess(took, 6, "the session waited for the stuck probe, or the full ssh deadline")
         self.assertEqual((self.log("squeue.log"), self.log("scancel.log")), ("", ""), "nothing read, nothing sent")
-        self.assertEqual(self.used(g), [], "nothing was signalled: the cancel_own use is given back")
         att = self.led.read_run("exp").data["attempts"]["a01"]
         self.assertEqual(L.attempt_state(att), "SUBMITTED")  # no CANCELLING: nothing was sent
         audit = [a for a in self.led.read_audit()[0] if a.get("event") == "cancel"]
         self.assertEqual((audit[-1]["outcome"], audit[-1]["sent"]), ("unobservable", "no"))
 
-    def test_slurm_an_approval_is_used_up_all_the_same(self):
+    def test_slurm_an_approved_cancel_too(self):
         self.launched("exp--a01", "101")
-        rc, text, _ = self.hung_cancel("exp", "--approve", "cancel exp")
+        rc, text, _ = self.hung_cancel("exp", "--approve")
         self.assertEqual(rc, UNKNOWN, text)
         self.assertIn("nothing was sent", text)
-        aps = [r for r in self.led.state().grants if r["kind"] == "approval"]
-        self.assertEqual(len(aps[0]["used"]), 1, "D6: the user's words were for that one cancel")
+        self.assertEqual(self.led.state().grants, [])
 
     def test_the_fail_proves_it_even_when_ssh_then_exits_255(self):
         """sent_maybe(): an @@fail is printed only on a path that returns before any identity or signal — so its
         arrival proves nothing was sent, also from an ssh that then ended with its own 255 (no remote status)."""
-        g = self.own_grant()
         self.launched("exp--a01", "101")
         os.environ["SSH_THEN_255"] = "1"
         rc, text, _ = self.hung_cancel("exp")
         self.assertEqual(rc, UNKNOWN, text)
         self.assertIn("nothing was sent", text)
-        self.assertEqual(self.used(g), [])
 
     def test_a_readable_dir_goes_on_as_before(self):   # only `h` is decided before @@start
         self.launched("exp--a01", "101")
@@ -422,8 +399,7 @@ class Nohup(Base):
         self.assertEqual(self.log("ssh.log"), "wshost\n", "one ssh: the cancel, no read after it")
         self.assertEqual(L.attempt_state(self.led.read_run("r").data["attempts"]["a01"]), "CANCELLED")
 
-    def test_a_hung_dir_signals_nothing_and_gives_the_own_use_back(self):
-        g = self.own_grant("ws")
+    def test_a_hung_dir_signals_nothing(self):
         p = self.spawn()
         self.hang_stat(self.remote)
         t0 = time.monotonic()
@@ -435,7 +411,6 @@ class Nohup(Base):
                       text)
         time.sleep(0.2)
         self.assertIsNone(p.poll(), "never signalled")
-        self.assertEqual(self.used(g), [])
 
 
 if __name__ == "__main__":

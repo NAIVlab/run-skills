@@ -674,7 +674,7 @@ reset; q; approved "#@ allow launch" "a fx-slurm - $ROW"; O=$(rwd "$T/rskbin:$T/
 [ "$RC" = 2 ] && has "$O" '^use: rsk watch t.tsv … --act … (the project.s watch lease; every row checked against the ledger.s denies)' "rsk installed, --act called directly: points at rsk watch, exit 2" || bad "R4-7 --act steer (rc=$RC)"
 [ ! -s "$WORLD/ssh.log" ] && [ "$(nsub)" = 0 ] && ok "  ...before any ssh, nothing submitted" || bad "  ...ssh or sbatch ran"; [ ! -s "$T/rsk.log" ] && ok "  ...and never runs rsk itself" || bad "  ...ran rsk"
 table "#@ allow launch" "b fx-slurm - $ROW"; cp "$P/t.tsv" "$T/t.unok"; O=$(rwd "$T/rskbin:$T/bin:$PATH" t.tsv --approve "go"); RC=$?
-[ "$RC" = 2 ] && has "$O" '^use: rsk watch t.tsv --approve "<the user.s words>"' "--approve called directly: points at rsk watch … --approve, exit 2" || bad "R4-7 --approve steer (rc=$RC)"
+[ "$RC" = 2 ] && has "$O" '^use: rsk watch t.tsv --approve (the user.s OK' "--approve called directly: points at rsk watch … --approve, exit 2" || bad "R4-7 --approve steer (rc=$RC)"
 cmp -s "$P/t.tsv" "$T/t.unok" && ok "  ...nothing written" || bad "  ...the table was rewritten"; hasnt "$O" '"go"' "  ...the words given are not echoed into a ready-to-run line"
 O=$( cd "$P" && RS_VIA_RSK= PATH="$T/rskbin:$T/bin:$PATH" bash "$RS_HOME/bin/run-watch" t.tsv --approve go 2>&1 ); [ "$?" = 2 ] && ok "an empty RS_VIA_RSK counts as unset" || bad "empty RS_VIA_RSK"
 approved "#@ allow launch" "a fx-slurm - $ROW"; O=$(rwd "$T/rskbin:$T/bin:$PATH" t.tsv --once); RC=$?

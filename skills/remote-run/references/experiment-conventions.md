@@ -63,8 +63,8 @@ while smoking: Slurm only, without an ENV_HOOK, a conda env or a wandb_env namin
 after it), plus the trainer's own logger-off flag when it has one; `rsk launch` refuses a smoke it can see reaching
 wandb (exit 2), a WARNING on the card where it cannot tell. `offline` is NOT enough — it creates a syncable local run;
 never `wandb sync` a smoke dir later. Disable any other remote tracker the project uses the same way. If the startup log
-still prints a wandb URL / run id, report it, get the OK to stop it (or act on a `cancel_own` grant the user gave), fix
-the isolation, rerun. Smoke evidence lives in the log file, not on the experiment dashboard.
+still prints a wandb URL / run id, report it, stop it (`rsk cancel`: your own run needs no question), fix the
+isolation, rerun. Smoke evidence lives in the log file, not on the experiment dashboard.
 
 ## 6. Checkpoint + resume (every pilot / train / ablate)
 The run must write periodic checkpoints under the project dir (`ckpts/` or the trainer's own dir) AND resume
@@ -87,8 +87,8 @@ corrupts the only resume point. Outside the project dir only under the conf's `O
   precondition absorbs). Two trainer preconditions, verified before the first submit: it resumes from a committed
   checkpoint, and it exits 0 without training once the run is complete (else the spare retrains).
   Singleton also lets the next segment start after a FAILURE (OOM, config error), so a broken run fails once per
-  segment: the segment boundary is a monitoring milestone (§7) — on a failure, report and ask to cancel the rest
-  (`rsk cancel <run>` stops every live segment), unless the user already authorised that (`cancel_own`, `fail-stop`).
+  segment: the segment boundary is a monitoring milestone (§7) — on a failure, report it and cancel the rest
+  (`rsk cancel <run>` stops every live segment of your own run, no question; or `fail-stop` in a watched table).
   The plan states the segment count (MaxTime minus a margin each, plus one spare) and the per-segment walltime. A
   save slower than the 120 s warning: `--signal=B:USR1@600` in `SBATCH_EXTRA` (command-line flags override the
   script's `#SBATCH` line).
@@ -136,9 +136,9 @@ and the next check time for re-invocation. Do not promise unattended monitoring 
   ends, raw numbers shown before interpretation.
 - **Detect, don't act:** a check never `scancel`s, `kill`s or resubmits; the exceptions are what the user authorised
   and a tool checks first: `run-watch --act` (via `rsk watch`) on rows the user approved, within their `#@ allow`
-  line, `fail-stop` cancels included (procedure §5); `rsk cancel` / `rsk launch --relaunch` under a grant that covers
-  them (SKILL.md §3). Clearly-bad → report the evidence (URL, last metrics, log lines, reason) plus a recommendation,
-  then wait for the OK: your own judgment that a run should stop is the user's call unless they authorised that kind of
-  decision (`cancel_own`). The same failure twice after a fix → stop retrying and escalate.
+  line, `fail-stop` cancels included (procedure §5); `rsk launch --relaunch` under a grant that covers it and
+  `rsk cancel` of this project's own ledger runs (SKILL.md §3). Clearly-bad → report the evidence (URL, last metrics,
+  log lines, reason) plus a recommendation: a run of this project's ledger is yours to stop (say why in the report);
+  anything else waits for the user's OK. The same failure twice after a fix → stop retrying and escalate.
 - A new session first lists what is running (`rsk status`; `squeue -u $USER`, `ls -t logs/`, `logs/run-watch/`); keep the run's
   receipt (job ids, log path, ckpt dir, URL, ETA; a watched table's state file) where the next session finds it.

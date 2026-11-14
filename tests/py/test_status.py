@@ -534,7 +534,7 @@ class Ledgered(Base):
         self.journal("n-b", receipt="job=102\nname=exp--b01\nnonce=n-b\n", result="stage=done rc=0 verdict=submitted\n")
         self.led.record_attempt(name="exp--c01", target="fx-slurm", kind="slurm", nonce="n-c", submit="unknown")
         (self.stub / "comments.out").write_text("90|rs=n-c|\n")
-        g = G.add(self.led, G.new_grant("go", {}, ["launch"], max_live=None, max_launches=5, expires=None))
+        g = G.add(self.led, G.new_grant({}, ["launch"], max_live=None, max_launches=5, expires=None))
         G.use(self.led, g["id"], "n-d", "launch")
         self.led.record_attempt(name="exp--d01", target="fx-slurm", kind="slurm", nonce="n-d", submit="unknown",
                                 grant=g["id"])
@@ -563,7 +563,7 @@ class Ledgered(Base):
         need = [ln for ln in text.splitlines() if ln.startswith("needs user:")]
         self.assertEqual(len(need), 1, text)
         self.assertIn("SUBMIT_UNKNOWN (nonce n-z: stage sbatch, result verdict=unknown, no receipt", need[0])
-        self.assertIn("rsk adopt --not-submitted, with their words", need[0])
+        self.assertIn("rsk adopt --not-submitted, with their OK", need[0])
         self.assertNotIn("--approve", text)
         self.assertRegex(text, r"UNLEDGERED attempt stray  open  stage avail")
         self.assertEqual(L.attempt_state(self.led.read_run("exp--z01").data["attempts"]["a01"]), "SUBMIT_UNKNOWN")
@@ -573,8 +573,8 @@ class Ledgered(Base):
         self.assertTrue(next(j for j in doc["targets"][0]["jobs"] if j["id"] == "101")["ledgered"])
 
     def test_grants_lease_and_after_deny_flags(self):
-        G.add(self.led, G.new_deny("not on gpu", {"partitions": ["gpu"]}))
-        G.add(self.led, G.new_grant("ok, gpu then", {"partitions": ["gpu"]}, ["launch"], max_live=1,
+        G.add(self.led, G.new_deny({"partitions": ["gpu"]}))
+        G.add(self.led, G.new_grant({"partitions": ["gpu"]}, ["launch"], max_live=1,
                                     max_launches=None, expires="2099-12-31"))
         self.led.take_lease(time.time() + 600)
         rc, text = run("status", "-C", str(self.proj))
@@ -590,11 +590,11 @@ class Ledgered(Base):
         """NF6-status-no-stale-flag: R6-9's WARNING appeared in `rsk grant list` and `rsk doctor` but not in `rsk
         status`, the read the skill tells agents to run first — an agent never saw that the user's deny was not
         enforced. status's grants block now carries the same WARNING (and R7-2's NOTE for an unlisted partition)."""
-        typo = G.add(self.led, G.new_deny("never launch anything on fx-slurm again", {"targets": ["fx-slrum"]}))
-        part = G.add(self.led, G.new_deny("never the debug partition", {"targets": ["fx-slurm"],
+        typo = G.add(self.led, G.new_deny({"targets": ["fx-slrum"]}))
+        part = G.add(self.led, G.new_deny({"targets": ["fx-slurm"],
                                                                         "partitions": ["debug"]}))
         self.target("fx-listed", "T_KIND=slurm; T_HOST=fxhost; T_PARTITIONS='gpu,paid'\n")
-        listed = G.add(self.led, G.new_deny("never debug on fx-listed", {"targets": ["fx-listed"],
+        listed = G.add(self.led, G.new_deny({"targets": ["fx-listed"],
                                                                         "partitions": ["debug"]}))
         rc, text = run("status", "-C", str(self.proj), "-T", "fx-slurm")
         self.assertEqual(rc, OK, text)
@@ -619,7 +619,7 @@ class Ledgered(Base):
         [5, "fx-slurm"], partitions: 7, scope: "x", a bare string) crashed the whole JSON view (TypeError, exit 1).
         Text and --json now list an invalid record as invalid with the validation message and whether it fails closed,
         as `rsk grant list --json` does; a grant made right after such a deny is still flagged."""
-        G.add(self.led, G.new_deny("never use preempt on fx-slurm", {"targets": ["fx-slurm"], "partitions": ["gpu"]}))
+        G.add(self.led, G.new_deny({"targets": ["fx-slurm"], "partitions": ["gpu"]}))
         f = self.led.dir / "grants.json"
         doc = json.loads(f.read_text())
         good = doc["records"][0]
@@ -631,7 +631,7 @@ class Ledgered(Base):
         doc["records"] = damaged + doc["records"]
         f.write_text(json.dumps(doc))
         (self.led.dir / "grants.json.prev").unlink(missing_ok=True)
-        G.add(self.led, G.new_grant("ok, gpu then", {"partitions": ["gpu"]}, ["launch"], max_live=1, max_launches=None,
+        G.add(self.led, G.new_grant({"partitions": ["gpu"]}, ["launch"], max_live=1, max_launches=None,
                                     expires="2099-12-31"))
         self.target("fx-listed", "T_KIND=slurm; T_HOST=fxhost; T_PARTITIONS='gpu,paid'\n")
         rc, text = run("status", "-C", str(self.proj), "-T", "fx-slurm")

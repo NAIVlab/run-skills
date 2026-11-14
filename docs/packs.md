@@ -57,7 +57,7 @@ every key; [`../AGENTS.md`](../AGENTS.md) documents the `policy.sh` API (`t_part
   `exit 1` is a gate that is noted and passed (the function goes on: one gate never hides the next, and code after a gate
   must not assume it stopped the run); a gate that prints no `WARNING:` line gets a generic one, and everything the probe
   printed (digit runs masked) is bound into the card's `warnings_id`. Policy flags (`--<word>`, `T_FLAGS`) are bound into
-  the plan (`flags=`): no standing grant covers a plan that has one, only the user's approval of its card.
+  the plan (`flags=`) and shown on its card (a covering grant covers them): a flag can become any sbatch option.
 - **`reference.md`** is what the agent knows about the site. Keep it to about one screen: a card with the key
   values, the filesystem story (quotas, which disk for what), partitions with their limits, interconnect, and the
   gotchas a newcomer learns the hard way. Write `<user>` / `$USER` instead of anyone's id, and never mention

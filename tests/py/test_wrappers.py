@@ -67,7 +67,7 @@ class Wrappers(ScratchHome):
         self.assertEqual(done.returncode, 7, done.stderr)               # the script's own exit code
         self.assertIn(f"T=fx V=1 C= H={self.src} PWD={self.proj.resolve()} ARGS=--take-over --also x", done.stdout)
 
-    def test_sync_delete_and_bootstrap_job_need_the_users_words(self):
+    def test_sync_delete_and_bootstrap_job_need_the_users_ok(self):
         from remote_run import ledger as L
         for argv in (("sync", "-T", "fx", "-D"), ("sync", "-T", "fx", "--delete", "--take-over"),
                      ("bootstrap", "-T", "fx", "--job", "-p", "cpu")):
@@ -75,7 +75,6 @@ class Wrappers(ScratchHome):
             self.assertEqual(done.returncode, 4, (argv, done.stderr))
             self.assertIn("needs user: approval (", done.stdout)
             self.assertNotIn("ARGS=", done.stdout)                      # the script never ran
-        self.assertEqual(self._rsk("sync", "-C", str(self.proj), "-T", "fx", "-D", "--approve", " ").returncode, USAGE)
         done = self._rsk("sync", "-C", str(self.proj), "-T", "fx", "-n", "-D")    # a dry run deletes nothing
         self.assertEqual(done.returncode, 7, done.stderr)
         done = self._rsk("sync", "-C", str(self.proj), "-T", "fx", "-D", "--approve", "yes, delete what I removed")
@@ -84,9 +83,17 @@ class Wrappers(ScratchHome):
         done = self._rsk("bootstrap", "-C", str(self.proj), "-T", "fx", "--job", "-p", "cpu", "--approve", "build it")
         self.assertEqual(done.returncode, 7, done.stderr)
         self.assertIn("ARGS=--job -p cpu", done.stdout)
+        done = self._rsk("sync", "-C", str(self.proj), "-T", "fx", "--approve", "-D")   # S4: a bare flag
+        self.assertEqual(done.returncode, 7, done.stderr)
+        self.assertIn("ARGS=-D", done.stdout)
+        done = self._rsk("bootstrap", "-C", str(self.proj), "-T", "fx", "--job", "-p", "cpu", "--approve")
+        self.assertEqual(done.returncode, 7, done.stderr)
         recs = [a for a in L.Ledger(self.proj).read_audit()[0] if a["event"] == "approved_command"]
-        self.assertEqual([(a["command"], a["argv"], a["quote"]) for a in recs],
-                         [("sync", ["-D"], "yes, delete what I removed"), ("bootstrap", ["--job", "-p", "cpu"], "build it")])
+        self.assertEqual([(a["command"], a["argv"]) for a in recs],
+                         [("sync", ["-D"]), ("bootstrap", ["--job", "-p", "cpu"]), ("sync", ["-D"]),
+                          ("bootstrap", ["--job", "-p", "cpu"])])
+        self.assertTrue(all("quote" not in a for a in recs))            # the words are never recorded
+        self.assertNotIn("build it", (L.Ledger(self.proj).dir / "audit.jsonl").read_text())
         self.assertEqual(self._rsk("bootstrap", "-C", str(self.proj), "-T", "fx").returncode, 7)   # plain: unchanged
 
     def test_d7_g3_flow_3_the_gate_reads_run_syncs_grammar(self):

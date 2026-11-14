@@ -74,7 +74,7 @@ class SlurmAdopt(Base):
     def _unknown(self, mtime_old: bool = True, grant: bool = False) -> str:
         gid = ""
         if grant:
-            g = G.add(self.led, G.new_grant("go", {}, ["launch"], max_live=None, max_launches=1, expires=None))
+            g = G.add(self.led, G.new_grant({}, ["launch"], max_live=None, max_launches=1, expires=None))
             gid = g["id"]
             G.use(self.led, gid, "nz", "launch")
         self.led.record_attempt(name="lost--a01", target="fx-slurm", kind="slurm", nonce="nz", submit="unknown",
@@ -89,13 +89,14 @@ class SlurmAdopt(Base):
 
     def test_not_submitted_marks_it_and_gives_the_use_back(self):
         gid = self._unknown(grant=True)
-        self.assertEqual(self.adopt("--not-submitted", "nz")[0], USAGE)        # the user's words are required
-        rc, text = self.adopt("--not-submitted", "nz", "--approve", "that one never went out")
+        self.assertEqual(self.adopt("--not-submitted", "nz")[0], USAGE)        # the user's OK is required
+        rc, text = self.adopt("--not-submitted", "nz", "--approve")             # S4: a flag, no words
         self.assertEqual(rc, OK, text)
         self.assertIn("NOT_SUBMITTED", text)
         att = self.led.read_run("lost").data["attempts"]["a01"]
         self.assertEqual(L.attempt_state(att), "NOT_SUBMITTED")
-        self.assertEqual(att["submissions"][0]["quote"], "that one never went out")
+        self.assertNotIn("quote", att["submissions"][0])
+        self.assertTrue(any(a.get("event") == "not_submitted" and a.get("approved") for a in self.led.read_audit()[0]))
         g = next(r for r in self.led.state().grants if r["id"] == gid)
         self.assertEqual(g["used"], [])
         self.assertIn("recorded as not submitted already", self.adopt("--not-submitted", "nz", "--approve", "x")[1])

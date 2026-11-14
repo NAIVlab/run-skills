@@ -58,7 +58,7 @@ class Verdict(Fixture):
         self.assertTrue(last(o).startswith(f"rsk launch: exit 6 (conflict with existing state) — run {RUN} is live "
                                            "on fx in the ledger"), last(o))
         self.assertIn(f"rsk: run {RUN} is live on fx", e)                  # the error still goes to stderr as before
-        G.add(self.led, G.new_deny("no train runs on fx", {"targets": ["fx"]}, ["launch", "relaunch"]))
+        G.add(self.led, G.new_deny({"targets": ["fx"]}, ["launch", "relaunch"]))
         self.answers = [self.plan_reply(name="exp--train--b--scratch--s0--a01")]
         rc, o, e = self.cli3("launch", "-T", "fx", "-n", "exp--train--b--scratch--s0--a01", "--", "python", "t.py")
         self.assertEqual(rc, REFUSED, o + e)

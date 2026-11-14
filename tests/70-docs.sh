@@ -94,7 +94,7 @@ for r in 'Check the existing authorisation before every submit, launch or cancel
   has "$ST" "$r" "rail: $r"; done
 has "$ST" 'except what they authorised and a tool checks: `run-watch --act` (Slurm) first-submits or resubmits only table rows the user approved' \
   "rail: detect-only exception 1: run-watch --act, user-approved rows only"
-has "$ST" '`rsk cancel` / `rsk launch --relaunch` under a grant that covers them' "rail: detect-only exception 2: an rsk action a grant covers"
+has "$ST" '`rsk launch --relaunch` under a grant that covers it and `rsk cancel` of this project.s own ledger runs' "rail: detect-only exception 2: a covered relaunch, a cancel of the agent's own runs"
 # round 3 (D3): -y goes out only for warnings the approved card showed or the covering grant's allow_warnings kind covers
 has "$ST" 'rsk sends it only when the approved card showed warnings or the covering grant.s kind covers the plan.s warnings' "rail: -y only for warnings an approved card showed or a grant's kind covers"
 hasnt "$ST" 'rsk adds it only to a card the user approved' "rail: the pre-D3 -y wording (no grant kinds) is gone"
@@ -109,31 +109,37 @@ for r in 'check for an existing authorisation first' 'act when it covers the act
          '`any` = every -y gate, a charged partition.s too — only when their words say so' \
          'only after an infrastructure end — Slurm PREEMPTED / NODE_FAIL / BOOT_FAIL, box REBOOT; never CANCELLED, COMPLETED, FAILED, TIMEOUT, OUT_OF_MEMORY or unknown' \
          'The action is the plan.s, never a flag.s: a run that ran before = `relaunch`, a singleton chain = `chain`' \
-         'the approval is bound to it, lasts 1 h and is used up by its first cancel, whatever came of it' \
-         'its cancels count against `--max-launches`' \
+         '`--approve` is a flag that says the user approved what is on screen' 'rsk records that it was approved, never their words' \
+         'A `launch` grant also covers relaunches of runs in its scope, judged as a launch' 'never while an earlier attempt rsk can see may be live' \
+         'A covering grant also covers policy flags, `SBATCH_EXTRA` words outside the grant allowlist and `--same-name-ok` (the card NOTEs them)' \
+         'a box.s launcher / container WARNING is never grant-covered' \
          '(`rsk watch --act` first refuses rows a deny of theirs matches)' \
          '`plan <id> is free again` = the target proved nothing went out' \
          'cancelled once its identity checks out (Slurm: name, WorkDir, user; box: pid, start time, boot id)' \
-         'Your own judgment that a run should stop → ask, unless the user authorised that kind of decision (`cancel_own`' \
-         'Never someone else.s job or process, whatever was approved' 'Only the user.s words at the time, never a grant' \
-         'A grant records the user.s words; it is bookkeeping, not proof of consent' 'constrains only what goes through it' \
-         'Record only what the user said' 'show the card verbatim, wait for the user.s words' 'say so in your report' \
+         'a run of this project.s ledger (rsk launched or adopted it — your own) → `rsk cancel <run>`, no question' \
+         'only with the user.s OK for this command: `rsk cancel --job 123 -T <t> --approve` (without it: exit 4, ask); nothing is stored' \
+         'A deny of cancel still refuses (exit 3)' \
+         'Never someone else.s job or process, whatever was approved' 'Only the user.s OK at the time, never a grant' \
+         'A grant records the scope and limits the user allowed; it is bookkeeping, not proof of consent' 'constrains only what goes through it' \
+         'Record only what the user allowed' 'show the card verbatim, wait for the user.s words' 'say so in your report' \
          'Exit 5 after a submit = SUBMIT_UNKNOWN, never resubmitted' \
          'The flow: `rsk status` → `rsk avail` (placement open) → `rsk sync` / `rsk bootstrap` → `rsk launch` → monitor (`rsk status`, `rsk logs`, `rsk watch`) → `rsk cancel` → `rsk pull`'; do
   has "$ST" "$r" "authorisation rail: $r"; done
-for r in 'Confirm before every submit' 'without an explicit OK'; do
+for r in 'Confirm before every submit' 'without an explicit OK' 'recycl' '--asked' '--quote' '--relaunch-after' 'cancel_own' '<their words>' '<the user.s words>'; do
   hasnt "$ST" "$r" "the replaced rail is gone from $F (it contradicts the user's policy): $r"; done
 for f in $PSL $PNO; do X=$(tr '\n' ' ' < "$RS_HOME/$f" | tr -s ' ')   # wrapped lines joined
-  has "$X" 'plans first and checks whether the user.s recorded words already cover that plan' "$f: plan, then check the authorisation"
+  has "$X" 'plans first and checks whether what the user already allowed covers that plan' "$f: plan, then check the authorisation"
   has "$X" 'show its card verbatim' "$f: an uncovered card is shown verbatim"; has "$X" 'rsk cancel <run>' "$f: stopping goes through rsk cancel"
-  has "$X" 'on a `cancel_own` grant (runs rsk launched only); else exit 4: ask' "$f: the agent's own stop needs cancel_own"
-  has "$X" 'Check the user.s recorded words before every' "$f rail: check the recorded words first"
+  has "$X" 'with no grant and no question' "$f: the agent's own ledger runs are cancelled without a question"
+  has "$X" 'needs the user.s OK for this command' "$f: anything else needs the user's OK for that cancel"
+  hasnt "$X" 'recycl\|--asked\|relaunch-after\|<their words>\|<the user.s words>\|for 1 h\|expires after 1 h' "$f: no stored words, no recycled guard, no 1 h cancel approval"
+  has "$X" 'Check the user.s recorded authorisation before every' "$f rail: check the recorded authorisation first"
   hasnt "$X" 'Confirm before every' "$f: the replaced confirm-every-time rail is gone"; done
 PSLT=$(tr '\n' ' ' < "$RS_HOME/$PSL" | tr -s ' '); PNOT=$(tr '\n' ' ' < "$RS_HOME/$PNO" | tr -s ' ')
 has "$PSLT" 'first checks the job.s name, user and WorkDir (exit 6 = mismatch, nothing cancelled; exit 3 = someone else.s job: never)' "procedure-slurm: cancel after the identity check"
 has "$PSLT" 'Never submit on implicit consent' "procedure-slurm: never on implicit consent"
 has "$PSLT" 'A charged partition, more resources or a wider scope than the user authorised always goes back to them' "procedure-slurm: the §U ask-cases"
-has "$PSLT" 'no grant covers it' "procedure-slurm: a --*-user-asked gate is never a grant's call"
+has "$PSLT" 'is the user.s own OK for that gate: pass it only when they asked for that gate' "procedure-slurm: a --*-user-asked flag only when the user asked for the gate"
 has "$PNOT" 'checks the pid against the run.s receipt (pid, process start time, boot id, your user, the group leader)' "procedure-nohup: cancel after the identity check"
 has "$PNOT" 'someone else.s process: never' "procedure-nohup: never someone else's process"
 has "$PNOT" 'a card that lands on one (`ON A BUSY GPU`) is never grant-covered' "procedure-nohup: a busy GPU is the user's words, never a grant"
@@ -169,18 +175,18 @@ has "$PNOT" '`busy_ok=<id>:<uuid>:<user>,…`' "procedure-nohup: busy_ok binds w
 # r1-7: a reused / gone pid or a rebooted box = ended (exit 0), never the old 'exit 6 = a reused pid'
 has "$PNOT" 'reused by another process (its start time differs) or whose box rebooted (boot id differs) has ended: exit 0 `nothing to cancel … ended`' "procedure-nohup: a reused pid is an ended run (exit 0)"
 hasnt "$PNOT" '(a reused pid), nothing signalled' "procedure-nohup: the wrong 'exit 6 = a reused pid' is gone"
-# D6: cancel approvals bound, 1 h, used up
-has "$PSLT" 'expires after 1 h and is used up by its first cancel that passed the authorisation check, whatever came of it (no refund)' "procedure-slurm: a cancel approval is bound, 1 h, used up"
-has "$PNOT" 'an approval bound to its identity (target, pid, start, boot id), for 1 h, used up by its first cancel' "procedure-nohup: the same, by pid identity"
+# 2026-11 cuts (S5): a cancel's --approve is for that command only — nothing stored
+has "$PSLT" 'Nothing is stored for a later cancel' "procedure-slurm: a cancel's OK is for that command only"
+has "$PNOT" 'nothing is stored for a later cancel' "procedure-nohup: the same"
 # D7 / r1-8: sync -D read with run-sync's grammar; bootstrap --job only with the user's words at the time
 for f in "$PSLT" "$PNOT"; do has "$f" '`--also -n` pushes a path named `-n`, it is no dry run' "a procedure: rsk sync -D's gate reads run-sync's grammar"; done
-has "$PSLT" 'runs only with the user.s words at the time — `rsk bootstrap -T <t> --job … --approve' "procedure-slurm: bootstrap --job is --approve-only"
+has "$PSLT" 'runs only with the user.s OK at the time — `rsk bootstrap -T <t> --job … --approve' "procedure-slurm: bootstrap --job is --approve-only"
 has "$PSLT" 'never under a grant; then follow it' "procedure-slurm: ...never a grant's call"; hasnt "$PSLT" 'or their words covering it, §3' "procedure-slurm: the old 'a grant may cover bootstrap --job' is gone"
 # D1: SBATCH_EXTRA vs grants; the getopt refusal
-has "$PSLT" 'a `NO GRANT` line names those outside the grant allowlist' "procedure-slurm: the card's NO GRANT line"
+has "$PSLT" 'a NOTE line names those outside the grant allowlist (`conf-keys.md`, `SBATCH_EXTRA`): a covering grant covers them too' "procedure-slurm: SBATCH_EXTRA words outside the allowlist are a card NOTE, grant-coverable"
 hasnt "$PSLT$ST" '`RESOURCES`\|RESOURCES (SBATCH_EXTRA)' "the old RESOURCES card line is gone from the docs"
 has "$CK" 'Every word must be an option or the value of the option before it' "conf-keys: SBATCH_EXTRA's getopt rule"
-has "$CK" '`T_SBATCH_EXTRA_ALLOW` extends only the lint, never what a grant covers' "conf-keys: the lint allowlist is not the grant allowlist"
+has "$CK" '`T_SBATCH_EXTRA_ALLOW` extends only the lint, never that NOTE.s list' "conf-keys: the lint allowlist is not the card NOTE's allowlist"
 hasnt "$CK" 'trailing `-q/--qos` without a value' "conf-keys: any dangling value option is refused now, not only -q"
 echo "-- rsk (reads, launch / cancel / watch, grants), as the CLI defines it --"
 CLI=$(cat "$RS_HOME"/src/remote_run/*.py 2>/dev/null)
@@ -196,10 +202,10 @@ for o in '"--days"' '"-n", dest="lines"' '"-T", "--target", required=True' 'UNKN
   has "$CLI" "$o" "the CLI has what $F promises: $o"; done
 # round 3: what the docs now promise, as the code spells it (a code change that moves one of these must move the docs)
 for o in 'WARN_KINDS = ("availability", "any")' 'choices=WARN_KINDS' 'INFRA_END = ("PREEMPTED", "NODE_FAIL", "BOOT_FAIL", "REBOOT")' \
-         'CANCEL_TTL_S = 3600' 'EXTRA_VALUE_LONG = ("qos", "account", "exclude", "constraint", "reservation", "signal", "mail-type", "mail-user", "comment")' \
+         'EXTRA_VALUE_LONG = ("qos", "account", "exclude", "constraint", "reservation", "signal", "mail-type", "mail-user", "comment")' \
          'EXTRA_VALUE_SHORT = "qAxC"' 'EXTRA_FLAGS = ("requeue", "no-requeue")' 'is free again: once the cause is fixed' 'revoked: matches nothing' \
          'jobs used ' 'the cancel may have been sent: rsk status' 'nothing to cancel: ' 'of them the availability gate' \
-         '("conf extra",' 'NO GRANT   SBATCH_EXTRA word(s)' 'an SBATCH_EXTRA / policy --time comes after' 'ledger not updated (read-only view)' \
+         '("conf extra",' 'an SBATCH_EXTRA / policy --time comes after' 'ledger not updated (read-only view)' \
          'run-watch lock: pid' 'def plan_actions(' 'def sticky_class('; do
   has "$CLI" "$o" "the CLI has what the docs promise (round 3): $o"; done
 I=$(cat "$RS_HOME/INSTALL.md" 2>/dev/null)
@@ -233,8 +239,8 @@ hasnt "$RT" 'Confirm before every submit' "README: the replaced confirm-every-ti
 DT=$(tr '\n' ' ' < "$RS_HOME/docs/DESIGN.md" | tr -s ' ')
 has "$(cat "$RS_HOME/docs/DESIGN.md")" '^## Authorization: check first, ask only outside scope$' "DESIGN: the authorization section"
 for r in '| the user approved a sweep | the whole set shares one approval' '| a charged partition, more resources, or a wider experiment scope | confirm |' \
-         '| the user said "cancel job 123" | cancel once the job.s identity is verified |' \
-         '| the agent decides on its own that a run is not worth continuing | confirm — unless the user authorised that kind of judgment |' \
+         '| the user said "cancel job 123" | cancel once the job.s identity is verified (their OK is for that command) |' \
+         '| the agent decides on its own that a run is not worth continuing | its own run (this project.s ledger): cancel and report; anything else: confirm |' \
          'is bookkeeping, not proof of consent' 'an agent can write anything' 'rsk constrains only the actions that go through it' \
          'Nothing here guarantees that an agent complies' 'Both steer; neither is a guard'; do has "$DT" "$r" "DESIGN: $r"; done
 has "$(tr '\n' ' ' < "$RS_HOME/AGENTS.md" | tr -s ' ')" 'check the existing authorisation before every submit/launch/cancel and ask only outside it' "AGENTS: the editing rule names the new rail"
@@ -244,8 +250,9 @@ for r in 'rsk sends it only when the approved card showed warnings or the coveri
 hasnt "$RT" 'rsk adds it only to a card you approved' "README: the pre-D3 -y wording is gone"
 for r in 'rsk sends `-y` only when the approved card showed warnings or the covering grant.s kind covers the plan.s warnings' \
          '`availability` covers a plan whose only warnings are the harness.s own availability gate' \
-         'A `relaunch` grant covers a relaunch only after the run.s latest attempt that ran ended with positive evidence of an infrastructure end' \
-         'it expires after an hour and is used up by the first cancel that passed authorisation' \
+         'A grant that allows `relaunch` but not `launch` is auto-recovery: it covers a relaunch only after the run.s latest attempt that ran ended with positive evidence of an infrastructure end' \
+         'A grant that allows `launch` covers a relaunch of a run in its scope as a launch' 'A live attempt of this project.s ledger' \
+         'is the agent.s own and is cancelled with no grant and no question' 'nothing is stored, so an OK never carries over' \
          'binds run-watch to the user.s denies' 'No remote parsing goes through a here-string or a heredoc' \
          'the line `# rs-api=3` inside the deployed `submit.sh` / `launch.sh`' 'Fail-stop goes with the rows, and cancels only under `--act`'; do
   has "$DT" "$r" "DESIGN: $r"; done
@@ -253,7 +260,8 @@ for r in '`rsk watch` only adds the lease' 'on a workstation not the env gate'; 
 AT=$(tr '\n' ' ' < "$RS_HOME/AGENTS.md" | tr -s ' ')
 for r in 'last_attempt fulltmp fulltmp_ok' 'Remote parsing uses no here-string or heredoc' 'so both may run twice and must have no side effects' \
          'api=3\*\* = the line `# rs-api=3` inside the deployed `submit.sh` / `launch.sh`' '`allow_warnings` = `availability`' \
-         'a relaunch whose latest attempt that ran did not end in `INFRA_END`'; do has "$AT" "$r" "AGENTS: $r"; done
+         'under a `relaunch`-only grant a relaunch whose latest attempt that ran did not end in `INFRA_END`' \
+         'rsk stores no user words: `--approve` is a flag'; do has "$AT" "$r" "AGENTS: $r"; done
 has "$(cat "$RS_HOME/tests/lib.sh")" '^fulltmp(){' "...tests/lib.sh defines fulltmp"; has "$(cat "$RS_HOME/tests/lib.sh")" '^fulltmp_ok(){' "...and fulltmp_ok"
 has "$S" 'run-sync' "$F names run-sync"; has "$S" 'run-bootstrap' "$F names run-bootstrap"; has "$S" 'run-launch' "$F names run-launch"
 has "$S" 'submit\.sh' "$F names submit.sh"
@@ -294,18 +302,17 @@ PKT=$(tr '\n' ' ' < "$RS_HOME/docs/packs.md" | tr -s ' '); RT=$(tr '\n' ' ' < "$
 DT=$(tr '\n' ' ' < "$RS_HOME/docs/DESIGN.md" | tr -s ' '); AT=$(tr '\n' ' ' < "$RS_HOME/AGENTS.md" | tr -s ' ')
 CKT=$(tr '\n' ' ' < "$RS_HOME/$CKF" | tr -s ' ')
 # 2026-11-06 follow-ups: the numbers and flags the docs now promise, as the code spells them
-for o in 'GREP_BYTES = 8 << 20' 'GREP_MAX_BYTES = 64 << 20' 'GREP_CAP = 1 << 16' 'CHECK_MAX_S = 600' 'RECYCLE_MIN = 24' \
-         'RECYCLE_AGE_S = 3600' 'RELAUNCH_AFTER = ("infra", "any")' '"--check-after"' '"--grep"' '"--relaunch-after"' \
-         'def refuse_recycled(' 'def _any_misses(' 'def refresh(' '"mfsgetquota": ("nhHkmg", "", "", True)' \
+for o in 'GREP_BYTES = 8 << 20' 'GREP_MAX_BYTES = 64 << 20' 'GREP_CAP = 1 << 16' 'CHECK_MAX_S = 600' \
+         '"--check-after"' '"--grep"' \
+         'def _any_misses(' 'def refresh(' '"mfsgetquota": ("nhHkmg", "", "", True)' \
          'ANY_PLAN_MAX_AGE_S = 600'; do
   has "$CLI" "$o" "the CLI has what the docs promise (2026-11-06): $o"; done
-has "$ST" '--relaunch-after any' "SKILL §3: --relaunch-after any for re-runs the user's words hand over"
-has "$ST" 'never earlier words' "SKILL §3: an --approve is the answer on screen, never earlier words"
+hasnt "$CLI" 'def refuse_recycled(\|def recycled(' "S2: the recycled-quote guard is gone from rsk"
 has "$PSLT" "the log's last 8 MiB" "procedure-slurm: --grep searches the last 8 MiB (GREP_BYTES)"
 has "$PSLT" 'reads each submission (every chain segment)' "procedure-slurm: --check-after judges every submission"
-has "$DT" 'weighing 24 or more, a CJK character 2' "DESIGN: the recycled-quote weight (RECYCLE_MIN)"
+hasnt "$DT$AT$ST$PSLT$PNOT$RT" 'recycled\|RECYCLE_' "S2: no doc describes the recycled-quote guard"
 # R4-7: acting goes through rsk watch (the steer), and a run-watch whose rsk watch is gone stops (exit 7)
-has "$ST" 'rsk watch <table> --approve "<the user.s words>"' "$F: the table's OK is recorded with rsk watch <table> --approve"
+has "$ST" 'rsk watch <table> --approve ' "$F: the table's OK is recorded with rsk watch <table> --approve"
 has "$ST" '--act / --approve go through rsk watch only' "$F: --act / --approve only through rsk watch"
 hasnt "$ST$PSLT$PNOT" 'run `run-watch <table> --approve' "no doc tells the agent to run run-watch --approve directly"
 for r in 'a direct `run-watch … --act` or `--approve` while rsk is installed prints `use: rsk watch …` and exits 2 @@ use: rsk watch ' \
@@ -323,13 +330,12 @@ has "$WP" 'ROW_ACTIONS = ("launch", "relaunch", "resubmit", "chain", "cancel")' 
 has "$PSLT" 'a GPU-type deny matches every row of its target and a partition deny every Slurm row of its target' "procedure-slurm: GPU-type / partition denies match every row of their target"
 has "$ST" 'matches what it cannot rule out (a job without a plan, a watch row, a run of unknown class)' "$F: a deny fails closed on unknown facts"
 has "$GP" 'that cannot be read or is not known counts as matching' "...grants.py says so"
-# R4-6: policy flags are bound and never grant-covered
-has "$ST" 'nor is a card with policy flags' "$F: no grant covers a card with policy flags"
-has "$PSLT" 'no standing grant covers a plan with policy flags' "procedure-slurm: policy flags are bound, never grant-covered"
-has "$DT" 'no standing grant covers a plan with policy flags' "DESIGN: the same"; has "$PKT" 'no standing grant covers a plan that has one' "packs.md: the same"
-has "$TPL" 'no standing grant covers a plan with one' "policy template: the same"; has "$AT" 'then `flags` = `T_FLAGS`' "AGENTS: flags= in the bound list"
-has "$SUB" 'conf_extra=%s\\nflags=%s\\nchain=%s' "...submit.sh binds flags= right before chain="; has "$LP" 'no standing grant covers a plan ' "...launch.py's card says so"
-has "$GP" 'no standing grant covers a plan with policy flags' "...grants.py refuses to cover one"; has "$GP" '"conf_extra", "flags", "warnings_avail"' "...and needs flags= (needs: sync)"
+# R4-6 → 2026-11 (S3): policy flags are bound and shown on the card; a covering grant covers them
+has "$PSLT" 'listed on the card.s `policy` line; a covering grant covers them too (the card NOTEs them)' "procedure-slurm: policy flags are bound, grant-coverable"
+has "$DT" 'and are listed the same way; so is `--same-name-ok`' "DESIGN: the same"; has "$PKT" 'and shown on its card (a covering grant covers them)' "packs.md: the same"
+has "$TPL" 'a covering grant covers them' "policy template: the same"; has "$AT" 'then `flags` = `T_FLAGS`' "AGENTS: flags= in the bound list"
+for f in "$ST" "$PSLT" "$DT" "$PKT" "$TPL"; do hasnt "$f" 'no standing grant covers a plan with policy flags\|nor is a card with policy flags' "S3: no doc says policy flags are never grant-covered"; done
+has "$SUB" 'conf_extra=%s\\nflags=%s\\nchain=%s' "...submit.sh binds flags= right before chain="; has "$GP" '"conf_extra", "flags", "warnings_avail"' "...and rsk needs flags= (needs: sync)"
 # R4-11/12: t_partition probed too; every gate passes; a silent gate's output in warnings_id
 has "$PSLT" '`t_partition` the same way with the partition that is submitted' "procedure-slurm: t_partition is probed too"
 has "$PSLT" 'every gate of a function shows, not only its first' "procedure-slurm: every gate of a function shows"
@@ -377,7 +383,7 @@ has "$PNOT" '(several: exit 6 `ambiguous`)' "procedure-nohup: several receipts f
 has "$PSLT" 'or no answer at all (a timeout, ssh.s own 255, a signal' "procedure-slurm: no answer at all may have been sent"; has "$CP" 'no answer at all: the job may have been cancelled' "...cancel.py"
 ET=$(tr '\n' ' ' < "$RS_HOME/$SK/references/experiment-conventions.md" | tr -s ' ')
 has "$ET" 'the exceptions are what the user authorised and a tool checks first: `run-watch --act`' "conventions: detect-only names its exceptions"
-has "$ET" 'your own judgment that a run should stop is the user.s call unless they authorised that kind of decision (`cancel_own`)' "conventions: the agent's own stop needs the user"
+has "$ET" 'a run of this project.s ledger is yours to stop (say why in the report); anything else waits for the user.s OK' "conventions: the agent stops its own runs, anything else needs the user"
 # 2026-11-07: names and the tracker — what the docs say rsk launch enforces, beside the code that does it
 for o in 'def name_problems(' 'def name_notes(' 'def new_run(' 'def smoke_problem(' 'def tracker_note(' '"--free-name"' \
          'def env_scan(' 'def maybe_sent(' 'def _compound(' 'return mode, "conf-overridable"' 'return "", "env-options"' \
@@ -438,7 +444,7 @@ has "$ST" 'Exit 5 after a submit = SUBMIT_UNKNOWN, never resubmitted (it blocks 
 has "$ST" 'the plan stays used' "$F: ...the plan stays used"
 has "$PSLT" "ssh's own words are no proof that nothing was sent" "procedure-slurm: a submit's 255 is SUBMIT_UNKNOWN"
 has "$PSLT" 'The use is kept and the plan stays used (`rsk launch --plan <id>` again: exit 6 `was used already`)' "procedure-slurm: ...the use kept, the plan used"; has "$LP" 'was used already' "...launch.py's refusal"
-has "$PSLT" '`rsk adopt -T <t> --not-submitted <NONCE> --approve "<their words>"`' "procedure-slurm: only the user's words close an attempt the journal never saw"
+has "$PSLT" '`rsk adopt -T <t> --not-submitted <NONCE> --approve` (with their OK)' "procedure-slurm: only the user's OK closes an attempt the journal never saw"
 has "$(cat "$RS_HOME/src/remote_run/adopt.py")" 'rsk adopt -T t --not-submitted NONCE --approve' "...rsk adopt takes them"
 for f in "$PSLT" "$PNOT"; do has "$f" "ssh's own words are no proof that the body never ran; the use is kept" "a procedure: a cancel's 255 before @@start may have been sent"; done
 has "$DT" "ssh's own words are never that proof" "DESIGN: ssh's words never prove a submit unsent"; has "$AT" "SUBMIT_UNKNOWN whatever ssh's stderr says" "AGENTS: the same"
@@ -446,7 +452,7 @@ has "$DT" "\`tests/62\` with \`\$T/ssh.fallback\`" "DESIGN cites the end-to-end 
 has "$(cat "$RS_HOME/tests/62-rsk-launch.sh")" 'ssh.fallback' "...tests/62 has \$T/ssh.fallback"
 for f in "$ST" "$PSLT" "$PNOT" "$DT" "$AT" "$RT"; do hasnt "$f" 'not reached — nothing sent' "the R5-6 'not reached — nothing sent' proof is gone from the docs"; done
 # R5-5: a non-zero scancel is unknown, unless scancel's own line says there was nothing to cancel
-has "$PSLT" 'A non-zero `scancel` is `UNKNOWN: job J (<run> aNN): scancel exit N (…)` (exit 5): the use is kept and the ledger shows `CANCELLING?`' "procedure-slurm: a failing scancel is unknown"
+has "$PSLT" 'A non-zero `scancel` is `UNKNOWN: job J (<run> aNN): scancel exit N (…)` (exit 5): the ledger shows `CANCELLING?`' "procedure-slurm: a failing scancel is unknown"
 has "$CP" 'out(f"UNKNOWN: {what}: scancel exit {src}"' "...cancel.py prints it"; has "$CP" '"CANCELLING?"' "...and records CANCELLING?"
 has "$PSLT" 'scancel.s own line for that id saying `Invalid job id` or `already completing or completed`: `nothing to cancel: … scancel exit N: …` (exit 0)' "procedure-slurm: the one refund"
 has "$CP" 'invalid job id|already completing or completed' "...cancel.py's MOOT words"; has "$CP" '"COMPLETING"' "...ledger COMPLETING"
@@ -657,8 +663,8 @@ has "$(cat "$RS_HOME/bin/run-avail")" "tr ' ' ','" "...run-avail hands sinfo -p 
 has "$TG" 'def test_r7_2_a_partition_the_profile_does_not_list_is_recorded_with_a_note' "...test_grants.py pins it"; has "$TG" 'def test_r7_2_t_partitions_splits_on_commas_and_whitespace' "...and the split"
 has "$(cat "$RS_HOME/tests/62-rsk-launch.sh")" 'round 7 R7-2' "...tests/62 end to end (a policy partition the profile omits: recorded, enforced)"
 # R6-9, narrowed by R7-2 / R7-6: rsk grant list, rsk status and rsk doctor flag a stored record naming an unknown TARGET (never a partition)
-has "$PSLT" '— never matches\[ there\] (the user.s deny is not enforced there | it covers nothing there) — fix or revoke: rsk grant revoke <id> --quote "<the user.s words>", then record it again with a scope the harness knows' "procedure-slurm: grant list's WARNING"
-has "$GP" "the user's deny is not enforced there" "...grants.scope_warning"; has "$GP" 'fix or revoke: rsk grant revoke {rid} --quote' "...its fix"
+has "$PSLT" '— never matches\[ there\] (the user.s deny is not enforced there | it covers nothing there) — fix or revoke: rsk grant revoke <id>, then record it again with a scope the harness knows' "procedure-slurm: grant list's WARNING"
+has "$GP" "the user's deny is not enforced there" "...grants.scope_warning"; has "$GP" 'fix or revoke: rsk grant revoke {rid}' "...its fix"
 has "$PSLT" 'flag every active record naming a TARGET the harness does not know' "procedure-slurm: targets only"
 has "$PSLT" '`rsk grant list`, `rsk status` (its grants block is grant list.s) and `rsk doctor`' "procedure-slurm: list, status and doctor"
 has "$PSLT" '`--json`: `scope_problems`' "procedure-slurm: --json scope_problems"; has "$GP" '"scope_problems": scope_problems(r, tl)' "...grants.py's --json"
@@ -808,8 +814,7 @@ has "$PSLT" 'a CR too, so a CRLF table, which run-watch used to accept by stripp
 has "$PSLT" 'in `rsk watch` (every mode, before the lease) and in run-watch alike' "procedure-slurm: both, every mode"; has "$WP" '^    check_tables(proj, argv)' "...rsk watch checks before the lease"
 has "$PSLT" 'run-watch checks it at every read and `rsk watch --act` at each lease refresh, so such a byte written into a table while a watch runs ends that watch (exit 2)' "procedure-slurm: during a watch"
 has "$RW" 'parse_all; load_targets; reconcile' "...run-watch re-reads every round"; has "$WP" 'denied, denied_code = (str(exc) if exc.code == USAGE else' "...rsk watch's refresh stops it with exit 2"
-has "$PSLT" 'may not hold a double quote, a newline or a control character other than tab (exit 2, nothing written); UTF-8 text such as Chinese is fine' "procedure-slurm: the --approve words"
-has "$RW" 'no double quote, no control character other than tab' "...run-watch's refusal"
+has "$RW" 'no double quote, no control character other than tab' "run-watch's own --approve words keep their byte rule (DESIGN)"; has "$DT" 'run-watch.s own `--approve` words are held to the same bytes' "...DESIGN says so"
 has "$DT" 'One table, one reading' "DESIGN: R7-7"; has "$DT" 'which run-watch used to accept by stripping the CR, is refused now' "DESIGN: the CRLF change"; has "$AT" 'R7-7' "AGENTS: R7-7"
 has "$TW" 'def test_r7_7_a_nul_in_the_allow_line_or_a_row_name_is_refused_before_anything_starts' "...test_watch.py pins it"; has "$TW" 'def test_r7_7_every_control_character_but_tab_is_refused_cr_included' "...CR included"
 has "$T62" 'round 7 R7-7' "...tests/62 end to end"
@@ -840,33 +845,16 @@ has "$AT" 'every list argument split on commas and stripped, an empty or spaced 
 for t in test_r8_1_split_strips_comma_items_and_refuses_empty_or_spaced_ones test_r8_1_a_stored_item_with_whitespace_is_invalid_and_a_deny_then_matches_everything \
          test_r8_1_rsk_grant_lists_split_on_commas_stripped_whitespace_inside_is_exit_2; do has "$TG" "def $t" "...test_grants.py: $t"; done
 has "$T62" 'round 8 R8-1' "...tests/62 end to end"
-# R8-2: rsk cancel --approve: the user's words must name what is cancelled, as a whole token, else exit 4 and nothing is recorded
-has "$ST" 'Their words must name what is cancelled, as a whole word — the job id / pid (or a range holding it: `102-104`) or the run.s id or name (`rsk cancel <run>`: the run, or every job id) — or, when they answer your question ("sw1 diverged — cancel it?" → "yes"), `--asked "<that question>"` may name it (recorded with their words; never ask again) — else exit 4 `needs user: the words do not name …`, nothing recorded: ask which one they mean ("cancel it" names nothing)' "$F §3: R8-2 + NF8 (--asked, ranges)"
-has "$ST" 'rsk cancel <run> \[--job <id|pid>\] \[--approve "<their words>" \[--asked "<your question>"\]\]' "$F: the cancel line names --asked"
-has "$PSLT" 'The words given to `--approve` must name what is cancelled, as a whole word: for `--job J` the job id J or the run.s id or job name; for `rsk cancel <run>` the run id or name, or every job id it cancels (a chain: the run, or all its jobs)' "procedure-slurm: R8-2"
-has "$PSLT" '`needs user: the words do not name <J|run> — "<words>" names none of: job J = run <run> (<name>) on <t>; nothing recorded or cancelled` (with `--asked`: `"<words>" (answering "<question>") names none of: …`), no approval and no ssh' "procedure-slurm: R8-2, its words"
-has "$PSLT" 'a numeric range names every id in it (`cancel jobs 102-104`, `102 to 104`, `102…104`: 102, 103 and 104)' "procedure-slurm: NF8 ranges"
-has "$PSLT" 'pass that question verbatim with `--asked "<your question>"`: it may name the job instead, and is recorded beside the words (the approval.s `source`, `asked: "…"`, and the audit.s cancel lines) — never ask the user a second time' "procedure-slurm: NF8 --asked"
-has "$PSLT" 'the asked text is your own bookkeeping, rsk does not read whether the answer was a yes — pass it only when the user agreed' "procedure-slurm: NF8's honest limit"
-has "$PSLT" '(`101` is not named by `1101` or `101_2`, `sw1` not by `sw10`, `exp--sw1` or `sw1-b`; trailing punctuation is fine: `cancel job 101.`)' "procedure-slurm: whole tokens (test_cancel.Named pins these examples)"
-has "$PNOT" 'The `--approve` words must name what is stopped, as a whole word: the pid (`--job <pid>`; a numeric range holding it counts: `4101-4103`) or the run.s id or name' "procedure-nohup: R8-2 (+ NF8 ranges)"
-has "$PNOT" 'pass that question verbatim with `--asked`: it may name the run instead, and is recorded beside the words (the approval.s `source`, the audit) — never ask the user again' "procedure-nohup: NF8 --asked"
-has "$PNOT" 'the question is your own text and rsk does not read whether the answer was a yes' "procedure-nohup: NF8's honest limit"
-has "$PNOT" '`needs user: the words do not name <pid|run> — "<words>" names none of: pid P = run <run> (<name>) on <t>; nothing recorded or cancelled`' "procedure-nohup: R8-2, its words"
-has "$CP" 'out(f"needs user: the words do not name {what or ' "...cancel.authorize prints them"; has "$CP" '+ f" names none of: {them} on {target}; nothing recorded or cancelled")' "...the rest of them"
-has "$CP" '+ (f" (answering \\"{asked}\\")" if asked else "")' "...with the question they answer (NF8)"
-has "$CP" 'them = "; ".join(f"{unit} {i.job}" + (f" = run {i.run} ({i.name})"' "...job J = run <run> (<name>)"; has "$CP" 'unit = "job" if kind == "slurm" else "pid"' "...job / pid"
-has "$CP" 'def named(' "...cancel.named"; has "$CP" 'def unnamed(' "...cancel.unnamed"; has "$CP" 'miss = unnamed(items, words, asked) if words is not None else \[\]' "...checked before the approval is recorded (the words or the asked question)"
-has "$CP" 'def ranges(' "...cancel.ranges (NF8)"; has "$CP" 'p.add_argument("--asked"' "...rsk cancel --asked (NF8)"; has "$GP" "return f'asked: \"{asked}\"'" "...grants.asked_source: the approval's source"
-has "$DT" 'Words that answer the agent.s own question name what the question names: `--asked "<the question, verbatim>"`' "DESIGN: NF8 --asked"
-has "$DT" 'the asked text is its own (it can write any question; rsk does not read whether the answer was a yes)' "DESIGN: NF8's honest limit"
-for t in test_nf8_a_yes_to_the_agents_question_names_what_the_question_names test_nf8_a_numeric_range_names_every_job_id_in_it test_nf8_ranges_the_docs_examples; do
-  has "$TC" "def $t" "...test_cancel.py: $t"; done; has "$T62" "NF8: a yes to the agent's own question (--asked)" "...tests/62 end to end"
-has "$DT" 'This is a token check against good-faith slips, not proof of consent' "DESIGN: R8-2's honest limit"; has "$DT" '(R8-2, `cancel.named` / `cancel.unnamed`)' "DESIGN: R8-2"
-has "$AT" '`cancel.named` / `cancel.unnamed`, R8-2' "AGENTS: R8-2"; has "$RT" '"cancel job 123" must name the job (its id, or the run.s name; or answer the agent.s question naming it)' "README: R8-2 + NF8"
-for t in test_r8_2_the_users_words_must_name_what_is_cancelled test_r8_2_a_chain_needs_its_run_or_every_job_and_cancel_own_is_unchanged \
-         test_r8_2_nohup_words_name_the_pid_or_the_run test_r8_2_named_takes_whole_tokens_only_the_docs_examples; do has "$TC" "def $t" "...test_cancel.py: $t"; done
-has "$T62" 'round 8 R8-2' "...tests/62 end to end"
+# R8-2 / NF8 → 2026-11 (S4, S5): rsk records no words and checks none; the agent's own ledger runs are cancelled without a
+# question, anything else of this user's needs --approve for that one command (nothing stored); never someone else's
+for f in "$ST" "$PSLT" "$PNOT" "$DT" "$AT" "$RT"; do
+  hasnt "$f" 'names none of\|cancel\.named\|cancel\.unnamed\|cancel\.ranges\|--asked' "S4/S5: no doc promises the words-name-the-job check or --asked"; done
+has "$PSLT" 'A live attempt of this project.s ledger (rsk launched it, or `rsk adopt` put it there) is the agent.s own: it is cancelled with no grant and no question' "procedure-slurm: S5, the agent's own runs"
+has "$PSLT" 'A job the ledger does not hold (another job of this user in this WorkDir, run-watch.s) needs the user.s OK for this command, `--approve`; without it exit 4: ask' "procedure-slurm: S5, anything else"
+has "$PNOT" 'A live run of this project.s ledger (rsk launched or adopted it: your own) is stopped with no grant and no question' "procedure-nohup: S5, the agent's own runs"
+has "$PNOT" 'a process the ledger does not hold needs the user.s OK for this command (`--approve`; without it exit 4: ask)' "procedure-nohup: S5, anything else"
+has "$DT" 'A `cancel_own` grant is still a valid record but no longer needed, and cancels count against no budget' "DESIGN: S5, cancel_own"
+has "$RT" 'The agent may stop the runs it launched for this project without asking; anything else it stops — "cancel job 123" — only with your OK for that command' "README: S5"
 # R8-3: a partition no scoped Slurm target's T_PARTITIONS lists is exit 2 unless --unlisted-partition (import: "unlisted_ok": true)
 has "$PSLT" "is exit 2, nothing recorded: \`partition P is not in the profile's display list (T_PARTITIONS of <t>: a, b) — nothing recorded: check the spelling with the user (a misspelt partition never matches: the deny would not be enforced, the grant would cover nothing); if it is a real partition the display list omits (policy.sh decides which exist), record it again with --unlisted-partition\`" "procedure-slurm: the R8-3 refusal"
 has "$GP" "the profile's display list (T_PARTITIONS of {lists}) — nothing recorded: check the \"$" "...grants.check_scope's words"
@@ -990,7 +978,7 @@ for r in 'end with the verdict line `rsk launch: exit N' 'branch on the exit cod
          'Slurm: free is not schedulable (priority, caps, your other jobs)' 'rather than stacking submits' \
          'a CANCELLED end was someone.s decision — never relaunched unprompted' 'read one log before relaunching any; bound the relaunches you start'; do
   has "$ST" "$r" "$F: $r"; done
-has "$ST" 'rsk cancel <run> \[--job <id|pid>\] \[--approve "<their words>" \[--asked "<your question>"\]\] \[--wait S\]' "$F: the cancel line names --wait"
+has "$ST" 'rsk cancel <run> \[--job <id|pid>\] \[--approve\] \[--wait S\]' "$F: the cancel line names --approve (a flag) and --wait"
 for f in "$PSLT" "$PNOT"; do
   for r in '\*\*Reading rsk\.\*\* Read each call.s whole output and its exit code' 'one verdict line, the last on stdout: `rsk launch: exit N (<meaning>)`' \
            'logs every call.s full output to a file and branches on the exit code' 'which never splits an unquoted `.VAR`' \
@@ -1005,7 +993,7 @@ has "$PSLT" 'it re-reads the target — the read `rsk status` makes — about ev
 has "$PSLT" '`not ended yet: job J (<run> aNN) on <t>: <state> — the cancel was accepted; rsk status shows its end` and exit 5' "procedure-slurm: --wait's end not seen: exit 5 (I1)"
 has "$PNOT" '`rsk cancel … --wait S` is accepted and changes nothing here' "procedure-nohup: --wait on a box (I1)"
 has "$PSLT" 'only waits (nothing is sent, authorised or used again); after an unconfirmed one (`CANCELLING?`) it sends scancel again' "procedure-slurm: --wait after an accepted vs an unclear cancel (review)"
-has "$PSLT" 'a cancel approval stays used up (a retry needs the user.s words again)' "procedure-slurm: a hung-mount cancel keeps an approval used (review)"
+has "$PSLT" 'nothing was signalled — try again once the mount answers' "procedure-slurm: a hung-mount cancel signalled nothing (review)"
 has "$PSLT" 'on another target rsk prints a NOTE (the old copy may still run)' "procedure-slurm: moving: another target is a NOTE (review)"
 has "$PNOT" 'on another target rsk prints a NOTE (the old copy may still run)' "procedure-nohup: moving: another target is a NOTE (review)"
 has "$(cat "$RS_HOME/src/remote_run/cancel.py")" 'WAIT_MAX_S = 600' "cancel.py: --wait is bounded, as the docs say (S ≤ 600)"

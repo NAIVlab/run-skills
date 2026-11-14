@@ -3,8 +3,8 @@ the project as cwd and TARGET set — no logic of their own (bash stays the one 
 script's). The harness is this rsk's own tree (paths.harness_src(), the one harness.py drives), so what a sync
 deploys matches what this rsk speaks. RS_VIA_RSK=1 tells the scripts they were reached through rsk.
 
-    rsk sync -T T [-C DIR] [run-sync args: -n -D --also PATH --take-over | -n --root PATH] [--approve "the user's words"]
-    rsk bootstrap -T T [-C DIR] [--job [submit.sh flags]] [--approve "the user's words"]
+    rsk sync -T T [-C DIR] [run-sync args: -n -D --also PATH --take-over | -n --root PATH] [--approve]
+    rsk bootstrap -T T [-C DIR] [--job [submit.sh flags]] [--approve]
     rsk pull -T T [-C DIR] [-n] [--root] PATH...      (--root: PATH relative to the conf's OUTPUT_ROOT, run-pull's)
     rsk avail [-T T]... [-C DIR] [--type X] [--min N] [--timeout S]     (-T = the targets run-avail reads)
 Every argument rsk does not know is passed on as it stands (after `--` too).
@@ -15,10 +15,10 @@ run-sync takes -n|--dry-run, -D|--delete, --also PATH and --root PATH (the next 
 `--root -n` are paths, not a dry run), --also=PATH, --root=PATH and --take-over — anything else it refuses itself (exit
 2, nothing done). A root push (`--root`: local paths into the conf's OUTPUT_ROOT, -u, never --delete) is no deletion;
 with -D run-sync refuses it (exit 2), and the gate still reads that -D as one (asks first). run-bootstrap is in
-job mode when its first word is --job (any --job word is gated). They run only with --approve "the user's words"
-(non-empty), recorded in the ledger's audit.jsonl with the command line (event `approved_command`) before the script
-starts; without it — or with words that repeat a standing grant's quote (grants.recycled) — `needs user: …`, exit 4,
-nothing run. A record is bookkeeping, not proof the user agreed.
+job mode when its first word is --job (any --job word is gated). They run only with --approve (a flag: the user OK'd
+this command; words after it are accepted and never recorded), recorded in the ledger's audit.jsonl with the command
+line (event `approved_command`, no words) before the script starts; without it `needs user: …`, exit 4, nothing run.
+A record is bookkeeping, not proof the user agreed.
 """
 
 from __future__ import annotations
@@ -77,7 +77,7 @@ def sync_modes(words: list[str]) -> tuple[bool, bool]:
 
 
 def needs_words(args: argparse.Namespace, argv: list[str]) -> str:
-    """'' unless this call is one only the user's words allow (sync -D without a real -n, bootstrap --job); else what
+    """'' unless this call is one only the user's OK allows (sync -D without a real -n, bootstrap --job); else what
     it is — read with the script's own grammar (sync_modes), never as a set of words."""
     w = argv[2:]
     if args.command == "sync":
@@ -90,23 +90,18 @@ def needs_words(args: argparse.Namespace, argv: list[str]) -> str:
 
 
 def gate(args: argparse.Namespace, argv: list[str], cwd: Path) -> None:
-    """Refuse (exit 4) a call needs_words() names without --approve; with it, audit the words + the command first."""
+    """Refuse (exit 4) a call needs_words() names without --approve; with it, audit the command first."""
     what = needs_words(args, argv)
-    words = getattr(args, "approve", None)
-    if words is not None and not words.strip():
-        raise RskError("--approve takes the user's words, verbatim (non-empty)", USAGE)
     if not what:
         return
-    if words is None:
-        print(f"needs user: approval ({what}) — never a grant's call: ask the user, then pass their words with "
-              "--approve", flush=True)
-        raise RskError(f"rsk {args.command} {' '.join(argv[2:])}: {what} — only with the user's words (--approve); "
+    if getattr(args, "approve", None) is None:
+        print(f"needs user: approval ({what}) — never a grant's call: ask the user, then run it again with --approve",
+              flush=True)
+        raise RskError(f"rsk {args.command} {' '.join(argv[2:])}: {what} — only with the user's OK (--approve); "
                        "nothing run", NEEDS_USER)
-    from remote_run import grants
     from remote_run import ledger as L
-    grants.refuse_recycled(words, L.Ledger(cwd).state().grants, f"rsk {args.command} {' '.join(argv[2:])}")
     L.Ledger(cwd).audit("approved_command", command=args.command, target=getattr(args, "target", ""),
-                        argv=argv[2:], what=what, quote=words)
+                        argv=argv[2:], what=what)
 
 
 def cmd_wrap(args: argparse.Namespace) -> int:
@@ -135,7 +130,7 @@ def add_parsers(sub) -> None:
         else:
             p.add_argument("-T", "--target", required=True)
         if name in ("sync", "bootstrap"):
-            p.add_argument("--approve", default=None, metavar="WORDS",
-                           help="the user's words, for " + ("-D (remote deletion)" if name == "sync" else
+            p.add_argument("--approve", nargs="?", const=True, default=None, metavar="WORDS",
+                           help="the user OK'd it (a flag; words after it are accepted and ignored), for " + ("-D (remote deletion)" if name == "sync" else
                                                             "--job (a Slurm job no plan card showed)"))
         p.set_defaults(func=cmd_wrap, passthrough=True)

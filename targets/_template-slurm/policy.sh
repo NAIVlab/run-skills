@@ -11,7 +11,7 @@
 #     may rewrite SB_ARGS/PART/GTYPE or exit — its exit code propagates verbatim (use 3 for a policy refusal).
 #     Must end with `return 0`: its status is the verdict, so a trailing failed `&&` test would abort the submit.
 #     ACK=1 when an unknown --*-user-asked flag was passed; every unknown --flag (that one too) is collected in T_FLAGS, which
-#     rsk binds into its plan (flags=): no standing grant covers a plan with one, only the user's approval of the card.
+#     rsk binds into its plan (flags=) and shows on the card; a covering grant covers them, so treat each flag as any sbatch option.
 #  The probe: for a plan (PLAN=1, FORCE=1) and an approved submit (--rs-expect) submit.sh first runs `( FORCE=0; t_policy )`
 #     in a subshell — as a submit without -y sees it, so a -y gate silent under FORCE=1 still reaches the card — then the real
 #     one, and probes t_partition the same way right before its real call, with the PART that is submitted (its `return 1`

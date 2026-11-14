@@ -74,7 +74,7 @@ class Basics(ScratchHome):
     def test_attempts(self):
         r, a = self.led.record_attempt(name="exp--a01", target="fx", kind="slurm", nonce="n1", submit="submitted",
                                        job="11", plan={"bound_hash": "h" * 64, "partition": "gpu", "warnings": "0"},
-                                       plan_id="p-1", grant="g-1", quote="go")
+                                       plan_id="p-1", grant="g-1")
         self.assertEqual((r, a), ("exp", "a01"))
         self.assertEqual(self.led.record_attempt(name="exp--a01", target="fx", kind="slurm", nonce="n1",
                                                  submit="submitted", job="11"), ("exp", "a01"))   # same nonce: no-op

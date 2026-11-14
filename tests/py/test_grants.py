@@ -51,7 +51,7 @@ def plan(plan_id: str = "p-test", **kv: str) -> dict:
 
 
 def approval(quote: str, plans: list[dict], **kw) -> dict:
-    return G.new_approval(quote, plans, plan_ids=[p.get("plan_id", "p-test") for p in plans], **kw)
+    return G.new_approval(plans, plan_ids=[p.get("plan_id", "p-test") for p in plans], **kw)
 
 
 def state(*recs: dict, runs: dict | None = None, now: float | None = None) -> L.LedgerState:
@@ -60,16 +60,17 @@ def state(*recs: dict, runs: dict | None = None, now: float | None = None) -> L.
 
 def grant(scope: dict | None = None, actions=("launch",), **lim) -> dict:
     lim = {"max_live": None, "max_launches": None, "expires": None, **lim}
-    return G.new_grant("you can submit these yourself", scope or {}, list(actions), **lim)
+    return G.new_grant(scope or {}, list(actions), **lim)
 
 
-def cancel_ap(quote: str, target: str, jobs: list[str], **kw) -> dict:
-    """A cancel approval as rsk cancel records it: each job bound to its identity (Slurm: job, name, WorkDir)."""
-    return G.new_cancel_approval(quote, target, jobs, idents=[ident(target, j) for j in jobs], **kw)
-
-
-def ident(target: str, job: str, name: str = "", workdir: str = "/r/proj") -> str:
-    return G.cancel_ident("slurm", target, job, name, workdir)
+def old_cancel_ap(target: str, jobs: list[str]) -> dict:
+    """A cancel approval as an older rsk cancel recorded it (S5: none is written or read now; it stays valid)."""
+    return G.validate({"id": G.new_id("approval"), "kind": "approval", "quote": "cancel job " + " ".join(jobs),
+                       "created_at": L.now(), "created_via": "cli", "source": "",
+                       "scope": {"jobs": list(jobs), "targets": [target],
+                                 "idents": [json.dumps(["slurm", target, j, "", "/r/proj"]) for j in jobs]},
+                       "actions": ["cancel"], "limits": {"max_launches": 1, "max_live": None, "expires": G._in(3600)},
+                       "used": [], "revoked": None})
 
 
 def run(*argv: str) -> tuple[int, str]:
@@ -171,7 +172,7 @@ class Records(unittest.TestCase):
 
     def test_validation_errors(self):
         g = grant()
-        for change, why in (({"quote": "  "}, "quote"), ({"kind": "maybe"}, "kind"), ({"extra": 1}, "unknown key"),
+        for change, why in (({"quote": 5}, "quote"), ({"kind": "maybe"}, "kind"), ({"extra": 1}, "unknown key"),
                             ({"actions": ["launch", "fly"]}, "actions"), ({"actions": ["cancel"]}, "cancel_own"),
                             ({"scope": {"max_gpus": -1}}, "max_gpus"), ({"scope": {"color": ["x"]}}, "scope key"),
                             ({"limits": {"max_live": 0, "max_launches": None, "expires": None}}, "max_live"),
@@ -182,12 +183,17 @@ class Records(unittest.TestCase):
                 G.validate({**g, **change})
             self.assertIn(why, str(cm.exception), change)
         with self.assertRaises(RskError) as cm:
-            G.new_deny("never there", {"max_gpus": 4})
+            G.new_deny({"max_gpus": 4})
         self.assertIn("a deny takes", str(cm.exception))
         with self.assertRaises(RskError):
             G.validate({**approval("ok", [plan()]), "scope": {}})
         with self.assertRaises(RskError):
-            G.validate({**cancel_ap("stop it", "fx", ["5"]), "scope": {"targets": ["fx"]}})
+            G.validate({**old_cancel_ap("fx", ["5"]), "scope": {"targets": ["fx"]}})
+        for words in ({}, {"quote": ""}, {"quote": "the user's words, as an older rsk kept them"}):   # S4: optional
+            rec = {k: v for k, v in g.items() if k != "quote"}
+            self.assertEqual(G.valid({**rec, **words}), "", words)
+        self.assertNotIn("quote", g)                                         # S4: never written
+        self.assertEqual(G.valid({**g, "revoked": {"at": L.now()}}), "")     # a revocation needs no words
         missing = dict(g)
         del missing["source"]
         with self.assertRaises(RskError):
@@ -197,19 +203,21 @@ class Records(unittest.TestCase):
 class Covers(unittest.TestCase):
     def test_deny_wins(self):
         st = state(grant({"targets": ["fx"]}), approval("yes", [plan()]),
-                   G.new_deny("never on gpu", {"partitions": ["gpu"]}))
+                   G.new_deny({"partitions": ["gpu"]}))
         d = G.check(st, "launch", plan=plan())
         self.assertFalse(d.covered)
         self.assertTrue(d.denied)
         self.assertEqual(d.code, REFUSED)
-        self.assertIn('"never on gpu"', d.reasons[0])
+        self.assertEqual(d.reasons[0], f"denied by {st.grants[2]['id']}")          # S4: no words recorded
         self.assertEqual(d.needs, "")
+        older = {**st.grants[2], "quote": "never on gpu"}                          # an older record's words: shown
+        self.assertIn('"never on gpu"', G.check(state(older), "launch", plan=plan()).reasons[0])
         other = G.check(st, "launch", plan=plan(partition="part-c"))   # outside the deny: the grant
         self.assertEqual((other.covered, other.record["kind"]), (True, "grant"))
-        st2 = state(grant(), G.new_deny("not that type", {"gpu_types": ["gt-b"]}))
+        st2 = state(grant(), G.new_deny({"gpu_types": ["gt-b"]}))
         self.assertTrue(G.check(st2, "launch", plan=plan(gres="gpu:4")).denied)     # any type may land on gt-b
         self.assertTrue(G.check(st2, "launch", plan=plan()).covered)                # gt-a is not gt-b
-        self.assertFalse(G.check(state(grant(), G.new_deny("x", {"names": ["exp*"]}, ["cancel"])), "launch",
+        self.assertFalse(G.check(state(grant(), G.new_deny({"names": ["exp*"]}, ["cancel"])), "launch",
                                  plan=plan()).denied)                               # a deny of other actions
 
     def test_grant_scope(self):
@@ -271,7 +279,7 @@ class Covers(unittest.TestCase):
         r = grant()
         r["revoked"] = {"at": L.now(), "quote": "stop that"}
         self.assertFalse(G.check(state(r), "launch", plan=plan()).covered)
-        d = G.new_deny("no", {})
+        d = G.new_deny({})
         d["revoked"] = {"at": L.now(), "quote": "ok again"}
         self.assertTrue(G.check(state(d, grant()), "launch", plan=plan()).covered)
 
@@ -298,7 +306,7 @@ class Covers(unittest.TestCase):
                "request": {"action": "launch", "plan": "p-1", "bound_hash": orig["bound_hash"], "bound": G.bound(orig)},
                "submissions": [{"nonce": "n1", "submit": "submitted", "job": "5"}], "result": {"state": "PREEMPTED"}}
         runs = {"exp--train--base--scratch--s0": {"run": "exp--train--base--scratch--s0", "attempts": {"a01": att}}}
-        g = grant(actions=("launch", "relaunch"))
+        g = grant(actions=("relaunch",))         # relaunch without launch: an infrastructure end, the same config
         g["actions"].append("resubmit")          # (a record from before `rsk grant add` refused it: still valid)
         st = state(g, runs=runs)
         again = plan(name="exp--train--base--scratch--s0--a02")   # the name is bound: a new hash
@@ -316,37 +324,47 @@ class Covers(unittest.TestCase):
         self.assertIn("no recorded plan", " ".join(G.check(state(g, runs=adopted), "relaunch",
                                                            plan=plan(name="r--a02"), run="r").reasons))
 
-    def test_cancel_approval_names_its_jobs_and_cancel_own_its_runs(self):
-        ap = cancel_ap("cancel job 123", "fx", ["123"])
-        st = state(ap)
-        self.assertTrue(G.check(st, "cancel", job="123", plan={"target": "fx"}, ident=ident("fx", "123")).covered)
-        self.assertFalse(G.check(st, "cancel", job="124", plan={"target": "fx"}, ident=ident("fx", "124")).covered)
-        ap["used"].append({"nonce": "k1", "action": "cancel", "hash": "", "job": "123", "at": L.now()})
-        self.assertFalse(G.check(st, "cancel", job="123", plan={"target": "fx"}, ident=ident("fx", "123")).covered)
+    def test_s5_a_cancel_needs_no_record_for_a_live_ledger_run_and_the_users_ok_otherwise(self):
         own = {"name": "exp--a01", "target": "fx", "kind": "slurm",
                "request": {"action": "launch", "plan": "p-1", "bound": {"partition": "gpu"}},
                "submissions": [{"nonce": "n1", "submit": "submitted", "job": "7"}]}
-        theirs = {**own, "request": {"action": "adopted"}, "submissions": [{"nonce": "x", "submit": "adopted", "job": "8"}]}
-        runs = {"exp": {"run": "exp", "attempts": {"a01": own, "a02": theirs}}}
-        g = grant({"targets": ["fx"]}, actions=("launch", "cancel_own"))
-        st = state(g, runs=runs)
-        self.assertTrue(G.check(st, "cancel", job="7", run="exp").covered)
-        d = G.check(st, "cancel", job="8", run="exp")
-        self.assertFalse(d.covered)
-        self.assertIn("not one rsk launched", " ".join(d.reasons))
-        self.assertFalse(G.check(state(grant({"targets": ["fx"]}), runs=runs), "cancel", job="7", run="exp").covered)
-        self.assertTrue(G.check(state(g, G.new_deny("never cancel", {}, ["cancel"]), runs=runs), "cancel", job="7",
-                                run="exp").denied)
-        self.assertFalse(G.check(state(g, G.new_deny("only I stop runs", {}, ["cancel_own"]), runs=runs), "cancel",
-                                 job="7", run="exp").covered)
-        self.assertTrue(G.check(state(ap, G.new_deny("only I stop runs", {}, ["cancel_own"])), "cancel", job="124",
-                                plan={"target": "fx"}, ident=ident("fx", "124")).covered is False)
-        named = G.new_cancel_approval("cancel job 7", "fx", ["7"], idents=[ident("fx", "7", "exp--a01")])
-        d = G.check(state(g, named, G.new_deny("only I stop runs", {}, ["cancel_own"]), runs=runs), "cancel", job="7",
-                    run="exp", ident=ident("fx", "7", "exp--a01"))   # the user's named cancel beats cancel_own's deny
-        self.assertEqual((d.covered, d.record["id"]), (True, named["id"]))
-        d = G.check(state(g, G.new_deny("only I stop runs", {}, ["cancel_own"]), runs=runs), "cancel", job="7", run="exp")
-        self.assertIn("cancel_own is denied", " ".join(d.reasons))
+        adopted = {**own, "request": {"action": "adopted"}, "submissions": [{"nonce": "x", "submit": "adopted", "job": "8"}]}
+        ended = {**own, "submissions": [{"nonce": "e", "submit": "submitted", "job": "9", "end": {"state": "FAILED"}}],
+                 "result": {"state": "FAILED"}}
+        runs = {"exp": {"run": "exp", "attempts": {"a01": own, "a02": adopted, "a03": ended}}}
+        st = state(runs=runs)                                          # no record at all
+        for job in ("7", "8"):                                          # launched by rsk, or adopted: the agent's own
+            d = G.check(st, "cancel", job=job, run="exp")
+            self.assertEqual((d.covered, d.record, d.code), (True, None, 0), job)
+        d = G.check(st, "cancel", job="9", run="exp")                    # the ledger shows it ended: the user's call
+        self.assertEqual((d.covered, d.denied, d.code), (False, False, NEEDS_USER))
+        self.assertIn("--approve", d.needs)
+        d = G.check(st, "cancel", job="123", plan={"target": "fx"})     # a job the ledger does not know
+        self.assertEqual((d.covered, d.code), (False, NEEDS_USER))
+        self.assertIn("a job the ledger does not know", " ".join(d.reasons))
+        self.assertTrue(G.check(st, "cancel", job="123", plan={"target": "fx"}, approved=True).covered)
+        self.assertTrue(G.check(st, "cancel", job="9", run="exp", approved=True).covered)
+        for deny in (G.new_deny({}, ["cancel"]), G.new_deny({"names": ["exp*"]}, ["cancel"])):
+            for job, ok in (("7", False), ("123", True)):               # a deny of cancel: always, approved or not
+                d = G.check(state(deny, runs=runs), "cancel", job=job, run="exp" if job == "7" else "",
+                            plan={"target": "fx"}, approved=ok)
+                self.assertTrue(d.denied, (deny["scope"], job))
+                self.assertEqual(d.code, REFUSED)
+        own_deny = G.new_deny({}, ["cancel_own"])                      # the agent's own discretion is off …
+        d = G.check(state(own_deny, runs=runs), "cancel", job="7", run="exp")
+        self.assertTrue(d.denied)
+        self.assertIn("only the user's OK", " ".join(d.reasons))
+        self.assertTrue(G.check(state(own_deny, runs=runs), "cancel", job="7", run="exp", approved=True).covered)
+        g = grant({"targets": ["fx"]}, actions=("launch", "cancel_own"), max_launches=1)   # still valid, not needed
+        self.assertEqual(G.valid(g), "")
+        self.assertIn("launches 0/1", G.balance(g, state(g)))
+        self.assertNotIn("cancels", G.balance(g, state(g)))
+        old = old_cancel_ap("fx", ["123"])                             # an older cancel approval: valid, never read
+        self.assertEqual(G.valid(old), "")
+        self.assertFalse(G.check(state(old), "cancel", job="123", plan={"target": "fx"}).covered)
+        self.assertIn("cancel of job(s) 123", G.describe(old))
+        with self.assertRaises(RskError):
+            G.covers({"target": "fx"}, "cancel", state())              # covers() is for launches only
         bad = grant()
         bad["limits"]["expires"] = "someday"                           # a hand-edited file: invalid, covers nothing
         d = G.check(state(bad), "launch", plan=plan())
@@ -354,7 +372,7 @@ class Covers(unittest.TestCase):
         self.assertIn("INVALID record covers nothing", d.reasons[0])
 
     def test_after_deny_flag(self):
-        d = G.new_deny("not on gpu", {"partitions": ["gpu"]})
+        d = G.new_deny({"partitions": ["gpu"]})
         g = grant({"partitions": ["gpu", "part-c"]})
         self.assertIn(f"after deny {d['id']}", G.after_deny(g, [d])[0])
         self.assertEqual(G.after_deny(grant({"partitions": ["part-c"]}), [d]), [])          # disjoint
@@ -368,18 +386,19 @@ class Covers(unittest.TestCase):
 
     def test_describe_says_what_it_covers(self):
         self.assertEqual(G.describe(grant({"targets": ["fx"], "max_gpus": 4, "max_time_s": 7200})),
-                         "launch: targets fx; <= 4 GPUs; <= 2:00:00; no plan with warnings")
+                         "launch: targets fx; <= 4 GPUs; <= 2:00:00; no plan with warnings; a relaunch after any end "
+                         "too, judged as a launch (never while an earlier attempt may be live)")
         self.assertIn("2 approved plan(s)", G.describe(approval("ok", [plan(), plan(name="x--a01")])))
-        self.assertIn("cancel of job(s) 5", G.describe(cancel_ap("stop 5", "fx", ["5"])))
-        self.assertEqual(G.describe(G.new_deny("no", {"names": ["x*"]})), "DENY every action: names x*")
-        self.assertEqual(G.describe(G.new_deny("no", {}, ["cancel"])), "DENY cancel: anything")
+        self.assertIn("cancel of job(s) 5", G.describe(old_cancel_ap("fx", ["5"])))
+        self.assertEqual(G.describe(G.new_deny({"names": ["x*"]})), "DENY every action: names x*")
+        self.assertEqual(G.describe(G.new_deny({}, ["cancel"])), "DENY cancel: anything")
         self.assertIn("no limit (user's words)", G.balance(grant(), state()))
 
 
 class ReviewFixes(unittest.TestCase):
     """The P3 review findings, each pinned (H2 H3 M1 M2 M5 L1 L5 and `resubmit` in a new grant)."""
 
-    def test_h2_sbatch_extra_time_and_resources_are_never_a_grants_call(self):
+    def test_h2_s3_sbatch_extra_time_is_capped_and_its_other_words_are_covered(self):
         f = G.facts(plan(extra="--time=7-00:00:00 --qos=normal -t 2:00:00"))
         self.assertEqual((f.time_s, f.time_extra, f.extra_res),     # time: the bound field (D1: the words decide)
                          (86400, "2:00:00", ("--time=7-00:00:00", "-t", "2:00:00")))
@@ -389,11 +408,9 @@ class ReviewFixes(unittest.TestCase):
         capped = grant({"max_time_s": 3600, "max_gpus": 2}, max_live=None, max_launches=None, expires=None)
         d = G.check(state(capped), "launch", plan=plan(time="30", extra="--time=7-00:00:00"))
         self.assertFalse(d.covered)
-        self.assertIn("SBATCH_EXTRA word(s) no standing grant covers (--time=7-00:00:00)", " ".join(d.reasons))
-        open_ = grant({"targets": ["fx"]})                          # no caps at all: still the user's call
-        d = G.check(state(open_), "launch", plan=plan(extra="--nodes=8 --gpus-per-node=4"))
-        self.assertFalse(d.covered)
-        self.assertIn("(--nodes=8, --gpus-per-node=4)", " ".join(d.reasons))
+        self.assertIn("7-00:00:00 time > 1:00:00", " ".join(d.reasons))   # max_time_s: every limit sbatch could read
+        open_ = grant({"targets": ["fx"]})                          # S3: the extra words are the grant's call too
+        self.assertTrue(G.check(state(open_), "launch", plan=plan(extra="--nodes=8 --gpus-per-node=4")).covered)
         p = plan(extra="--nodes=8")
         self.assertTrue(G.check(state(approval("yes, 8 nodes", [p])), "launch", plan=p).covered)   # the user saw it
         self.assertTrue(G.check(state(open_), "launch", plan=plan(extra="--qos=normal --exclude=n1")).covered)
@@ -404,7 +421,7 @@ class ReviewFixes(unittest.TestCase):
         d = G.check(state(smoke), "launch", plan=train_name)
         self.assertFalse(d.covered)
         self.assertIn("class train not in smoke", " ".join(d.reasons))
-        deny = G.new_deny("no train runs this week", {"classes": ["train"]})
+        deny = G.new_deny({"classes": ["train"]})
         self.assertTrue(G.check(state(smoke, deny), "launch", plan=train_name).denied)
         labelled = {**plan(name="exp-plain--a01"), "class": "train"}
         self.assertTrue(G.check(state(grant(), deny), "launch", plan=labelled).denied)     # the label alone
@@ -412,17 +429,17 @@ class ReviewFixes(unittest.TestCase):
                                  plan={**plan(name="exp--smoke--x--a01")}).denied)
 
     def test_m1_a_deny_of_launch_stops_every_way_of_starting_a_run(self):
-        deny = G.new_deny("stop launching anything on fx today", {"targets": ["fx"]}, ["launch"])
+        deny = G.new_deny({"targets": ["fx"]}, ["launch"])
         g = grant(actions=("launch", "chain", "relaunch"))
         g["actions"].append("resubmit")
         for action in ("launch", "chain", "relaunch", "resubmit"):
             self.assertTrue(G.check(state(g, deny), action, plan=plan(), run="exp").denied, action)
         self.assertFalse(G.check(state(g, deny), "cancel", job="5", plan={"target": "fx"}).denied)
-        only_chain = G.new_deny("no chains", {}, ["chain"])
+        only_chain = G.new_deny({}, ["chain"])
         self.assertFalse(G.check(state(g, only_chain), "launch", plan=plan()).denied)
 
     def test_m2_deny_names_match_the_run_id_grants_the_name_only(self):
-        deny = G.new_deny("never run exp--train--big again", {"names": ["exp--train--big"]})
+        deny = G.new_deny({"names": ["exp--train--big"]})
         for name in ("exp--train--big", "exp--train--big--a01", "exp--train--big--a02"):
             for action in ("launch", "relaunch"):
                 self.assertTrue(G.check(state(grant(actions=("launch", "relaunch")), deny), action,
@@ -473,7 +490,7 @@ class ReviewFixes(unittest.TestCase):
         with self.assertRaises(RskError) as c:
             grant(actions=("launch", "resubmit"))
         self.assertIn("'resubmit' is not a standing grant's action", str(c.exception))
-        self.assertIn("resubmit", G.new_deny("no resubmits", {}, ["resubmit"])["actions"])
+        self.assertIn("resubmit", G.new_deny({}, ["resubmit"])["actions"])
 
 
 class Round3(unittest.TestCase):
@@ -498,22 +515,22 @@ class Round3(unittest.TestCase):
                            (["bare"], ["bare"]), (["--nodes=2"], ["--nodes=2"]), (["-N2"], ["-N2"])):
             self.assertEqual(G.conf_extra_bad(words), bad, words)
 
-    def test_d1_g2_1_g2_3_g2_8_coverage_reads_conf_extra_only(self):
+    def test_d1_s3_conf_extra_words_are_covered_and_only_time_is_capped(self):
         open_ = grant({"targets": ["fx"], "max_time_s": 3600})
-        for extra in ("--time=7-00:00:00 --comment -t1", "--thread-spec=1", "-S 1", "--core-spec=1", "--exclusive"):
-            d = G.check(state(open_), "launch", plan=plan(time="30", extra=extra))
-            self.assertFalse(d.covered, extra)
-            self.assertIn("SBATCH_EXTRA word(s) no standing grant covers", " ".join(d.reasons), extra)
+        d = G.check(state(open_), "launch", plan=plan(time="30", extra="--time=7-00:00:00 --comment -t1"))
+        self.assertFalse(d.covered)
+        self.assertIn("time > 1:00:00", " ".join(d.reasons))
+        for extra in ("--thread-spec=1", "-S 1", "--core-spec=1", "--exclusive", "--nodes=2"):
             p = plan(time="30", extra=extra)
+            self.assertTrue(G.facts(p).extra_res, extra)                  # the card still NOTEs them
+            self.assertTrue(G.check(state(open_), "launch", plan=p).covered, extra)
             self.assertTrue(G.check(state(approval("yes, as shown", [p])), "launch", plan=p).covered)  # the card
         self.assertTrue(G.check(state(open_), "launch", plan=plan(time="30", extra="--comment -t1")).covered)
         pinned = plan(time="30", extra="--nodelist=n1", conf_extra="")     # a site policy's SB_ARGS word (grants#8)
         self.assertTrue(G.check(state(open_), "launch", plan=pinned).covered)
         old = plan(time="30", conf_extra=None)                               # a block from before conf_extra
         self.assertNotIn("conf_extra", old)
-        d = G.check(state(open_), "launch", plan=old)
-        self.assertFalse(d.covered)
-        self.assertIn("no conf_extra", " ".join(d.reasons))
+        self.assertTrue(G.check(state(open_), "launch", plan=old).covered)
 
     def test_d2_g2_2_r1_5_a_zero_time_is_unlimited(self):
         for t in ("0", "0:0", "00:00:00", "0-0", "0-00:00:00", "UNLIMITED", "infinite"):
@@ -573,8 +590,8 @@ class Round3(unittest.TestCase):
                "result": None if live else {"state": end}}
         return {"exp--train--base--scratch--s0": {"run": "exp--train--base--scratch--s0", "attempts": {"a01": att}}}
 
-    def test_d5_r1_2_a_relaunch_grant_resumes_only_an_infrastructure_end(self):
-        g = grant(actions=("launch", "relaunch"))
+    def test_d5_r1_2_a_relaunch_only_grant_resumes_only_an_infrastructure_end(self):
+        g = grant(actions=("relaunch",))
         again = plan(name="exp--train--base--scratch--s0--a02", plan_id="p-2")
         run = "exp--train--base--scratch--s0"
         for end in ("PREEMPTED", "NODE_FAIL", "BOOT_FAIL", "REBOOT"):
@@ -589,14 +606,47 @@ class Round3(unittest.TestCase):
         self.assertTrue(G.check(state(ap, runs=self._runs("CANCELLED")), "relaunch", plan=again, run=run).covered)
         self.assertIn("only after an infrastructure end", G.describe(g))
 
+    def test_s1_a_launch_grant_covers_a_relaunch_after_any_end_but_never_beside_a_live_attempt(self):
+        run = "exp--train--base--scratch--s0"
+        fresh = {**plan(name=f"{run}--a02", plan_id="p-2", payload="python train.py --fixed"), "info_prior": "1",
+                 "plan_age_s": 5}                                   # a fixed command: another configuration
+        for acts in (("launch",), ("launch", "relaunch")):
+            g = grant({"targets": ["fx"]}, actions=acts)
+            for end in ("FAILED", "CANCELLED", "COMPLETED", "TIMEOUT", "OUT_OF_MEMORY", "PREEMPTED"):
+                d = G.check(state(g, runs=self._runs(end)), "relaunch", plan=fresh, run=run)
+                self.assertTrue(d.covered, (acts, end, d.reasons))
+            g["scope"]["relaunch_after"] = "infra"                       # a stored "infra" no longer narrows it
+            if "relaunch" in acts:
+                self.assertEqual(G.valid(g), "")
+                self.assertTrue(G.check(state(g, runs=self._runs("FAILED")), "relaunch", plan=fresh, run=run).covered)
+            g["scope"].pop("relaunch_after")
+            d = G.check(state(g, runs=self._runs(None, live=True)), "relaunch", plan=fresh, run=run)
+            self.assertFalse(d.covered)                                  # KEEP: never a second copy beside a live one
+            self.assertIn("may still be live", " ".join(d.reasons))
+            more = {**fresh, "info_prior": "2"}                          # one only the target's journal shows
+            self.assertIn("one it never saw", " ".join(G.check(state(g, runs=self._runs("FAILED")), "relaunch",
+                                                              plan=more, run=run).reasons))
+            stale = {**fresh, "plan_age_s": G.ANY_PLAN_MAX_AGE_S + 60}
+            self.assertIn("min old", " ".join(G.check(state(g, runs=self._runs("FAILED")), "relaunch", plan=stale,
+                                                      run=run).reasons))
+            scoped = grant({"targets": ["fx"], "max_gpus": 1}, actions=acts)   # judged as a launch: its caps hold
+            self.assertIn("GPUs > 1", " ".join(G.check(state(scoped, runs=self._runs("FAILED")), "relaunch",
+                                                      plan=fresh, run=run).reasons))
+            done = grant({"targets": ["fx"]}, actions=acts, max_launches=1)
+            done["used"].append({"nonce": "u1", "action": "launch", "hash": "", "job": "", "at": L.now()})
+            self.assertIn("used 1 of 1", " ".join(G.check(state(done, runs=self._runs("FAILED")), "relaunch",
+                                                         plan=fresh, run=run).reasons))
+            deny = G.new_deny({"names": [run]}, ["relaunch"])
+            self.assertTrue(G.check(state(g, deny, runs=self._runs("FAILED")), "relaunch", plan=fresh, run=run).denied)
+
     def test_d5_g2_4_g2_6_every_derived_action_is_checked(self):
         run = "exp--train--base--scratch--s0"
-        deny = G.new_deny("do not relaunch it, it is broken", {"names": [run]}, ["relaunch"])
+        deny = G.new_deny({"names": [run]}, ["relaunch"])
         p = plan(name=run)                                           # a plain launch of a run that has attempts
         d = G.check(state(grant(actions=("launch", "relaunch")), deny, runs=self._runs("PREEMPTED")), "relaunch",
                     plan=p, run=run)
         self.assertTrue(d.denied)
-        chain_deny = G.new_deny("never chain jobs", {}, ["chain"])
+        chain_deny = G.new_deny({}, ["chain"])
         p = plan(chain="1", extra="--dependency=singleton")
         self.assertTrue(G.check(state(grant(actions=("launch", "chain")), chain_deny), "chain", plan=p).denied)
         d = G.check(state(grant(actions=("launch",))), "chain", plan=p)
@@ -608,13 +658,13 @@ class Round3(unittest.TestCase):
                                 ).denied)
 
     def test_g2_5_recorded_classes_are_denied_too(self):
-        deny = G.new_deny("no more train runs", {"classes": ["train"]})
+        deny = G.new_deny({"classes": ["train"]})
         relabelled = {**plan(name="bigrun--a02"), "class": "smoke", "classes_recorded": ["train"]}
         self.assertTrue(G.check(state(grant(actions=("launch", "relaunch")), deny), "launch", plan=relabelled).denied)
 
     def test_g2_7_g2_10_damaged_records_deny_until_fixed_or_revoked(self):
         g = grant()
-        valid_deny = G.new_deny("never on the debug partition", {"partitions": ["debug"]})
+        valid_deny = G.new_deny({"partitions": ["debug"]})
         for change in ({"kind": "Deny"}, {"kind": None}, {"extra_key": 1}):
             bad = {**valid_deny, **change}
             if change.get("kind", "x") is None:
@@ -629,7 +679,7 @@ class Round3(unittest.TestCase):
         as_grant = {**grant(), "id": "d-20260101-abcdef"}                                    # a d- id, kind grant
         self.assertTrue(G.check(state(g, as_grant), "launch", plan=plan()).denied)
         self.assertTrue(G.check(state(g, "not a record"), "launch", plan=plan()).denied)
-        broken_grant = {**grant(), "quote": ""}                      # an invalid grant still covers nothing, no deny
+        broken_grant = {**grant(), "quote": 5}                       # an invalid grant still covers nothing, no deny
         d = G.check(state(broken_grant), "launch", plan=plan())
         self.assertEqual((d.covered, d.denied), (False, False))
 
@@ -641,47 +691,13 @@ class Round3(unittest.TestCase):
         self.assertTrue(G.same_config({"target": "fx", "kind": "slurm", "bound": b},
                                       plan(name="exp--train--base--scratch--s0--a02", venv_dir="/v")))
 
-    def test_d6_g3_flow_1_cancel_approvals_bind_identity_and_expire(self):
-        ap = G.new_cancel_approval("kill pid 20331 on the box", "ws", ["20331"],
-                                   idents=[G.cancel_ident("nohup", "ws", "20331", "111", "boot-a")])
-        st = state(ap)
-        mine = G.cancel_ident("nohup", "ws", "20331", "111", "boot-a")
-        other = G.cancel_ident("nohup", "ws", "20331", "999", "boot-a")      # the pid came round to another run
-        self.assertTrue(G.check(st, "cancel", job="20331", plan={"target": "ws"}, ident=mine).covered)
-        d = G.check(st, "cancel", job="20331", plan={"target": "ws"}, ident=other)
-        self.assertFalse(d.covered)
-        self.assertIn("the user's words were for that one", " ".join(d.reasons))
-        self.assertFalse(G.check(st, "cancel", job="20331", plan={"target": "ws"}).covered)    # no identity: no
-        later = state(ap, now=time.time() + G.CANCEL_TTL_S + 60)
-        self.assertFalse(G.check(later, "cancel", job="20331", plan={"target": "ws"}, ident=mine).covered)
-        old = {**ap, "scope": {"jobs": ["20331"], "targets": ["ws"]}, "limits": {**ap["limits"], "expires": None}}
-        self.assertIn("scope.idents", G.valid(old))                  # from before identity binding: covers nothing
-        self.assertFalse(G.check(state(old), "cancel", job="20331", plan={"target": "ws"}, ident=mine).covered)
-        self.assertIn("bound to pid 20331 on ws", G.describe(ap))
-
-    def test_r1_6_cancel_own_counts_its_uses(self):
-        g = grant({"classes": ["smoke"]}, actions=("cancel_own",), max_live=None, max_launches=1, expires=None)
-        own = {"name": "exp--smoke--a--a01", "target": "fx", "kind": "slurm",
-               "request": {"action": "launch", "plan": "p-1", "bound": {"partition": "gpu"}},
-               "submissions": [{"nonce": "n1", "submit": "submitted", "job": "7"}]}
-        runs = {"exp--smoke--a": {"run": "exp--smoke--a", "attempts": {"a01": own}}}
-        self.assertTrue(G.check(state(g, runs=runs), "cancel", job="7", run="exp--smoke--a").covered)
-        self.assertIn("uses 0/1", G.balance(g, state(g)))
-        g["used"].append({"nonce": "c1", "action": "cancel", "hash": "", "job": "6", "at": L.now()})
-        d = G.check(state(g, runs=runs), "cancel", job="7", run="exp--smoke--a")
-        self.assertFalse(d.covered)
-        self.assertIn("used 1 of 1", " ".join(d.reasons))
-        self.assertIn("uses 1/1", G.balance(g, state(g)))
-        mixed = grant(actions=("launch", "cancel_own"), max_launches=2)
-        self.assertIn("cancels 0/2", G.balance(mixed, state(mixed)))
-
     def test_d8_deny_match_with_an_unknown_job_fails_closed(self):
-        deny = G.new_deny("never cancel job 9", {"jobs": ["9"]}, ["cancel"])
+        deny = G.new_deny({"jobs": ["9"]}, ["cancel"])
         row = {"target": "fx", "kind": "slurm", "name": "a", "warnings": "0"}
         self.assertIsNotNone(G.deny_match(row, ("cancel",), state(deny), job=None)[0])
         self.assertIsNone(G.deny_match(row, ("cancel",), state(deny), job="8")[0])
         self.assertIsNone(G.deny_match(row, ("launch",), state(deny), job=None)[0])
-        own = G.new_deny("only I stop runs", {}, ["cancel_own"])
+        own = G.new_deny({}, ["cancel_own"])
         d, _, o = G.deny_match(row, ("cancel",), state(own), job=None)
         self.assertEqual((d, o["id"]), (None, own["id"]))
 
@@ -704,7 +720,7 @@ class Round4(unittest.TestCase):
         """NEW-deny-run-failopen / N2: `rsk grant deny --run H` matched rsk launch only — a cancel (no plan) and a
         run-watch row (no hash) slipped past it; an unknown bound hash / plan id now matches (fail closed)."""
         p = plan(name=f"{self.RUN}--a01")
-        deny = G.new_deny("do not touch that run, whatever happens", {"runs": [p["bound_hash"]]})
+        deny = G.new_deny({"runs": [p["bound_hash"]]})
         own = grant({"targets": ["fx"]}, actions=("launch", "cancel_own"))
         runs = {self.RUN: {"run": self.RUN, "attempts": {"a01": self._att(p, "a01", None, "101", "p-1")}}}
         self.assertTrue(G.check(state(own, deny), "launch", plan=p).denied)                 # as before
@@ -717,7 +733,7 @@ class Round4(unittest.TestCase):
         runs2 = {self.RUN: {"run": self.RUN, "attempts": {"a01": self._att(other, "a01", None, "101", "p-1")}}}
         self.assertTrue(G.check(state(own, deny, runs=runs2), "cancel", job="101", run=self.RUN,
                                 plan={"target": "fx"}).covered)                          # another plan: not that one
-        pdeny = G.new_deny("never that plan", {"plans": ["p-1"]})
+        pdeny = G.new_deny({"plans": ["p-1"]})
         self.assertIsNotNone(G.deny_match(row, ("launch",), state(pdeny), job=None)[0])  # no plan id: may be it
         self.assertIsNone(G.deny_match({**row, "plan_id": "p-2"}, ("launch",), state(pdeny), job=None)[0])
 
@@ -750,41 +766,40 @@ class Round4(unittest.TestCase):
         self.assertEqual((f.cls, f.class_unknown), (None, True))
         self.assertFalse(G.check(state(grant({"classes": ["smoke"]}, actions=("launch", "relaunch"))), "launch",
                                  plan=relabelled).covered)
-        self.assertTrue(G.check(state(grant(), G.new_deny("no more train runs", {"classes": ["train"]})), "launch",
+        self.assertTrue(G.check(state(grant(), G.new_deny({"classes": ["train"]})), "launch",
                                 plan=relabelled).denied)
         labelled = {**plan(name="bigrun--a02"), "class": "smoke", "classes_recorded": ["smoke"]}
         self.assertTrue(G.check(state(grant({"classes": ["smoke"]})), "launch", plan=labelled).covered)
         self.assertEqual(G.run_classes({"attempts": {"a02": {"request": {"class": ""}, "name": "x--a02"},
                                                      "a01": {"request": {}, "name": "x--smoke--a01"}}}), ["smoke", ""])
 
-    def test_r4_6_a_plan_with_policy_flags_is_never_a_grants_call(self):
-        """NEW-policy-flag: a policy flag the agent chose (`--whole-node` → the policy adds --exclusive) rode on a
-        1-GPU grant. The block binds flags=; no standing grant covers a plan with any (the card lists them)."""
+    def test_r4_6_s3_a_plan_with_policy_flags_is_covered_by_a_grant(self):
+        """S3: the block binds flags= (the card lists them, with a NOTE); a covering grant covers a plan with policy
+        flags like the rest of it (R4-6 kept them out of every grant: no longer)."""
         g = grant({"targets": ["fx"], "max_gpus": 2})
         flagged = plan(flags="--whole-node")
         self.assertEqual(G.facts(flagged).flags, ("--whole-node",))
-        d = G.check(state(g), "launch", plan=flagged)
-        self.assertFalse(d.covered)
-        self.assertIn("policy flag(s) --whole-node", " ".join(d.reasons))
+        self.assertTrue(G.check(state(g), "launch", plan=flagged).covered)
         self.assertTrue(G.check(state(g), "launch", plan=plan()).covered)
         self.assertTrue(G.check(state(g, approval("yes, the whole node", [flagged])), "launch", plan=flagged).covered)
+        self.assertFalse(G.check(state(g, G.new_deny({"targets": ["fx"]})), "launch", plan=flagged).covered)
         old = plan(flags=None)                       # a deploy from before flags= was bound
         self.assertFalse(G.facts(old).flags_known)
-        self.assertIn("does not name its policy flags", " ".join(G.check(state(g), "launch", plan=old).reasons))
+        self.assertTrue(G.check(state(g), "launch", plan=old).covered)
         self.assertIn("flags", G.NEEDED["slurm"])
         self.assertEqual(G.SLURM_BOUND[-2:], ("flags", "chain"))   # immediately before chain=, as submit.sh prints it
 
-    def test_r4_10_cancel_own_never_covers_an_attempt_the_ledger_shows_ended(self):
+    def test_r4_10_an_attempt_the_ledger_shows_ended_is_not_the_agents_own(self):
         """N1-cancel-job-ended-pid: the ledger's ended submission of a pid the box has since reused made the cancel
-        'own'; only a live submission is."""
+        'own'; only a live submission is (S5: then no record is needed)."""
         p = plan(name=f"{self.RUN}--a01")
-        g = grant({"targets": ["fx"]}, actions=("cancel_own",))
+        g = grant({"targets": ["fx"]}, actions=("launch",))
         live = {self.RUN: {"run": self.RUN, "attempts": {"a01": self._att(p, "a01", None, "101", "p-1")}}}
         ended = {self.RUN: {"run": self.RUN, "attempts": {"a01": self._att(p, "a01", "ENDED", "101", "p-1")}}}
         self.assertTrue(G.check(state(g, runs=live), "cancel", job="101", run=self.RUN).covered)
         d = G.check(state(g, runs=ended), "cancel", job="101", run=self.RUN)
         self.assertFalse(d.covered)
-        self.assertIn("not one rsk launched", " ".join(d.reasons))
+        self.assertIn("not one this project's rsk launched or adopted", " ".join(d.reasons))
         seen = {self.RUN: {"run": self.RUN, "attempts": {"a01": {**self._att(p, "a01", None, "101", "p-1"),
                                                                  "submissions": [{"nonce": "n", "submit": "submitted",
                                                                                   "job": "101", "seen": {"state": "COMPLETED"}}]}}}}
@@ -823,7 +838,7 @@ class Round5(unittest.TestCase):
         self.assertTrue(G.check(state(g, runs=runs), "relaunch", plan=p, run=self.RUN).covered)   # the setup
         for acts in (["relaunch"], list(G.ACTIONS), ["cancel", "launch"]):
             with self.assertRaises(RskError) as c:
-                G.new_deny("job 101 is broken: do not resubmit it", {"jobs": ["101"]}, acts)
+                G.new_deny({"jobs": ["101"]}, acts)
             self.assertEqual(c.exception.code, USAGE)
             self.assertIn("a deny by job id (scope.jobs) is for cancels only", str(c.exception))
             stored = {"id": "d-20261105-aaaaaa", "kind": "deny", "quote": "job 101 is broken: do not resubmit it",
@@ -835,17 +850,17 @@ class Round5(unittest.TestCase):
             self.assertIn("matches everything", " ".join(d.reasons))
             revoked = {**stored, "revoked": {"at": L.now(), "quote": "recorded wrongly"}}
             self.assertTrue(G.check(state(g, revoked, runs=runs), "relaunch", plan=p, run=self.RUN).covered)
-        ok = G.new_deny("never cancel job 101", {"jobs": ["101"]}, ["cancel", "cancel_own"])   # cancels: as before
+        ok = G.new_deny({"jobs": ["101"]}, ["cancel", "cancel_own"])   # cancels: as before
         self.assertEqual(G.valid(ok), "")
         self.assertTrue(G.check(state(g, ok, runs=runs), "relaunch", plan=p, run=self.RUN).covered)
-        byname = G.new_deny("job 101 is broken: do not resubmit it", {"names": [self.RUN]}, ["relaunch"])
+        byname = G.new_deny({"names": [self.RUN]}, ["relaunch"])
         self.assertTrue(G.check(state(g, byname, runs=runs), "relaunch", plan=p, run=self.RUN).denied)
 
     def test_r5_8_a_deny_compares_normalised_target_names(self):
         """WATCH-target-spelling-evades-deny: a run-watch row on `fx-slurm/` (the same profile dir, the same deploy)
         never matched `-T fx-slurm`. A deny now compares grants.target_key names; a spelling that is not one plain
         name may be any target (it matches)."""
-        deny = G.new_deny("never launch anything on fx-slurm any more", {"targets": ["fx-slurm"]})
+        deny = G.new_deny({"targets": ["fx-slurm"]})
         row = {"kind": "slurm", "name": "a", "warnings": "0"}
         for t in ("fx-slurm", "fx-slurm/", "fx-slurm/.", "fx-slurm//", "./fx-slurm", "FX-SLURM", "a/b", "..", "-x"):
             self.assertIsNotNone(G.deny_match({**row, "target": t}, ("launch",), state(deny), job=None)[0], t)
@@ -868,29 +883,29 @@ class Round6(unittest.TestCase):
         a deny naming no run keeps the derived action."""
         g = grant({"targets": ["fx", "fx2"], "names": ["a*"]})
         for acts in (["relaunch"], ["resubmit"], ["relaunch", "resubmit"]):
-            d = G.new_deny("do not relaunch a, it is broken", {"names": ["a"]}, acts)
+            d = G.new_deny({"names": ["a"]}, acts)
             for tgt in ("fx", "fx2"):
                 for name, action in (("a", "launch"), ("a--a03", "launch"), ("a", "chain")):
                     dec = G.check(state(g, d), action, plan=plan(name=name, target=tgt))
                     self.assertTrue(dec.denied, (acts, tgt, name, action, dec.reasons))
-                    self.assertIn("do not relaunch a, it is broken", dec.reasons[0])
+                    self.assertIn(f"denied by {d['id']}", dec.reasons[0])
                     self.assertIn("rsk cannot see every earlier attempt", dec.reasons[0])
             self.assertTrue(G.check(state(g, d), "launch", plan=plan(name="a2", target="fx2")).covered)   # another run
             self.assertIsNone(G.deny_match(plan(name="a"), ("cancel",), state(d), job="1")[0])   # cancels: untouched
             self.assertIn("every launch of it too", G.describe(d))
             self.assertTrue(G.run_deny(d))
-        scoped = G.new_deny("do not relaunch a on fx", {"names": ["a"], "targets": ["fx"]}, ["relaunch"])
+        scoped = G.new_deny({"names": ["a"], "targets": ["fx"]}, ["relaunch"])
         self.assertTrue(G.check(state(g, scoped), "launch", plan=plan(name="a", target="fx")).denied)
         self.assertTrue(G.check(state(g, scoped), "launch", plan=plan(name="a", target="fx2")).covered)   # its scope
-        unnamed = G.new_deny("never relaunch anything on fx2", {"targets": ["fx2"]}, ["relaunch"])
+        unnamed = G.new_deny({"targets": ["fx2"]}, ["relaunch"])
         self.assertFalse(G.run_deny(unnamed))                         # names no run: the derived action decides
         self.assertTrue(G.check(state(g, unnamed), "launch", plan=plan(name="a", target="fx2")).covered)
         self.assertNotIn("every launch of it too", G.describe(unnamed))
-        d = G.new_deny("do not relaunch a, it is broken", {"names": ["a"]}, ["relaunch"])
+        d = G.new_deny({"names": ["a"]}, ["relaunch"])
         later = grant({"targets": ["fx2"], "names": ["a*"]})            # a launch grant right after it: flagged
         self.assertTrue(G.after_deny(later, [d, later]))
         self.assertEqual(G.after_deny(later, [unnamed, later]), [])      # an unnamed relaunch deny: launches untouched
-        launch_deny = G.new_deny("never launch a", {"names": ["a"]}, ["launch"])
+        launch_deny = G.new_deny({"names": ["a"]}, ["launch"])
         dec = G.check(state(g, launch_deny), "launch", plan=plan(name="a", target="fx2"))
         self.assertTrue(dec.denied)
         self.assertNotIn("rsk cannot see every earlier attempt", dec.reasons[0])   # a launch deny needs no widening
@@ -909,28 +924,28 @@ class Round7(unittest.TestCase):
         run = "exp--smoke--p"
         g = grant({"targets": ["fx"], "names": ["exp--smoke--*"]}, actions=("launch", "relaunch"))
         for acts in (["relaunch"], ["launch"], ["resubmit"]):
-            d = G.new_deny("do not relaunch exp--smoke--p--a02, preemptions keep killing it", {"names": [f"{run}--a02"]},
+            d = G.new_deny({"names": [f"{run}--a02"]},
                            acts)
             for name, action in ((f"{run}--a03", "relaunch"), (run, "launch"), (f"{run}--a02", "launch"),
                                  (f"{run}--a10", "chain")):
                 hit, why, _ = G.deny_match(plan(name=name, target="fx"), (action,), state(g, d))
                 self.assertIsNotNone(hit, (acts, name, action))
-                self.assertIn("preemptions keep killing it", why)
+                self.assertIn(f"denied by {d['id']}", why)
             dec = G.check(state(g, d), "relaunch", plan=plan(name=f"{run}--a03", target="fx"), run=run)
             self.assertTrue(dec.denied, (acts, dec.reasons))
             row = {"target": "fx", "kind": "slurm", "name": run, "warnings": "0"}       # a run-watch row: its run id
             self.assertIsNotNone(G.deny_match(row, ("resubmit",), state(d), job=None)[0], acts)
             self.assertIsNone(G.deny_match(plan(name="exp--smoke--q--a03"), ("relaunch",), state(d))[0])   # another run
             self.assertIsNone(G.deny_match(plan(name=f"{run}x--a03"), ("relaunch",), state(d))[0])
-        cancel = G.new_deny("do not cancel exp--smoke--p--a02", {"names": [f"{run}--a02"]}, ["cancel"])
+        cancel = G.new_deny({"names": [f"{run}--a02"]}, ["cancel"])
         self.assertIsNotNone(G.deny_match(plan(name=f"{run}--a03"), ("cancel",), state(cancel), job="1")[0])
-        globbed = G.new_deny("never relaunch the --a02 attempts of the smoke runs", {"names": ["exp--smoke--*--a02"]},
+        globbed = G.new_deny({"names": ["exp--smoke--*--a02"]},
                              ["relaunch"])
         self.assertIsNotNone(G.deny_match(plan(name="exp--smoke--z--a05"), ("relaunch",), state(globbed))[0])
         self.assertEqual(G.run_globs([f"{run}--a02", "r--a1", "r", "x--a0*", "x--a123"]), [run, "x"])
-        one = G.new_deny("never launch r--a1", {"names": ["r--a1"]}, ["launch"])    # one digit: not an attempt suffix
+        one = G.new_deny({"names": ["r--a1"]}, ["launch"])    # one digit: not an attempt suffix
         self.assertIsNone(G.deny_match(plan(name="r--a03"), ("launch",), state(one))[0])
-        d = G.new_deny("do not relaunch exp--smoke--p--a02", {"names": [f"{run}--a02"]}, ["relaunch"])
+        d = G.new_deny({"names": [f"{run}--a02"]}, ["relaunch"])
         self.assertIn(f"(= run {run}: every attempt of it)", G.describe(d))
         later = grant({"names": [run]}, actions=("launch",))                # a grant of the run right after it: flagged
         self.assertTrue(G.after_deny(later, [d, later]))
@@ -943,7 +958,7 @@ class Round7(unittest.TestCase):
         `x--a[!0-9]*`: no digit first) keeps its plain meaning."""
         g = grant({"targets": ["fx"], "names": ["*"]}, actions=("launch", "relaunch"))
         for glob in ("exp--smoke--p--a*", "exp--smoke--p--a0?", "exp--smoke--p--a[0-9][0-9]", "exp--smoke--p--a1*"):
-            d = G.new_deny(f"do not relaunch any attempt of exp--smoke--p ({glob})", {"names": [glob]}, ["relaunch"])
+            d = G.new_deny({"names": [glob]}, ["relaunch"])
             for name, action in (("exp--smoke--p", "launch"), ("exp--smoke--p--a03", "relaunch")):
                 hit, why, _ = G.deny_match(plan(name=name, target="fx"), (action,), state(g, d))
                 self.assertIsNotNone(hit, (glob, name, action))
@@ -959,7 +974,7 @@ class Round7(unittest.TestCase):
                               "once)"])
         for glob in ("x--a?", "x--a[!0-9]*", "x--a[0-9]", "--a*"):             # cannot match an attempt suffix
             self.assertEqual(G.run_globs([glob]), [], glob)
-            d = G.new_deny("never launch that", {"names": [glob]}, ["launch"])
+            d = G.new_deny({"names": [glob]}, ["launch"])
             self.assertIsNone(G.deny_match(plan(name="x"), ("launch",), state(d))[0], glob)
             self.assertEqual(G.attempt_name_notes([glob]), [], glob)
         self.assertEqual(G.run_globs(["x--a02", "x--a0*", "y--a*"]), ["x", "y"])   # once each
@@ -1012,8 +1027,8 @@ class Round8(unittest.TestCase):
         bad_grant["scope"]["names"] = [" b1"]
         self.assertFalse(G.check(state(bad_grant), "launch", plan=plan(name="b1")).covered)   # a grant: covers nothing
         self.assertEqual(G.fail_closed(bad_grant), "")
-        ap = G.new_cancel_approval("cancel job 101", "fx", ["101"],               # a cancel identity holds the WorkDir:
-                                   idents=[ident("fx", "101", "exp--a01", "/r/my proj")])   # a space there is fine
+        ap = old_cancel_ap("fx", ["101"])                     # an older cancel identity holds the WorkDir:
+        ap["scope"]["idents"] = [json.dumps(["slurm", "fx", "101", "exp--a01", "/r/my proj"])]   # a space there is fine
         self.assertEqual(G.valid(ap), "")
 
 
@@ -1125,11 +1140,11 @@ class Store(ScratchHome):
         good. Now audit.jsonl (written first) brings the deny back meanwhile, and recount restores it; a revoke lost
         the same way never resurrects a grant."""
         fresh = G.add(self.led, grant({"targets": ["fx"]}))
-        G.add(self.led, G.new_deny("never launch anything on fx", {"targets": ["fx"]}))   # .prev: without it
+        G.add(self.led, G.new_deny({"targets": ["fx"]}))   # .prev: without it
         (self.led.dir / "grants.json").write_text('{"version": 1, "records": [')
         d = G.check(self.led, "launch", plan=plan())
         self.assertEqual(d.code, REFUSED, d.reasons)
-        self.assertIn("never launch anything on fx", " ".join(d.reasons))
+        self.assertIn("denied by d-", " ".join(d.reasons))
         G.add(self.led, grant({"targets": ["fx"]}))                    # a write in the recovered state: still there
         self.assertEqual(G.check(self.led, "launch", plan=plan()).code, REFUSED)
         self.assertIn("restored from the audit", G.recount(self.led))
@@ -1148,7 +1163,7 @@ class Store(ScratchHome):
         led = L.Ledger(self.home / "p2")
         g = G.add(led, grant({"targets": ["fx"]}))
         self.assertTrue(G.check(led, "launch", plan=plan()).covered)
-        G.revoke(led, g["id"], "stop that")                             # .prev: g not revoked
+        G.revoke(led, g["id"])                                          # .prev: g not revoked
         (led.dir / "grants.json").write_text("{torn")
         d = G.check(led, "launch", plan=plan())
         self.assertFalse(d.covered)
@@ -1160,7 +1175,7 @@ class Store(ScratchHome):
         self.assertNotIn("budgets unknown", " ".join(d.reasons))       # revoked, not merely unknown
 
     def test_r4_15_a_corrupt_grants_json_without_prev_is_unreadable(self):
-        G.add(self.led, G.new_deny("never on fx", {"targets": ["fx"]}))
+        G.add(self.led, G.new_deny({"targets": ["fx"]}))
         (self.led.dir / "grants.json").write_text('{"version": 1, "records": [')     # torn, and its .prev …
         (self.led.dir / "grants.json.prev").unlink(missing_ok=True)                   # … gone too
         self.assertIn("grants.json", self.led.state().grants_unreadable)
@@ -1192,10 +1207,16 @@ class Store(ScratchHome):
         self.assertIn("covers: launch: targets fx; <= 2 GPUs; no plan with warnings", text)
         self.assertIn("live 0/2", text)
         self.assertIn("launches 0/no limit (user's words)", text)
-        self.assertIn('quote: "never the part-b queue"', text)
+        self.assertNotIn("quote:", text)                             # S4: --quote accepted, never recorded
+        self.assertNotIn("never the part-b queue", text)
+        self.assertNotIn("never the part-b queue", (self.led.dir / "audit.jsonl").read_text())
         self.assertIn("FLAG:", text)
         rc, text = run("grant", "revoke", gid, "-C", str(self.proj), "--quote", "enough")
         self.assertEqual(rc, OK, text)
+        rc, text = run("grant", "deny", "-C", str(self.proj), "--partition", "part-c", "--unlisted-partition")
+        self.assertEqual(rc, OK, text)                               # S4: no --quote needed at all
+        did = text.split()[0]
+        self.assertEqual(run("grant", "revoke", did, "-C", str(self.proj))[0], OK)
         self.assertNotIn(gid, run("grant", "list", "-C", str(self.proj))[1])
         self.assertIn("REVOKED", run("grant", "list", "-C", str(self.proj), "--all")[1])
         doc = json.loads(run("grant", "list", "-C", str(self.proj), "--json")[1])
@@ -1235,7 +1256,9 @@ class Store(ScratchHome):
         rc, text = run("grant", "import", str(f), "-C", str(self.proj))
         self.assertEqual(rc, OK, text)
         rec = self.led.state().grants[0]
-        self.assertEqual((rec["created_via"], rec["quote"]), ("import", good["quote"]))
+        self.assertEqual(rec["created_via"], "import")
+        self.assertNotIn("quote", rec)                                # S4: the words are never recorded
+        self.assertNotIn(good["quote"], (self.led.dir / "audit.jsonl").read_text())
         self.assertTrue(G.check(self.led, "launch", plan=plan()).covered)   # works as stated: no limit
         f.write_text(json.dumps([{**good, "id": rec["id"]}]))
         self.assertEqual(run("grant", "import", str(f), "-C", str(self.proj))[0], USAGE)    # id clash
@@ -1377,12 +1400,12 @@ class Store(ScratchHome):
         not list is never "never matches" (the deny does match a plan on it) — list shows a NOTE instead, doctor
         nothing."""
         self.fxp()
-        typo = G.add(self.led, G.new_deny("never launch anything on fx again", {"targets": ["fx-slrum"]}))
-        part = G.add(self.led, G.new_deny("never launch on fx or fx-old", {"targets": ["fx", "fx-old"]}))
-        fine = G.add(self.led, G.new_deny("never on FX", {"targets": ["FX"]}))       # a deny compares FX as fx
-        piad = G.add(self.led, G.new_deny("never the paid partition", {"targets": ["fxp"], "partitions": ["piad"]}))
+        typo = G.add(self.led, G.new_deny({"targets": ["fx-slrum"]}))
+        part = G.add(self.led, G.new_deny({"targets": ["fx", "fx-old"]}))
+        fine = G.add(self.led, G.new_deny({"targets": ["FX"]}))       # a deny compares FX as fx
+        piad = G.add(self.led, G.new_deny({"targets": ["fxp"], "partitions": ["piad"]}))
         old = G.add(self.led, grant({"targets": ["fx-gone"]}))
-        gone = G.add(self.led, G.new_deny("never on fx-slrum", {"targets": ["fx-slrum"]}))
+        gone = G.add(self.led, G.new_deny({"targets": ["fx-slrum"]}))
         G.revoke(self.led, gone["id"], "recorded wrongly")                 # revoked: nothing to flag
         rc, text = run("grant", "list", "-C", str(self.proj))
         self.assertEqual(rc, OK, text)

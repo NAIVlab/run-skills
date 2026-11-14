@@ -2,7 +2,7 @@
 
     rsk watch [-C DIR] TABLE... [--act] [--once] [--every S] [--for S] [--stall-after S] [--max-active N]
               [--release NAME] [--adopt NAME=JOBID]
-    rsk watch [-C DIR] TABLE --approve "the user's words"
+    rsk watch [-C DIR] TABLE --approve
 
 One watcher per project: the lease (the ledger's watch.lease: pid, host, boot_id, started, until) is taken first — a
 live lease of another process (or one on another host / boot, until it expires) → exit 6, run-watch never starts; so
@@ -18,8 +18,8 @@ class) is checked against the ledger's denies for EVERY action run-watch could t
 resubmit, chain, cancel — whatever its `#@ allow` line says (--release launches or resubmits a row outside it, a conf
 SBATCH_EXTRA singleton makes a launch a chain); only a deny scoped by job ids ("do not cancel job 555": cancels only)
 counts just for a table whose `#@ allow` line has fail-stop, the one cancel run-watch makes (R6-7; there the row's job
-is not known here, so it matches): a match → exit 3 with the deny's quote, nothing started (--approve: no
-`#@ ok` written; --approve words that repeat a standing grant's quote, grants.recycled: exit 4, nothing written); and again on every lease refresh — a new matching deny → run-watch gets TERM, exit 3. What a row
+is not known here, so it matches): a match → exit 3, nothing started (--approve: no `#@ ok` written); and again on
+every lease refresh — a new matching deny → run-watch gets TERM, exit 3. What a row
 cannot show counts as matching (fail closed): its GPU type (the partition's policy may force one: a GPU-type deny
 matches every row of its target), its partition (the target's t_policy may rewrite -p: a partition deny matches every
 Slurm row of its target), its plan (no bound hash: a deny of plans matches every row in its scope). A row's target is
@@ -34,6 +34,10 @@ A table holding a NUL byte or another control character but tab (CR too: a CRLF 
 the lease, in every mode, with run-watch's own words — run-watch refuses it too (R7-7): bash `read` drops a NUL that
 Python keeps, so the two would read different rows; rsk reads a table as run-watch does (lines end at LF, words split at
 space / tab).
+--approve is a flag (the user OK'd the table's rows): rsk passes run-watch the fixed words APPROVED_WORDS for its
+`#@ ok` line (run-watch's own format needs words) — words given after --approve are accepted and never passed on or
+recorded. `--approve` takes no value of its own here: the word after it is the user's words only when it is not an
+option and not a table (a file in the project).
 Exit: run-watch's, with its 3 (lease over, or --once with rows still moving) as rsk's 7 (LEASE_ENDED); 0 every row
 done, 2 table/conf error (also a table that is not plain text), 3 a deny matches a row, 4 the rest waits on the
 user; 6 another watcher holds the lease or the run-watch lock (rsk's check above, or run-watch's own: a live holder
@@ -64,6 +68,7 @@ FOR_DEFAULT, EVERY_DEFAULT, SLACK = 7200, 300, 900
 REFRESH_S = 60                     # how often the lease's `until` moves forward while run-watch runs
 RC_MAP = {3: LEASE_ENDED}          # run-watch's exit -> rsk's (the others mean the same in both)
 VALUE_FLAGS = ("--every", "--for", "--stall-after", "--max-active", "--release", "--adopt", "--approve")
+APPROVED_WORDS = "approved via rsk"   # what run-watch writes in its `#@ ok` line for rsk watch --approve (S4)
 LOCK = Path("logs/run-watch/.lock")   # bin/run-watch's lock dir: pid (alone) + info "host started act"
 
 
@@ -219,7 +224,7 @@ ROW_ACTIONS = ("launch", "relaunch", "resubmit", "chain", "cancel")   # what run
 def deny_hit(led: L.Ledger, proj: Path, argv: list[str], kinds: dict[str, str]) -> str:
     """'' unless a deny in the ledger matches a row of the tables in ARGV for ANY action run-watch could take on it
     (ROW_ACTIONS, whatever the `#@ allow` line says: --release, an SBATCH_EXTRA singleton); else the line saying which
-    (row, action, deny id, quote, and why an unknown fact of the row matched). A grants.json that cannot be read →
+    (row, action, deny id, and why an unknown fact of the row matched). A grants.json that cannot be read →
     RskError(CONFLICT): no deny can be ruled out."""
     st = led.state()
     bad = grants.unreadable(st)
@@ -392,12 +397,32 @@ def run_watch(led: L.Ledger, argv: list[str], cwd: str, env: dict[str, str], cmd
     return RC_MAP.get(rc, rc)
 
 
+def approve_argv(argv: list[str], proj: Path) -> list[str]:
+    """S4: every --approve of ARGV as `--approve APPROVED_WORDS` for run-watch — `--approve` alone (last, before an
+    option, or before a table: a file in PROJ) or with words (`--approve WORDS`, `--approve=WORDS`), whose words are
+    dropped: rsk records none of the user's words."""
+    out, i = [], 0
+    while i < len(argv):
+        w = argv[i]
+        if w == "--approve" or w.startswith("--approve="):
+            out += ["--approve", APPROVED_WORDS]
+            nxt = argv[i + 1] if i + 1 < len(argv) else None
+            if w == "--approve" and nxt is not None and not nxt.startswith("-") and not (proj / nxt).is_file():
+                i += 1                         # its words: dropped
+            i += 1
+            continue
+        out.append(w)
+        i += 1
+    return out
+
+
 def cmd_watch(args: argparse.Namespace) -> int:
     from remote_run.status import project_dir
     argv = list(getattr(args, "extra", []) or [])
     if argv[:1] == ["--"]:
         argv = argv[1:]
     proj = project_dir(args.dir)
+    argv = approve_argv(argv, proj)
     src = paths.harness_src()
     env = harness.env(src)
     env["RS_VIA_RSK"] = "1"
@@ -406,10 +431,6 @@ def cmd_watch(args: argparse.Namespace) -> int:
         env.pop(k, None)
     check_tables(proj, argv)       # R7-7: a table that is not plain text is refused by both, in every mode
     led = L.Ledger(proj)
-    words = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--approve"] + \
-        [a.split("=", 1)[1] for a in argv if a.startswith("--approve=")]
-    for w in words:
-        grants.refuse_recycled(w, led.state().grants, "this table's rows")
     guard = None
     if "--act" in argv or "--approve" in argv:
         kinds = {t.name: t.kind for t in harness.targets(src)}

@@ -1,7 +1,7 @@
 """The local ledger: what rsk planned, launched, was allowed to do and last saw, per project, on this machine.
 
 It is bookkeeping, not proof: a record that says "approved" shows what was written, not that the user agreed (the
-skill's rails — show the card, wait for the user's words — do that). Nothing here is ever sent to a target.
+skill's rails — show the card, wait for the user's OK — do that). Nothing here is ever sent to a target.
 
 Layout — one dir per project (`RS_STATE_DIR` overrides the state dir, see paths.state_dir()):
 
@@ -33,7 +33,7 @@ API (every mutator takes the lock itself; hold `with led.locked():` around a che
   led.locked(timeout=30.0, wait=True)         context manager; RskError(CONFLICT) naming the holder when busy
   led.read_run(run) -> Loaded                 led.runs() -> {run: Loaded}
   led.update_run(run, fn) -> dict             fn(record) mutates (or returns) the record; written atomically
-  led.record_attempt(name=, target=, kind=, nonce=, submit=, plan=None, plan_id='', grant='', quote='',
+  led.record_attempt(name=, target=, kind=, nonce=, submit=, plan=None, plan_id='', grant='',
                      card='', action='launch', cls='', job='', proc=None, evidence='', at=None, attempt='')
                      -> (run, attempt)        a new submission. plan = the parsed @@plan block (its bound fields
                                               and bound_hash go to request). The attempt key is ATTEMPT, else the
@@ -68,7 +68,7 @@ RUN record (runs/<run>.json):
 ATTEMPT:
   {"name": str, "target": str, "kind": "slurm"|"nohup", "created_at": iso,
    "request": {"action", "plan" (id), "bound_hash", "bound" {bound fields of the plan}, "class", "grant" (record id),
-               "quote", "card"},
+               "card"} (an older attempt may carry "quote": the user's words, no longer recorded),
    "submissions": [SUBMISSION, ...],
    "observed": null | {"state", "at", "source", "key"},     the newest good observation of any submission
    "result": null | {"state", "rc", "at", "evidence"}}       set once no submission can still be live
@@ -474,7 +474,7 @@ class Ledger:
             return rec
 
     def record_attempt(self, *, name: str, target: str, kind: str, nonce: str, submit: str,
-                       plan: dict | None = None, plan_id: str = "", grant: str = "", quote: str = "", card: str = "",
+                       plan: dict | None = None, plan_id: str = "", grant: str = "", card: str = "",
                        action: str = "launch", cls: str = "", job: str = "", proc: dict | None = None,
                        evidence: str = "", at: str | None = None, attempt: str = "") -> tuple[str, str]:
         if submit not in SUBMIT:
@@ -508,7 +508,7 @@ class Ledger:
                 att = atts[aid] = {
                     "name": name, "target": target, "kind": kind, "created_at": when,
                     "request": {"action": action, "plan": plan_id, "bound_hash": (plan or {}).get("bound_hash", ""),
-                                "bound": bound, "class": cls, "grant": grant, "quote": quote, "card": card},
+                                "bound": bound, "class": cls, "grant": grant, "card": card},
                     "submissions": [], "observed": None, "result": None}
             att["submissions"].append({"nonce": nonce, "at": when, "submit": submit, "evidence": evidence,
                                        "job": str(job or ""), "proc": proc, "seen": None, "end": None})
@@ -709,8 +709,9 @@ class Ledger:
 
     def audit_grants(self) -> tuple[dict[str, dict], dict[str, dict]]:
         """audit.jsonl's view of grants.json (each grant_<kind> line is written before the file): (id -> every record
-        it saw made, rebuilt from that line: id kind quote created_at created_via source scope actions limits, used []
-        revoked None; id -> its last revocation {at, quote}) — what a grants.json read from .prev may have lost."""
+        it saw made, rebuilt from that line: id kind (quote, an older line's) created_at created_via source scope actions
+        limits, used [] revoked None; id -> its last revocation {at}) — what a grants.json read from .prev may have
+        lost."""
         recs, _bad = self.read_audit()
         made: dict[str, dict] = {}
         gone: dict[str, dict] = {}
@@ -720,13 +721,14 @@ class Ledger:
                 continue
             kind = ev.removeprefix("grant_")
             if ev.startswith("grant_") and kind in ("approval", "grant", "deny"):
-                made.setdefault(rid, {"id": rid, "kind": kind, "quote": a.get("quote", ""),
+                made.setdefault(rid, {"id": rid, "kind": kind,
+                                      **({"quote": a["quote"]} if isinstance(a.get("quote"), str) else {}),
                                       "created_at": a.get("at", ""), "created_via": a.get("created_via", ""),
                                       "source": a.get("source", ""), "scope": a.get("scope") or {},
                                       "actions": a.get("actions") or [], "limits": a.get("limits") or {}, "used": [],
                                       "revoked": None})
             elif ev == "grant_revoke":
-                gone[rid] = {"at": a.get("at", ""), "quote": a.get("quote", "")}
+                gone[rid] = {"at": a.get("at", ""), **({"why": a["why"]} if a.get("why") else {})}
         return made, gone
 
     # ---- watch lease

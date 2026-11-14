@@ -81,7 +81,7 @@ rsk_installed() {   # rsk on PATH, or in uv's tool bin dir (uv tool install puts
 }
 if [ -z "${RS_VIA_RSK:-}" ] && [ "$ACT$APPROVING" != 00 ]; then   # R4-7: acting goes through rsk watch (its lease, the ledger's denies): a nudge, not a guard
   if rsk_installed; then
-    if [ "$APPROVING" = 1 ]; then echo "use: rsk watch ${TBL_PATH[0]} --approve \"<the user's words>\" (the ledger's denies are checked first) — nothing written" >&2
+    if [ "$APPROVING" = 1 ]; then echo "use: rsk watch ${TBL_PATH[0]} --approve (the user's OK; the ledger's denies are checked first) — nothing written" >&2
     else echo "use: rsk watch ${TBL_PATH[*]} … --act … (the project's watch lease; every row checked against the ledger's denies) — nothing ran" >&2; fi
     exit 2
   fi

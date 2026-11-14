@@ -56,7 +56,7 @@ command -v claude codex pi
   `rsk doctor --legacy-refs` (read-only): project docs that still name those skills or a raw `ssh … submit.sh` /
   `run-launch` recipe — show the list; edit a project's docs only with the user's OK. rsk honours permissions the user
   gave earlier (notes, memory, project docs) only once recorded: show them; with the user's OK, `rsk grant add` /
-  `rsk grant import` them in the user's words, with the limits they stated (never invented ones). Offer
+  `rsk grant import` them with the scope and limits they stated (never invented ones). Offer
   Steps 2–5 only as "Do you want to add another server?" — never re-ask what is already registered, and skip the pack
   question below. `~/.agents/run-skills` without `rsk` = an install from a clone: do Step 1 (same files, now
   updatable with `rsk update`), then the same.

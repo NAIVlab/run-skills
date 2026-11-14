@@ -8,15 +8,16 @@ submit outcome is unknown — each after ONE ssh (observe.run) that checks it re
                                         + boot_id); a launch without a receipt by L.pid's /proc entry (owner = you,
                                         cwd = the project dir, at least as old as the pid file). A run that ended is
                                         adopted as ended (its <log>.rc when there is one).
-  rsk adopt -T t --not-submitted NONCE --approve "the user's words" [--as RUN]
+  rsk adopt -T t --not-submitted NONCE --approve [--as RUN]
                                         only while that attempt's outcome is open (result unknown or absent): no
                                         receipt, no job carrying rs=NONCE, no process naming it, nothing moved for
                                         GRACE_S, and (Slurm) no unledgered job of this dir with its name. Marks it
-                                        NOT_SUBMITTED and gives its grant use back. The words are the user's: the
-                                        agent asks; this command cannot tell who typed them.
-Adopted runs are bookkeeping: they use no grant, and `cancel_own` never covers them (they are not the agent's).
-Exit: 0 recorded (or already there), 2 usage, 4 --approve words that repeat a standing grant's quote (grants.recycled),
-5 the target could not be read, 6 the identity does not match.
+                                        NOT_SUBMITTED and gives its grant use back. --approve (a flag: the user
+                                        OK'd it; words after it are accepted and not recorded) — the agent asks;
+                                        this command cannot tell who gave the OK.
+Adopted runs are bookkeeping: they use no grant; once in the ledger, a live one is the agent's to cancel (rsk cancel).
+Exit: 0 recorded (or already there), 2 usage (also --not-submitted without --approve), 5 the target could not be read,
+6 the identity does not match.
 """
 
 from __future__ import annotations
@@ -217,13 +218,13 @@ def adopt_log(led: L.Ledger, place: harness.Place, log: str, run: str, deadline:
     return OK
 
 
-def not_submitted(led: L.Ledger, place: harness.Place, nonce: str, words: str, run: str, days: int,
+def not_submitted(led: L.Ledger, place: harness.Place, nonce: str, approved: bool, run: str, days: int,
                   deadline: float) -> int:
     if not L.NONCE_RE.fullmatch(nonce):
         raise RskError(f"--not-submitted {nonce!r}: a nonce ({L.NONCE_RE.pattern})", USAGE)
-    if not words.strip():
-        raise RskError("--not-submitted needs --approve \"the user's words\": only the user decides that an unknown "
-                       "submit did not happen", USAGE)
+    if not approved:
+        raise RskError("--not-submitted needs --approve (the user's OK): only the user decides that an unknown submit "
+                       "did not happen", USAGE)
     hit = led.find_nonce(nonce)
     sub, att = None, None
     if hit:
@@ -279,15 +280,15 @@ def not_submitted(led: L.Ledger, place: harness.Place, nonce: str, words: str, r
     ev = (f"remote: {'no attempt dir' if a.get('missing') else 'stage ' + (a.get('stage') or '?')}"
           f", result {('verdict=' + verdict) if verdict else 'absent'}, no receipt, no job/process carries it")
     if hit:
-        led.set_submission(hit[0], hit[1], nonce, submit="not_submitted", evidence=ev, quote=words)
+        led.set_submission(hit[0], hit[1], nonce, submit="not_submitted", evidence=ev)
         gid = str((att.get("request") or {}).get("grant", ""))
-        if gid and grants.refund(led, gid, nonce, "not submitted (the user's words)"):
+        if gid and grants.refund(led, gid, nonce, "not submitted (the user's OK)"):
             out(f"  the use of {gid} by {nonce} is given back")
         r, aid = hit
     else:
         r, aid = led.record_attempt(name=run, target=place.target, kind=place.kind, nonce=nonce,
-                                    submit="not_submitted", action="adopted", evidence=ev, quote=words)
-    led.audit("not_submitted", run=r, attempt=aid, target=place.target, nonce=nonce, evidence=ev, quote=words)
+                                    submit="not_submitted", action="adopted", evidence=ev)
+    led.audit("not_submitted", run=r, attempt=aid, target=place.target, nonce=nonce, evidence=ev, approved=True)
     out(f"{r} {aid}: attempt {nonce} recorded as NOT_SUBMITTED ({ev})")
     return OK
 
@@ -298,28 +299,28 @@ def cmd_adopt(args: argparse.Namespace) -> int:
         raise RskError("rsk adopt takes one of --job J, --log L, --not-submitted NONCE", USAGE)
     if (args.job or args.log) and not args.run:
         raise RskError("--as RUN: the run id the ledger files it under (the name minus --aNN)", USAGE)
-    if args.approve and not args.not_submitted:
+    if args.approve is not None and not args.not_submitted:
         raise RskError("--approve belongs to --not-submitted only (adopting is bookkeeping)", USAGE)
     led, place = _place(args)
-    if args.not_submitted:
-        grants.refuse_recycled(args.approve or None, led.state().grants, "this unknown submit")
     if args.job:
         return adopt_job(led, place, args.job, args.run, args.days, args.deadline)
     if args.log:
         return adopt_log(led, place, args.log, args.run, args.deadline)
-    return not_submitted(led, place, args.not_submitted, args.approve or "", args.run or "", args.days, args.deadline)
+    return not_submitted(led, place, args.not_submitted, args.approve is not None, args.run or "", args.days,
+                         args.deadline)
 
 
 def add_parser(sub) -> None:
     a = sub.add_parser("adopt", help="record an existing job/run of this project in the ledger (identity checked), "
-                       "or close an unknown submit with the user's words")
+                       "or close an unknown submit with the user's OK")
     a.add_argument("-T", "--target", required=True)
     a.add_argument("-C", dest="dir", default=None, help="project root (default: the current directory)")
     a.add_argument("--job", default="", help="Slurm job id")
     a.add_argument("--log", default="", help="nohup log: logs/<name>-<YYYYmmdd-HHMMSS>.log")
     a.add_argument("--not-submitted", default="", metavar="NONCE", help="an attempt whose outcome is unknown")
     a.add_argument("--as", dest="run", default="", metavar="RUN", help="the run id (the name minus --aNN)")
-    a.add_argument("--approve", default="", metavar="WORDS", help="the user's words (only with --not-submitted)")
+    a.add_argument("--approve", nargs="?", const=True, default=None, metavar="WORDS",
+                   help="the user OK'd it (a flag; only with --not-submitted; words after it are accepted and ignored)")
     a.add_argument("--days", type=int, default=7, help="how far back sacct looks for the job (default 7)")
     a.add_argument("--deadline", type=float, default=60.0)
     a.set_defaults(func=cmd_adopt)
