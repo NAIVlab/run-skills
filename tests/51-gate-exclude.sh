@@ -78,6 +78,20 @@ has "$B" '^info_avail=free:4/max_node:4/gpu_type:any$' "...another sinfo: n2 has
 [ -n "$H1" ] && [ "$H1" = "$H2" ] && ok "...the bound_hash does not move with the gate's numbers" || bad "...bound_hash $H1 vs $H2"
 stub_sinfo gpu "$NODES3"
 
+echo "-- --nodes K: K nodes, each with -g free (the excluded ones never counted); the WARNING names K --"
+P=$(xp '--qos=high'); O=$(subo "$P" --nodes 2 -g 4 -- echo hi); RC=$?   # n1 4, n2 2, n3 4 free
+rc_is 0 "$RC" "--nodes 2 -g 4: n1 and n3 have 4 free each: submits" "$O"; has "$O" '^  -> 10 free now; up to 4 on one node; 2 node(s) with 4 free (a 2-node job needs 4 on EACH of 2 nodes: 8 GPUs in all)\.$' "...the count names K and the total"
+O=$(subo "$P" --nodes 3 -g 4 -- echo hi); RC=$?
+rc_is 1 "$RC" "--nodes 3 -g 4: only 2 nodes with 4 free (10 free in all): the gate's warning" "$O"; nosub "...nothing submitted"
+has "$O" "^WARNING: only 2 node(s) with 4 free of 'any' (10 free in all) for a 3-node job\. Re-run -y to queue, pick another -G, or lower -g or --nodes\.\$" "...the WARNING names K"
+rc_is 0 "$(subo "$P" --nodes 3 -g 2 -- echo hi >/dev/null; echo $?)" "--nodes 3 -g 2: n2 has 2 too: submits"
+P=$(xp '--exclude=n3'); rc_is 1 "$(subo "$P" --nodes 2 -g 4 -- echo hi >/dev/null; echo $?)" "--nodes 2 -g 4 with n3 excluded: one node left (warning)"
+O=$(subo "$P" --rs-mode plan --nodes 2 -g 4 -- echo hi); B=$(blk "$O")
+has "$B" '^info_avail=free:6/max_node:4/nodes_ok:1/nodes:2/gpu_type:any$' "plan: info_avail carries nodes_ok and nodes"; has "$B" '^warnings_avail=1$' "...the WARNING counted as availability"
+has "$O" "^WARNING: only 1 node(s) with 4 free of 'any' (6 free in all) for a 2-node job — the submit needs -y to queue anyway\.\$" "...the plan's wording"
+O=$(subo "$P" --rs-mode plan -g 4 -- echo hi); has "$(blk "$O")" '^info_avail=free:6/max_node:4/gpu_type:any$' "1 node: info_avail as before (no nodes_ok)"
+hasnt "$O" 'node(s) with' "...nor the K-node wording"
+
 echo "-- a full \$TMPDIR under bash 4.2 here-strings changes nothing (no temp file in the gate) --"
 if fulltmp_ok; then
   P=$(xp '--exclude=n1,n3'); : > "$T/sbatch.log"

@@ -36,6 +36,10 @@ guard rails built in, and gives the agent a short, per-site reference instead of
 - **Fail-closed.** A broken conf, a missing venv or a half-applied environment aborts the job instead of running it
   misconfigured. Walltimes above a partition's cap are rejected (they would pend forever), and so is a limit of none;
   a busy cluster is a warning that needs an explicit `-y`; site policies can refuse a submission outright.
+- **One node or several.** A Slurm job is one node by default; `rsk launch --nodes K` runs one task per node through the
+  harness's own `srun`, with `NNODES`, `NODE_RANK`, `MASTER_ADDR` and `MASTER_PORT` set for `torchrun` or your own
+  launcher (GPUs, memory and cpus are per node). A node or task count slipped into `SBATCH_EXTRA` is refused, and a
+  standing permission covers several nodes only up to the `max_nodes` you gave.
 - **Your authorisation, checked first — asked only when it is missing.** Every submit, launch and cancel is checked
   against what you already allowed: a plan you approved, a sweep (one approval for the set), or a standing permission
   ("smoke runs on mybox are fine" — a run it covers may also be re-run after a fix, never while an earlier copy may

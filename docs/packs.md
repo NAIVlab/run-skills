@@ -58,6 +58,15 @@ every key; [`../AGENTS.md`](../AGENTS.md) documents the `policy.sh` API (`t_part
   must not assume it stopped the run); a gate that prints no `WARNING:` line gets a generic one, and everything the probe
   printed (digit runs masked) is bound into the card's `warnings_id`. Policy flags (`--<word>`, `T_FLAGS`) are bound into
   the plan (`flags=`) and shown on its card (a covering grant covers them): a flag can become any sbatch option.
+  Multi-node jobs (`rsk launch --nodes K`, `submit.sh --nodes K`): `t_policy` sees `NODES` (1 unless asked) next to
+  `NGPU`, which stays per node, as do the cpu / mem heuristics of `t_partition` — refuse or gate a partition that
+  must not span nodes there (`[ "$NODES" -gt 1 ]`), and say in `reference.md` whether the interconnect suits it. Never
+  add `--nodes`, `--ntasks*` or `-N` / `-n` to `SB_ARGS`: the harness owns the layout (`--nodes=K
+  --ntasks-per-node=1`, one task per node started by `job.sbatch`'s `srun`), and a user's `SBATCH_EXTRA` may not set it:
+  `submit.sh` refuses a layout word among the policy's `SB_ARGS` (exit 2, `policy.sh sets the node/task layout`) unless
+  it equals the harness's own (`--nodes=$NODES`; `--ntasks-per-node=1` when `NODES` > 1), short clusters read as sbatch's
+  getopt does (`-vN2` = `-v -N2`). A policy appends to `SB_ARGS` (or rebuilds it keeping the harness's own leading words
+  in place): rewriting one of them is exit 2 (`policy.sh rewrote the harness's own sbatch words`).
 - **`reference.md`** is what the agent knows about the site. Keep it to about one screen: a card with the key
   values, the filesystem story (quotas, which disk for what), partitions with their limits, interconnect, and the
   gotchas a newcomer learns the hard way. Write `<user>` / `$USER` instead of anyone's id, and never mention

@@ -8,7 +8,8 @@
 #     It may append sbatch flags (SB_ARGS+=(--nodelist=n1)) and must `return 1` for an unknown partition.
 #  t_policy          (optional) runs right after arg parsing, before t_partition, limits, MaxTime and sinfo.
 #     Reads PART PART_FROM_CLI NGPU GTYPE GTYPE_FROM_CLI TIME FORCE ACK T_FLAGS SB_ARGS SB_EXTRA NAME PROJ CLUSTER TAG PLAN;
-#     may rewrite SB_ARGS/PART/GTYPE or exit — its exit code propagates verbatim (use 3 for a policy refusal).
+#     may rewrite PART/GTYPE, append to SB_ARGS (never change its leading harness words: exit 2), or exit — its exit code
+#     propagates verbatim (use 3 for a policy refusal).
 #     Must end with `return 0`: its status is the verdict, so a trailing failed `&&` test would abort the submit.
 #     ACK=1 when an unknown --*-user-asked flag was passed; every unknown --flag (that one too) is collected in T_FLAGS, which
 #     rsk binds into its plan (flags=) and shows on the card; a covering grant covers them, so treat each flag as any sbatch option.

@@ -19,7 +19,7 @@ from remote_run import grants as G
 from remote_run import ledger as L
 from remote_run.errors import CONFLICT, NEEDS_USER, OK, REFUSED, USAGE, RskError
 
-SLURM_BOUND = ("kind", "target", "partition", "gres", "cpus", "mem", "time", "account", "name", "extra", "payload",
+SLURM_BOUND = ("kind", "target", "partition", "gres", "nodes", "cpus", "mem", "time", "account", "name", "extra", "payload",
                "env_kind", "env_name", "wandb_mode", "env_hook", "venv_dir", "uv_sync_args", "conf_extra", "flags",
                "chain")
 WID = hashlib.sha256(b"").hexdigest()
@@ -29,7 +29,7 @@ def block(**kv: str) -> str:
     """A Slurm plan reply as remote/submit.sh prints it (values %q; bound_hash over kind= … chain=; conf_extra = the
     conf's SBATCH_EXTRA words, extra = the policy's + those; flags = the policy flags; a key given as None is left out:
     an older deploy's block)."""
-    base = {"kind": "slurm", "target": "fx", "partition": "gpu", "gres": "gpu:gt-a:2", "cpus": "16", "mem": "64G",
+    base = {"kind": "slurm", "target": "fx", "partition": "gpu", "gres": "gpu:gt-a:2", "nodes": None, "cpus": "16", "mem": "64G",
             "time": "1-00:00:00", "account": "''", "name": "exp--train--base--scratch--s0--a01", "extra": "",
             "payload": "python train.py --lr 0.1", "env_kind": "uv", "env_name": "''", "wandb_mode": "online",
             "env_hook": "''", "venv_dir": "''", "uv_sync_args": "''", "conf_extra": "", "flags": "", "chain": "0",
@@ -38,7 +38,7 @@ def block(**kv: str) -> str:
     if "extra" in kv and "conf_extra" not in kv:
         base["conf_extra"] = kv["extra"]
     base.update(kv)
-    bound = [f"{k}={base[k]}" for k in SLURM_BOUND if not (k in ("conf_extra", "flags") and base[k] is None)]
+    bound = [f"{k}={base[k]}" for k in SLURM_BOUND if not (k in ("conf_extra", "flags", "nodes") and base[k] is None)]
     h = kv.get("bound_hash") or hashlib.sha256(("\n".join(bound) + "\n").encode()).hexdigest()
     return ("attempt: .rs/attempts/n\n@@plan v1\napi=3\n" + "".join(ln + "\n" for ln in bound)
             + f"info_avail=''\nwarnings_avail={base['warnings_avail']}\nwarnings_id={base['warnings_id']}\n"
@@ -410,9 +410,16 @@ class ReviewFixes(unittest.TestCase):
         self.assertFalse(d.covered)
         self.assertIn("7-00:00:00 time > 1:00:00", " ".join(d.reasons))   # max_time_s: every limit sbatch could read
         open_ = grant({"targets": ["fx"]})                          # S3: the extra words are the grant's call too
-        self.assertTrue(G.check(state(open_), "launch", plan=plan(extra="--nodes=8 --gpus-per-node=4")).covered)
+        self.assertTrue(G.check(state(open_), "launch", plan=plan(extra="--licenses=fs:1 --begin=now")).covered)
+        d = G.check(state(open_), "launch", plan=plan(extra="--licenses=fs:1 --gpus-per-node=4"))   # F2: the caps'
+        self.assertFalse(d.covered)                                 # count would miss it: only the user's approval
+        self.assertIn("NO GRANT: --gpus-per-node=4 changes the allocation", " ".join(d.reasons))
+        # an older block (no nodes=) whose extra sets the node count: the node count is unknown, no standing grant covers it
+        self.assertFalse(G.check(state(open_), "launch", plan=plan(extra="--nodes=8 --gpus-per-node=4")).covered)
         p = plan(extra="--nodes=8")
-        self.assertTrue(G.check(state(approval("yes, 8 nodes", [p])), "launch", plan=p).covered)   # the user saw it
+        self.assertFalse(G.check(state(approval("yes, 8 nodes", [p])), "launch", plan=p).covered)  # unknown: fail closed
+        p = plan(extra="--licenses=fs:1")
+        self.assertTrue(G.check(state(approval("yes, as shown", [p])), "launch", plan=p).covered)   # the user saw it
         self.assertTrue(G.check(state(open_), "launch", plan=plan(extra="--qos=normal --exclude=n1")).covered)
 
     def test_h3_the_names_class_decides_and_a_deny_matches_either(self):
@@ -520,10 +527,16 @@ class Round3(unittest.TestCase):
         d = G.check(state(open_), "launch", plan=plan(time="30", extra="--time=7-00:00:00 --comment -t1"))
         self.assertFalse(d.covered)
         self.assertIn("time > 1:00:00", " ".join(d.reasons))
-        for extra in ("--thread-spec=1", "-S 1", "--core-spec=1", "--exclusive", "--nodes=2"):
+        for extra in ("--licenses=fs:1", "--mail-type=END --begin=now", "-L fs:1"):    # coverable: no allocation word
             p = plan(time="30", extra=extra)
             self.assertTrue(G.facts(p).extra_res, extra)                  # the card still NOTEs them
             self.assertTrue(G.check(state(open_), "launch", plan=p).covered, extra)
+            self.assertTrue(G.check(state(approval("yes, as shown", [p])), "launch", plan=p).covered)  # the card
+        for extra in ("--thread-spec=1", "-S 1", "--core-spec=1", "--exclusive"):     # they change the allocation
+            p = plan(time="30", extra=extra)
+            d = G.check(state(open_), "launch", plan=p)
+            self.assertFalse(d.covered, extra)
+            self.assertIn("changes the allocation the caps check", " ".join(d.reasons), extra)
             self.assertTrue(G.check(state(approval("yes, as shown", [p])), "launch", plan=p).covered)  # the card
         self.assertTrue(G.check(state(open_), "launch", plan=plan(time="30", extra="--comment -t1")).covered)
         pinned = plan(time="30", extra="--nodelist=n1", conf_extra="")     # a site policy's SB_ARGS word (grants#8)

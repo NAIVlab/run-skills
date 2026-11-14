@@ -123,6 +123,99 @@ R1=$(echo "$O" | grep -n 'ARG:--requeue$' | head -1 | cut -d: -f1); R2=$(echo "$
 [ -n "$R1" ] && [ -n "$R2" ] && [ "$R2" -gt "$R1" ] && ok "SBATCH_EXTRA --no-requeue lands after the default --requeue (sbatch: last one wins)" \
   || { bad "SBATCH_EXTRA --no-requeue lands after the default --requeue"; echo "$O" | grep 'requeue' | sed 's/^/    | /'; }
 
+echo "-- SBATCH_EXTRA never sets the node/task layout (that is --nodes K): every spelling the scan reads, exit 2 --"
+for x in '--nodes=2' '--nodes 2' '-N2' '-N 2' '-N=2' '--node=2' '--nod=2' '--ntasks=2' '--ntasks 2' '-n2' '-n 2' '--nt=2' \
+         '--ntasks-per-node=1' '--ntasks-per-node 1' '--ntasks-per-gpu=1' '--ntasks-per-socket=1' '--ntasks-per-core=1' '--ntasks-per-tres=1' \
+         '--tasks-per-node=1' '--tasks-per-node 1' '--ta=1' '--nodefile=hosts' '--nodefile hosts' '--nodef=hosts' '-Fhosts' '-F hosts' \
+         '--nodelist=n1,n2' '--nodelist n1,n2' '--nodelist=n[1-2]' '--nodel=n1,n2' '-wn1,n2' '-w n[1-2]' '-w ./hosts' '--nodelist=/x/hosts' '-w=n1,n2' '-B2:2:1' '-B 2:2:1' '--extra-node-info=2:2:1' '--extra-node=2' \
+         '--qos=high --nodes=2' '--comment c --nodes=2'; do
+  PX=$(mk_proj fx-slurm "REMOTE_DIR=/x
+FXSLURM_SBATCH_EXTRA=\"$x\""); O=$(subo "$PX" -- echo hi); RC=$?
+  [ "$RC" = 2 ] && has "$O" "^ERROR: SBATCH_EXTRA '[^']*' sets the node/task layout — use rsk launch --nodes K (submit.sh --nodes K)\$" "SBATCH_EXTRA '$x': refused (exit 2), named" \
+    || { bad "SBATCH_EXTRA '$x' refused (rc=$RC)"; echo "$O" | tail -3 | sed 's/^/    | /'; }
+  nosub "...'$x': nothing submitted"; done
+PX=$(mk_proj fx-slurm 'REMOTE_DIR=/x
+SBATCH_EXTRA="--nodelist=n1 -w n2 -wn3 --comment -N2 --comment=--nodes=2"'); O=$(sub "$PX" fx-slurm -- echo hi); RC=$?
+[ "$RC" = 0 ] && has "$O" 'ARG:--nodelist=n1$' "one host in -w / --nodelist (each spelling) and node words as --comment's value: accepted" || bad "single-host nodelist accepted (rc=$RC)"
+has "$O" 'ARG:-N2$' "...an option's separate value is never an option (tests/vgate comment_value=)"
+
+echo "-- --nodes K (1..64): K=1 sends today's words, K>1 one task per node, the per-node gres in RS_SRUN_GRES --"
+O=$(sub "$P2" fx-slurm -g 2 -- echo hi); O1=$(sub "$P2" fx-slurm --nodes 1 -g 2 -- echo hi)
+[ "$(printf '%s\n' "$O" | grep '^ARG:' | grep -v 'ARG:--comment=rs=')" = "$(printf '%s\n' "$O1" | grep '^ARG:' | grep -v 'ARG:--comment=rs=')" ] && ok "--nodes 1 = no --nodes: the same sbatch words" || bad "--nodes 1 words"
+hasnt "$O1" 'ARG:--nodes\|ARG:--ntasks\|RS_NODES\|RS_SRUN_GRES' "...no node/task word, no RS_NODES"
+stub_sinfo gpu "$(printf '%s\n' 'n1   gpu:a100:4   gpu:a100:0   idle' 'n2   gpu:a100:4   gpu:a100:0   idle')"
+O=$(sub "$P2" fx-slurm --nodes 2 -G a100 -g 4 -- echo hi); RC=$?
+[ "$RC" = 0 ] && has "$O" '^ARG:--nodes=2$' "--nodes 2: sbatch --nodes=2" || bad "--nodes 2 submits (rc=$RC)"
+has "$O" '^ARG:--ntasks-per-node=1$' "...--ntasks-per-node=1"; has "$O" '^ARG:--gres=gpu:a100:4$' "...the gres per node"
+has "$O" '^ARG:--cpus-per-task=32$' "...cpus per task = per node (-g 4 x 8)"; has "$O" '^ARG:--mem=160G$' "...mem per node"
+has "$O" '^ARG:--export=ALL,PROJ=[^,]*,CLUSTER=fx-slurm,TARGET=fx-slurm,RS_NODES=2,RS_SRUN_GRES=gpu:a100:4$' "...the --export list gains RS_NODES and RS_SRUN_GRES"
+O=$(sub "$P2" fx-slurm --nodes 2 -g 1 -- echo hi); has "$O" 'RS_SRUN_GRES=gpu:1$' "...GTYPE any: RS_SRUN_GRES=gpu:N"
+O=$(PATH="$T/bin:$PATH" RS_NODES=4 RS_SRUN_GRES=gpu:9 bash "$P2/.fx-slurm/submit.sh" -g 1 -- echo hi 2>/dev/null)
+hasnt "$O" 'RS_NODES\|RS_SRUN_GRES' "an inherited RS_NODES / RS_SRUN_GRES never reaches a 1-node job (unset, as RS_ATTEMPT)"
+for x in '--export=ALL,PROJ=/p' '--export NONE' '--expor=ALL'; do
+  PE=$(mk_proj fx-slurm "REMOTE_DIR=/x
+SBATCH_EXTRA=\"$x\""); O=$(subo "$PE" --nodes 2 -G a100 -g 4 -- echo hi); RC=$?
+  [ "$RC" = 2 ] && has "$O" 'would drop RS_NODES' "--nodes 2 with SBATCH_EXTRA '$x' (sbatch keeps the last --export): refused, exit 2" || bad "--nodes 2 + '$x' (rc=$RC)"
+  nosub "...'$x': nothing submitted"; done
+PE=$(mk_proj fx-slurm 'REMOTE_DIR=/x
+SBATCH_EXTRA="--comment --export=ALL"'); O=$(sub "$PE" fx-slurm --nodes 2 -G a100 -g 4 -- echo hi); RC=$?
+[ "$RC" = 0 ] && has "$O" '^ARG:--export=ALL$' "--nodes 2: '--export=ALL' as --comment's value is no --export (accepted)" || bad "--comment --export=ALL with --nodes 2 (rc=$RC)"
+rm -f "$T/sinfo.d/gpu"
+for x in 0 65 -1 x 02 2.5 ''; do rejects 2 "--nodes '$x' refused" "$P2" --nodes "$x" -- echo hi; done
+rejects 2 "--nodes without a value" "$P2" --nodes
+rejects 2 "--nodes=2 (one word) refused" "$P2" --nodes=2 -- echo hi
+for x in --ntasks=2 --ntasks-per-node=1 --nodefile=h --tasks-per-node=1; do rejects 2 "the sbatch spelling $x on the CLI refused" "$P2" "$x" -- echo hi; done
+rejects 2 "--nodes --rs-chain: an --rs- word as --nodes' value is refused" "$P2" --nodes --rs-chain -- echo hi
+cp -R "$RS_USER_DIR" "$T/user-n"; printf 't_policy() { echo "policy sees NODES=$NODES" >&2; return 0; }\n' > "$T/user-n/targets/fx-slurm/policy.local.sh"
+PN=$(RS_USER_DIR=$T/user-n mk_proj fx-slurm 'REMOTE_DIR=/x'); has "$(subo "$PN" --nodes 3 -y -- echo hi)" '^policy sees NODES=3$' "t_policy sees NODES"
+echo "-- the policy's own SB_ARGS never set the node/task layout (sbatch keeps the last --nodes): exit 2, unless equal to the harness's --"
+# pol WORDS…: a project whose t_policy adds WORDS to SB_ARGS (as a site policy could); prints its path
+pol() { local d=$T/user-p$((++_pn)); cp -R "$RS_USER_DIR" "$d"; { printf 't_policy() { SB_ARGS+=('; printf '%q ' "$@"; printf '); return 0; }\n'; } > "$d/targets/fx-slurm/policy.local.sh"
+  RS_USER_DIR=$d mk_proj fx-slurm 'REMOTE_DIR=/x'; }
+_pn=0
+for x in '--nodes=2' '--nodes 2' '-N2' '-N 2' '--node=2' '--ntasks=4' '-n 4' '-n4' '--nt=4' '--ntasks-per-node=2' '--tasks-per-node=1' \
+         '--ntasks-per-gpu=1' '-F hosts' '--nodefile=h' '-B 2:4:1' '--extra-node-info=2' '--nodelist=n1,n2' '-w n[1-2]' '-wn1,n2' \
+         '--comment c --nodes=2' '--wait --nodes=2' '--nodes' '-vN2' '-vN 2' '-HvN2' '-vn4' '-Vn 4' '-vF h' '-vB2:4:1' '-vwn1,n2' '-Ow n[1-2]' '-vN'; do
+  # shellcheck disable=SC2086
+  PP=$(pol $x) || { bad "mk_proj policy '$x'"; continue; }; O=$(subo "$PP" -g 1 -- echo hi); RC=$?
+  [ "$RC" = 2 ] && has "$O" "^ERROR: policy.sh sets the node/task layout ('[^']*') — only rsk launch --nodes K" "a policy adding '$x' to SB_ARGS (one node asked): exit 2, named" || { bad "policy '$x' (rc=$RC)"; echo "$O" | tail -3 | sed 's/^/    | /'; }
+  nosub "...policy '$x': nothing submitted"; done
+PP=$(pol --nodes=2); O=$(subo "$PP" --nodes 3 -g 1 -- echo hi); RC=$?; [ "$RC" = 2 ] && has "$O" "policy.sh sets the node/task layout ('--nodes=2')" "a policy's --nodes=2 with --nodes 3: exit 2 (not the harness's K)" || bad "policy --nodes=2 vs 3 (rc=$RC)"
+for x in '--nodes=2' '--nodes 2' '-N2' '-N 2' '-vN2' '-vN 2' '--ntasks-per-node=1' '--tasks-per-node 1'; do
+  # shellcheck disable=SC2086
+  PP=$(pol $x); O=$(subo "$PP" --nodes 2 -g 1 -y -- echo hi); RC=$?
+  [ "$RC" = 0 ] && has "$O" '^ARG:--nodes=2$' "a policy's '$x' with --nodes 2 (equal in effect to the harness's): accepted" || { bad "policy '$x' with --nodes 2 (rc=$RC)"; echo "$O" | tail -3 | sed 's/^/    | /'; }; done
+for x in '--nodes=1' '-N 1'; do
+  # shellcheck disable=SC2086
+  PP=$(pol $x); O=$(subo "$PP" -g 1 -- echo hi); RC=$?; [ "$RC" = 0 ] && ok "a policy's '$x' with one node: accepted (the harness's own count)" || bad "policy '$x', one node (rc=$RC)"; done
+PP=$(pol --ntasks-per-node=1); O=$(subo "$PP" -g 1 -- echo hi); RC=$?; [ "$RC" = 2 ] && ok "a policy's --ntasks-per-node=1 with one node: exit 2 (the harness adds it only for K > 1)" || bad "policy ntasks-per-node one node (rc=$RC)"
+for x in '--comment --nodes=2' '--comm --nodes=2' '--qo -N2' '--nodelist=n1' '-w n1' '--exclude=n1,n2' '--qos high' '-qN2' '-q -N2' '-vq -vN2' '-vwn1'; do
+  # shellcheck disable=SC2086
+  PP=$(pol $x); O=$(subo "$PP" -g 1 -- echo hi); RC=$?; [ "$RC" = 0 ] && ok "a policy's '$x' is no layout word (a value / one host): accepted" || { bad "policy '$x' (rc=$RC)"; echo "$O" | tail -3 | sed 's/^/    | /'; }; done
+d=$T/user-pp; cp -R "$RS_USER_DIR" "$d"; printf 't_partition_shipped() { :; }\neval "t_partition_shipped() $(declare -f t_partition | tail -n +2)"\nt_partition() { t_partition_shipped "$@" || return 1; SB_ARGS+=(--nodes=2); }\n' > "$d/targets/fx-slurm/policy.local.sh"
+PP=$(RS_USER_DIR=$d mk_proj fx-slurm 'REMOTE_DIR=/x'); O=$(subo "$PP" -g 1 -- echo hi); RC=$?
+[ "$RC" = 2 ] && has "$O" "policy.sh sets the node/task layout ('--nodes=2')" "a t_partition adding --nodes=2: exit 2 too" || { bad "t_partition --nodes=2 (rc=$RC)"; echo "$O" | tail -3 | sed 's/^/    | /'; }
+O=$(subo "$PP" --rs-mode plan -g 1 -- echo hi); RC=$?; [ "$RC" = 2 ] && hasnt "$O" '^@@plan' "...plan mode: exit 2, no plan block" || bad "plan with policy layout (rc=$RC)"
+echo "-- a policy never rewrites the harness's own sbatch words (the scans read what follows them; run-watch calls submit.sh directly) --"
+# polx BODY: a project whose t_policy runs BODY; prints its path
+polx() { local d=$T/user-x$((++_pn)); cp -R "$RS_USER_DIR" "$d"; printf 't_policy() { %s; return 0; }\n' "$1" > "$d/targets/fx-slurm/policy.local.sh"
+  RS_USER_DIR=$d mk_proj fx-slurm 'REMOTE_DIR=/x'; }
+for b in 'SB_ARGS[0]=--nodes=2' 'SB_ARGS[3]=--nodes=2' 'SB_ARGS=(--nodes=2 "${SB_ARGS[@]}")' 'SB_ARGS=("${SB_ARGS[@]:1}")' 'SB_ARGS=()' \
+         'SB_ARGS[2]=--time=9-00:00:00' 'unset "SB_ARGS[1]"'; do
+  PP=$(polx "$b") || { bad "mk_proj polx '$b'"; continue; }; O=$(subo "$PP" -g 1 -y -- echo hi); RC=$?
+  [ "$RC" = 2 ] && has "$O" "^ERROR: policy.sh rewrote the harness's own sbatch words (SB_ARGS\\[[0-9]*\\]" "a policy doing '$b': exit 2, named" || { bad "polx '$b' (rc=$RC)"; echo "$O" | tail -3 | sed 's/^/    | /'; }
+  nosub "...polx '$b': nothing submitted"; done
+O=$(subo "$PP" --rs-mode plan -g 1 -- echo hi); RC=$?; [ "$RC" = 2 ] && hasnt "$O" '^@@plan' "...plan mode: exit 2, no plan block" || bad "plan with a rewritten prefix (rc=$RC)"
+for b in 'SB_ARGS+=(--comment=x)' 'a=(); for w in "${SB_ARGS[@]}"; do case "$w" in --qos=*) ;; *) a+=("$w") ;; esac; done; SB_ARGS=("${a[@]}" --qos=q1)' 'SB_ARGS=("${SB_ARGS[@]}")'; do
+  PP=$(polx "$b"); O=$(subo "$PP" -g 1 -y -- echo hi); RC=$?
+  [ "$RC" = 0 ] && ok "a policy doing '$b' (the harness's words kept, in place): accepted" || { bad "polx '$b' (rc=$RC)"; echo "$O" | tail -3 | sed 's/^/    | /'; }; done
+if OLDS=$(git -C "$RS_HOME" show 0374da3:remote/submit.sh 2>/dev/null) && [ -n "$OLDS" ]; then   # the last submit.sh without --nodes
+  PO=$(mk_proj fx-slurm 'REMOTE_DIR=/x'); printf '%s\n' "$OLDS" > "$PO/.fx-slurm/submit.sh"; O=$(subo "$PO" --nodes 2 -- echo hi); RC=$?
+  [ "$RC" = 2 ] && has "$O" "^ERROR: unknown arg '2'" "an older submit.sh given --nodes 2: exit 2 'unknown arg' (rsk: needs: sync), never a 1-node job" || bad "older submit.sh --nodes 2 (rc=$RC)"
+  nosub "...nothing submitted"
+fi   # (no git history, an installed copy: not checked, as tests/60's older run-launch)
+for x in srun sbatch salloc; do rejects 2 "a multi-node payload still may not call $x itself (the harness does the srun)" "$P2" --nodes 2 -- "$x" python t.py; done
+
 echo "-- availability --"
 O=$(sub "$P2" fx-slurm -g 4 -- echo hi); RC=$?
 [ "$RC" = 0 ] && has "$O" 'ARG:--gres=gpu:4$' "GTYPE any: 4 free of any type -> submits" || bad "any-type availability (rc=$RC)"

@@ -131,3 +131,75 @@ if stat -c %s /dev/null >/dev/null 2>&1; then   # status.sh is a Linux remote sc
   O=$(PATH="$T/bin:$PATH" bash "$K/.fx-slurm/status.sh" logs/run_77.out 2>&1)
   has "$O" '^starts=1 restart=0 footer=EXIT rc=0 ' "status.sh: the new line 1 is not a start; the extended header and footer still parse"
 fi
+
+echo "-- multi-node (RS_NODES>1, stub scontrol / srun): MASTER_ADDR, NODE_RANK, signals, fail closed; RS_NODES unset or 1 = unchanged --"
+M=$(mk_proj fx-slurm 'REMOTE_DIR=/x
+ENV_KIND=none') || { bad "mk_proj multi"; exit 1; }
+# mjob [env...] -- CMD... : the deployed job.sbatch as a 2-node job (n[1-2], job id 123456), stderr merged
+mjob() { local e=(); while [ "$1" != -- ]; do e+=("$1"); shift; done; shift
+  ( cd "$M" && env PROJ="$M" CLUSTER=fx-slurm USER="$U" PATH="$T/bin:$PATH" SLURM_JOB_ID=123456 SLURM_JOB_NODELIST='n[1-2]' SLURM_NNODES=2 \
+      SLURM_CPUS_PER_TASK=8 RS_NODES=2 RS_SRUN_GRES=gpu:a100:4 ${e[@]+"${e[@]}"} bash "$M/.fx-slurm/job.sbatch" "$@" 2>&1 ); }
+PL='echo "rank=$NODE_RANK addr=$MASTER_ADDR port=$MASTER_PORT nn=$NNODES pet=$PET_NNODES/$PET_NODE_RANK/$PET_MASTER_ADDR/$PET_MASTER_PORT"'
+rm -f "$T/srun.log" "$T/hostnames" "$T/hostnames.rc"
+O=$(mjob -- sh -c "$PL"); RC=$?
+[ "$RC" = 0 ] && ok "a 2-node job runs (rc 0)" || { bad "2-node job (rc=$RC)"; echo "$O" | sed 's/^/    | /'; }
+has "$O" '^rank=0 addr=n1 port=23456 nn=2 pet=2/0/n1/23456$' "node 0: NODE_RANK=0, MASTER_ADDR = the first host, MASTER_PORT = 20000 + job id % 20000, NNODES, PET_*"
+has "$O" '^rank=1 addr=n1 port=23456 nn=2 pet=2/1/n1/23456$' "node 1: NODE_RANK=1 (SLURM_NODEID), the same master"
+has "$(cat "$T/srun.log")" '^SRUN:--nodes=2 --ntasks-per-node=1 --kill-on-bad-exit=1 --gres=gpu:a100:4 --cpus-per-task=8 --export=ALL bash -c ' "srun: one task per node, kill-on-bad-exit, the per-node gres and cpus, --export=ALL"
+has "$O" '\] target=fx-slurm job=123456 .* attempt=none nodes=2$' "the header ends nodes=2"
+has "$O" '\] nodes=2 hosts=n1,n2 master=n1:23456 gres/node=gpu:a100:4$' "a nodes line names the hosts and the master"
+has "$O" 'EXIT rc=0 usr1=0 term=0' "the footer as for one node"
+O=$(mjob MASTER_PORT=29400 -- sh -c "$PL"); has "$O" '^rank=1 addr=n1 port=29400 ' "an inherited MASTER_PORT is kept"
+O=$(mjob -- sh -c 'exit 5'); RC=$?; [ "$RC" = 5 ] && has "$O" 'EXIT rc=5 ' "a task's non-zero status is the job's (srun's rc)" || bad "multi-node rc (rc=$RC)"
+O=$(mjob RS_SRUN_GRES= -- sh -c "$PL"); hasnt "$(tail -n 1 "$T/srun.log")" 'gres' "no RS_SRUN_GRES (a CPU partition): srun without --gres"
+echo "-- multi-node fail closed: EXIT rc=2, the payload never starts --"
+mfail() { local lbl=$1 want=$2; shift 2; local o rc; : > "$T/srun.log"; o=$(mjob "$@" -- sh -c 'echo PAYLOAD'); rc=$?
+  [ "$rc" = 2 ] && has "$o" "$want" "$lbl: exit 2, says why" || { bad "$lbl (rc=$rc)"; echo "$o" | sed 's/^/    | /'; }
+  hasnt "$o" '^PAYLOAD$' "$lbl: the payload never runs"; has "$o" 'EXIT rc=2 ' "$lbl: EXIT rc=2 footer"
+  [ ! -s "$T/srun.log" ] && ok "$lbl: srun never called" || bad "$lbl: srun called"; }
+: > "$T/hostnames"; mfail "scontrol names no host" 'named no host'
+printf 'n1\n' > "$T/hostnames"; mfail "scontrol names 1 host for 2 nodes" 'named 1 host(s), the job has 2 nodes'
+printf 'n1\nn2\n' > "$T/hostnames"; echo 1 > "$T/hostnames.rc"; mfail "scontrol fails" "'scontrol show hostnames n\[1-2\]' failed"
+rm -f "$T/hostnames" "$T/hostnames.rc"
+mfail "no SLURM_JOB_NODELIST" 'SLURM_JOB_NODELIST is empty' SLURM_JOB_NODELIST=
+mfail "SLURM_NNODES differs" 'SLURM_NNODES=3 nodes, the submit asked for 2' SLURM_NNODES=3
+mfail "RS_NODES not a count" "RS_NODES='x' is not a node count" RS_NODES=x
+mfail "RS_NODES=65" "RS_NODES='65' is not a node count" RS_NODES=65
+mfail "a non-numeric job id and no MASTER_PORT" "SLURM_JOB_ID='t1' is not a number" SLURM_JOB_ID=t1
+mfail "MASTER_PORT not a port" "MASTER_PORT='70000' is not a port" MASTER_PORT=70000
+echo "-- multi-node signals: USR1 through srun (relayed), TERM through scancel --signal=TERM (srun would KILL the tasks) --"
+( cd "$M" && exec env PROJ="$M" CLUSTER=fx-slurm USER="$U" PATH="$T/bin:$PATH" SLURM_JOB_ID=123456 SLURM_JOB_NODELIST='n[1-2]' SLURM_NNODES=2 RS_NODES=2 \
+    bash .fx-slurm/job.sbatch sh -c 'trap "echo SAVED-\$NODE_RANK; exit 0" USR1; echo READY-$NODE_RANK; sleep 30 & wait; exit 9' ) > "$T/musr1.out" 2>&1 &
+JP=$!; for _i in $(seq 1 100); do [ "$(grep -c '^READY-' "$T/musr1.out" 2>/dev/null)" = 2 ] && break; sleep 0.1; done
+kill -USR1 "$JP"; wait "$JP"; RC=$?
+[ "$RC" = 0 ] && has "$(cat "$T/musr1.out")" 'EXIT rc=0 usr1=1' "USR1 forwarded to srun: both tasks save and exit 0" || { bad "multi-node USR1 (rc=$RC)"; sed 's/^/    | /' "$T/musr1.out"; }
+has "$(cat "$T/musr1.out")" '^SAVED-0$' "...node 0's handler ran"; has "$(cat "$T/musr1.out")" '^SAVED-1$' "...node 1's handler ran"
+# mterm OUT: the 2-node job with a TERM-trapping payload, sent TERM once both tasks are up; sets RC
+mterm() { rm -f "$T/srun.pids"; : > "$T/scancel.log"
+  ( cd "$M" && exec env PROJ="$M" CLUSTER=fx-slurm USER="$U" PATH="$T/bin:$PATH" SLURM_JOB_ID=123456 SLURM_JOB_NODELIST='n[1-2]' SLURM_NNODES=2 RS_NODES=2 \
+      bash .fx-slurm/job.sbatch sh -c 'trap "echo TSAVED-\$NODE_RANK; exit 0" TERM; echo READY-$NODE_RANK; sleep 30 & wait; exit 9' ) > "$1" 2>&1 &
+  JP=$!; for _i in $(seq 1 100); do [ "$(grep -c '^READY-' "$1" 2>/dev/null)" = 2 ] && [ -s "$T/srun.pids" ] && break; sleep 0.1; done
+  kill -TERM "$JP"; wait "$JP"; RC=$?; }
+mterm "$T/mterm.out"; MO=$(cat "$T/mterm.out")
+[ "$RC" = 0 ] && has "$MO" 'EXIT rc=0 usr1=0 term=1' "TERM forwarded with scancel --signal=TERM: both tasks save, rc 0" || { bad "multi-node TERM (rc=$RC)"; sed 's/^/    | /' "$T/mterm.out"; }
+has "$MO" '^TSAVED-0$' "...node 0's TERM handler ran"; has "$MO" '^TSAVED-1$' "...node 1's TERM handler ran"
+[ "$(cat "$T/scancel.log")" = "--signal=TERM 123456" ] && ok "...one scancel --signal=TERM <job id> (steps only: no --batch / --full)" || bad "scancel words: $(cat "$T/scancel.log")"
+hasnt "$MO" 'forcing job termination' "...srun itself never got TERM (it would SIGKILL the tasks)"
+echo 1 > "$T/scancel.rc"; mterm "$T/mterm2.out"; MO=$(cat "$T/mterm2.out"); rm -f "$T/scancel.rc"
+[ "$RC" = 137 ] && has "$MO" 'EXIT rc=137 usr1=0 term=srun' "scancel failed: TERM to srun (term=srun), which KILLs the tasks — rc 137" || { bad "scancel failed (rc=$RC)"; sed 's/^/    | /' "$T/mterm2.out"; }
+hasnt "$MO" '^TSAVED-' "...no task saw TERM (the stub kills as srun does)"
+echo "-- RS_NODES unset or 1: the single-node path, no srun, no scontrol --"
+: > "$T/srun.log"; : > "$T/scontrol.log"
+for e in "RS_NODES=1" "RS_SRUN_GRES=gpu:4"; do
+  O=$(cd "$M" && env -u RS_NODES PROJ="$M" CLUSTER=fx-slurm USER="$U" PATH="$T/bin:$PATH" SLURM_JOB_ID=t1 SLURM_JOB_NODELIST='n[1-2]' "$e" bash .fx-slurm/job.sbatch sh -c 'echo "one rank=${NODE_RANK:-unset} addr=${MASTER_ADDR:-unset}"' 2>&1)
+  has "$O" '^one rank=unset addr=unset$' "$e: runs once, no NODE_RANK / MASTER_ADDR"; has "$O" 'attempt=none$' "$e: the header unchanged (no nodes=)"
+  hasnt "$O" '\] nodes=' "$e: no nodes line"; done
+[ ! -s "$T/srun.log" ] && [ ! -s "$T/scontrol.log" ] && ok "...srun and scontrol never called" || bad "single-node path called srun/scontrol"
+: > "$T/scancel.log"; ( cd "$M" && exec env -u RS_NODES PROJ="$M" CLUSTER=fx-slurm USER="$U" PATH="$T/bin:$PATH" SLURM_JOB_ID=7 \
+    bash .fx-slurm/job.sbatch sh -c 'trap "echo T1SAVED; exit 0" TERM; echo READY1; sleep 30 & wait; exit 9' ) > "$T/m1term.out" 2>&1 &
+JP=$!; for _i in $(seq 1 100); do grep -q '^READY1' "$T/m1term.out" 2>/dev/null && break; sleep 0.1; done; kill -TERM "$JP"; wait "$JP"; RC=$?
+[ "$RC" = 0 ] && has "$(cat "$T/m1term.out")" '^T1SAVED$' "one node: TERM still goes straight to the payload (kill), rc 0" || { bad "single-node TERM (rc=$RC)"; sed 's/^/    | /' "$T/m1term.out"; }
+[ ! -s "$T/scancel.log" ] && ok "...one node never calls scancel" || bad "single-node path called scancel: $(cat "$T/scancel.log")"
+O=$(cd "$M" && env -u RS_NODES PROJ="$M" CLUSTER=fx-slurm USER="$U" PATH="$T/bin:$PATH" SLURM_JOB_ID=7 SLURM_NNODES=2 bash .fx-slurm/job.sbatch sh -c 'echo PAYLOAD' 2>&1); RC=$?
+[ "$RC" = 2 ] && has "$O" 'SLURM_NNODES=2 nodes but the submit asked for one' "SLURM_NNODES=2 without RS_NODES (a node count the harness never asked for): exit 2" || bad "SLURM_NNODES=2 no RS_NODES (rc=$RC)"
+hasnt "$O" '^PAYLOAD$' "...the payload never runs"; has "$O" 'EXIT rc=2 ' "...EXIT rc=2 footer"

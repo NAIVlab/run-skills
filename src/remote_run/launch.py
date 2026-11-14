@@ -3,8 +3,8 @@ submit — every step recorded in the project's ledger (ledger.py) and checked a
 
     rsk launch -T T [-C DIR] [--class C] [--same-name-ok] [--free-name] [--relaunch RUN] [--deadline S]
                [--check-after S]
-               slurm: [-p PART] [-g N] [-G TYPE] [-t TIME] [-m MEM] [-c CPUS] [-n NAME] [--chain N] [--<policy-flag>…]
-                      -- CMD…
+               slurm: [-p PART] [-g N] [-G TYPE] [-t TIME] [-m MEM] [-c CPUS] [-n NAME] [--nodes K] [--chain N]
+                      [--<policy-flag>…] -- CMD…
                nohup: [-g N | -d IDS] [-N NAME] [--nice N] [--gpu-busy-ok] [-- CMD…]
     rsk launch --plan ID [--plan ID…] [--approve] [-C DIR] [--deadline S] [--check-after S]
 
@@ -12,7 +12,10 @@ submit — every step recorded in the project's ledger (ledger.py) and checked a
    option's value: rsk sends those words itself); a value of -p -g -G -t -m -c -n -N -d --nice never starts with '-';
    a name that carries a class (<exp>--<class>--…) is that class — a different --class is exit 2; a run's class is
    sticky: the class recorded at its first attempt — another one (name or --class), or any one when its first attempt
-   had none, is exit 2; --gpu-busy-ok needs -d. A run name (-n, -N, --relaunch; also one the plan resolves from the
+   had none, is exit 2; --gpu-busy-ok needs -d. --nodes K (Slurm only, 1..NODES_MAX, default 1; a workstation is one
+   host: exit 2): K nodes, one task each — -g / -m / -c stay PER NODE; sent to submit.sh only when K > 1 (K = 1 sends
+   exactly the words of a single-node launch), as two words, so an older submit.sh's parser stops at K (`unknown arg`:
+   needs: sync). The block's bound `nodes=` (none: an older deploy, read as 1) must be the K asked, else exit 6. A run name (-n, -N, --relaunch; also one the plan resolves from the
    conf) holding whitespace or a control character is exit 2, before anything is planned (a word-splitting slip).
 1. Local duplicate: a live ledger attempt of the run (the name minus --aNN) on that target → exit 6 unless
    --same-name-ok (also passed on to the remote guard). A --chain skips it, as submit.sh skips singleton chains. A
@@ -47,9 +50,11 @@ submit — every step recorded in the project's ledger (ledger.py) and checked a
    (only the user's OK naming it) or whose launch.sh counted launcher / container / env-dropping warnings
    (warnings_gpu > 0, or no warnings_gpu: an older launch.sh — whatever the grant's allow_warnings kind: the card's
    NO GRANT line), a plan with warnings its
-   allow_warnings kind does not cover, or more resources / time than its caps. A grant covers policy flags (bound as
+   allow_warnings kind does not cover, or more resources / time than its caps (GPUs / CPUs / memory as the plan's
+   totals: per node × nodes), or more nodes than its max_nodes (absent = 1: a multi-node plan is the user's call). A grant covers policy flags (bound as
    flags=), conf SBATCH_EXTRA words outside grants.EXTRA_ALLOW and --same-name-ok like the rest of the plan (S3: the
-   card NOTEs them). A grant with launch covers a relaunch judged as a launch, whatever the earlier attempt's end
+   card NOTEs them) — never a conf SBATCH_EXTRA word that changes the allocation the caps check (grants.alloc_words:
+   --exclusive, --gres, -G/--gpus*, --cpus-per-*, -c, --mem*, … — the card's NO GRANT line). A grant with launch covers a relaunch judged as a launch, whatever the earlier attempt's end
    (S1), never while an earlier attempt may still be live; a grant with relaunch but no launch only after an
    infrastructure end (PREEMPTED NODE_FAIL BOOT_FAIL REBOOT) with the configuration repeated.
 4. --plan … --approve (a flag: the user approved these cards; words after it are accepted, never recorded): in ONE
@@ -134,6 +139,7 @@ INTERESTING = re.compile(r"^(WARNING|NOTE|ERROR|REFUSED)\b")
 OLD_DEPLOY = ("no .ws/launch.sh in the remote dir", "unknown arg", "is not a flag of this submit.sh",
               "--rs-warnings takes one count", "does not speak rs-api=3")
 FEW_FREE = re.compile(r"only [0-9]+ GPU id\(s\) free")
+NODES_MAX = 64                   # --nodes K: the largest K (submit.sh refuses more, exit 2)
 CHECK_MAX_S = 600                # --check-after: the longest wait for the first read after a submit
 # experiment-conventions.md §2: <task>--<stage>--<variant>--<origin>--s<seed>, then the attempt's --aNN (ledger.run_id)
 NAME_FIELD = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
@@ -189,6 +195,9 @@ def parser() -> argparse.ArgumentParser:
         s.add_argument(flag, dest=dest, default=None, help=what)
     s.add_argument("-y", action="store_true", help="accepted, never sent as typed: the card decides (-y only when "
                    "the approved card showed warnings or the covering grant's kind covers the plan's warnings)")
+    s.add_argument("--nodes", dest="nodes", default=None, metavar="K",
+                   help=f"K nodes (1-{NODES_MAX}, default 1), one task each; -g / -m / -c are per node (Slurm targets "
+                   "only)")
     s.add_argument("--chain", type=int, default=0, metavar="N", help="N singleton segments (--rs-chain), one approval")
     n = p.add_argument_group("nohup (run-launch)")
     n.add_argument("-d", dest="ids", default=None, help="exactly these GPU ids")
@@ -244,6 +253,9 @@ def parse(extra: list[str]) -> argparse.Namespace:
         if isinstance(v, str) and unsafe_name(v):
             raise RskError(f"rsk launch: {flag}: {NAME_UNSAFE}: {v!r} (a word-splitting slip? quote the name / pass "
                            "flags as an array)", USAGE)
+    if ns.nodes is not None and not (re.fullmatch(r"[0-9]{1,3}", ns.nodes) and 1 <= int(ns.nodes) <= NODES_MAX):
+        raise RskError(f"rsk launch: --nodes {ns.nodes}: an integer 1 to {NODES_MAX} (nodes, one task each; -g / -m / "
+                       "-c are per node)", USAGE)
     if not 0 <= ns.check_after <= CHECK_MAX_S:
         raise RskError(f"rsk launch: --check-after {ns.check_after}: 1 to {CHECK_MAX_S} seconds (0 = off)", USAGE)
     ns.policy_flags, ns.cmd = rest, cmd
@@ -266,6 +278,13 @@ class Request:
     same_name_ok: bool = False
     gpu_busy_ok: bool = False
     free_name: bool = False
+    nodes: int = 1                 # slurm: --nodes K (1 = a single-node job, no word sent)
+
+
+def nodes_words(k: int) -> list[str]:
+    """What rsk sends submit.sh for K nodes: nothing for 1 (today's words exactly), else `--nodes K` as two words (an
+    older parser takes --nodes as a policy flag, then stops at K: `unknown arg`, exit 2 → needs: sync)."""
+    return ["--nodes", str(k)] if k > 1 else []
 
 
 def _slurm_flags(ns: argparse.Namespace, name: str) -> list[str]:
@@ -274,6 +293,7 @@ def _slurm_flags(ns: argparse.Namespace, name: str) -> list[str]:
                     ("-c", ns.cpus), ("-n", name or None)):
         if v not in (None, ""):
             f += [flag, str(v)]
+    f += nodes_words(int(ns.nodes or 1))
     return f + list(ns.policy_flags) + (["--same-name-ok"] if ns.same_name_ok else [])
 
 
@@ -291,13 +311,26 @@ def _nohup_flags(ns: argparse.Namespace, name: str) -> list[str]:
 
 
 def _asked(ns: argparse.Namespace) -> bool:
-    return any(v not in (None, "") for v in (ns.part, ns.gpus, ns.gtype, ns.time, ns.mem, ns.cpus, ns.ids, ns.nice)) \
+    return any(v not in (None, "") for v in (ns.part, ns.gpus, ns.gtype, ns.time, ns.mem, ns.cpus, ns.ids, ns.nice,
+                                             ns.nodes)) \
         or bool(ns.policy_flags or ns.cmd)
+
+
+def bound_nodes(bound: dict) -> int | None:
+    """The bound `nodes=` of a plan block / an attempt's recorded bound fields: absent or empty (an older deploy) = 1;
+    None = unreadable."""
+    try:
+        v = grants.unq(str(bound.get("nodes", "")))
+    except RskError:
+        return None
+    if v == "":
+        return 1
+    return int(v) if re.fullmatch(r"[0-9]{1,3}", v) and int(v) >= 1 else None
 
 
 def _from_bound(kind: str, bound: dict, name: str) -> tuple[list[str], list[str], int]:
     """(flags, payload, chain) that ask for the original attempt's bound fields again (a relaunch, nothing typed; the
-    bound policy flags too)."""
+    bound policy flags and its nodes too)."""
     b = {k: str(v) for k, v in bound.items()}
     if kind == "slurm":
         f: list[str] = []
@@ -312,6 +345,11 @@ def _from_bound(kind: str, bound: dict, name: str) -> tuple[list[str], list[str]
             v = grants.unq(b.get(key, ""))
             if v:
                 f += [flag, v]
+        k = bound_nodes(b)
+        if k is None or k > NODES_MAX:
+            raise RskError(f"the recorded nodes {b.get('nodes')!r} is not a node count: give the relaunch's flags and "
+                           "command again", USAGE)
+        f += nodes_words(k)
         pflags = [w for w in grants.qwords(b.get("flags", "")) if w]     # the policy flags it was planned with
         odd = [w for w in pflags if not POLICY_FLAG.fullmatch(w) or "--rs-" in w or w in NOT_POLICY]
         if odd:
@@ -335,9 +373,12 @@ def build_request(ns: argparse.Namespace, led: L.Ledger, place: harness.Place) -
     kind = place.kind
     if kind == "slurm":
         if ns.ids or ns.wsname or ns.nice not in (None, "") or ns.gpu_busy_ok:
-            raise RskError(f"{place.target} is a Slurm target: -p -g -G -t -m -c -n (not -d / -N / --nice / "
+            raise RskError(f"{place.target} is a Slurm target: -p -g -G -t -m -c -n --nodes (not -d / -N / --nice / "
                            "--gpu-busy-ok)", USAGE)
     else:
+        if ns.nodes is not None:
+            raise RskError(f"{place.target} is a workstation: --nodes is for Slurm targets (a workstation is one host)",
+                           USAGE)
         if any(v not in (None, "") for v in (ns.part, ns.gtype, ns.time, ns.mem, ns.cpus, ns.name)) or ns.policy_flags:
             raise RskError(f"{place.target} is a workstation: -g N | -d IDS, -N NAME, --nice N, --gpu-busy-ok "
                            "(-n is the job name on Slurm targets)", USAGE)
@@ -356,7 +397,8 @@ def build_request(ns: argparse.Namespace, led: L.Ledger, place: harness.Place) -
         sticky_class(led, name, ns.cls)
     action = "chain" if ns.chain else "launch"
     req = Request(place.target, kind, [], list(ns.cmd), name or "", ns.cls, ns.chain, action,
-                  same_name_ok=ns.same_name_ok, gpu_busy_ok=bool(ns.gpu_busy_ok), free_name=bool(ns.free_name))
+                  same_name_ok=ns.same_name_ok, gpu_busy_ok=bool(ns.gpu_busy_ok), free_name=bool(ns.free_name),
+                  nodes=int(ns.nodes or 1))
     if ns.relaunch:
         if name:
             raise RskError("--relaunch names the attempt itself (<run>--aNN): no -n / -N", USAGE)
@@ -378,6 +420,8 @@ def build_request(ns: argparse.Namespace, led: L.Ledger, place: harness.Place) -
             flags, req.payload, chain = _from_bound(kind, bound, req.name)
             req.flags = flags + (["--same-name-ok"] if ns.same_name_ok else [])
             req.chain = req.chain or chain
+            if kind == "slurm":
+                req.nodes = bound_nodes(bound) or 1     # _from_bound refused an unreadable one
             return busy_named(req)
     req.flags = _slurm_flags(ns, req.name) if kind == "slurm" else _nohup_flags(ns, req.name)
     if kind == "slurm" and not req.payload:
@@ -964,6 +1008,22 @@ def busy_landing(rec: dict) -> str:
     return f"GPU(s) {ok} run another compute process ({busy})" if ok else ""
 
 
+def nodes_text(b: dict) -> str:
+    """The card's nodes row: `K × <gres> (total N GPUs)`; -g / -m / -c are per node."""
+    k = bound_nodes(b)
+    gres = _dec(b.get("gres", "")) or "no gres"
+    if k is None:
+        return f"{_dec(b.get('nodes', ''))} (UNREADABLE)"
+    try:
+        _, n = grants._gres(_dec(b.get("gres", "")))
+    except ValueError:
+        n = None
+    total = f"total {k * n} GPUs" if n is not None else "total GPUs unknown"
+    old = "" if "nodes" in b else "; the deploy does not say (older submit.sh): one node"
+    per = "; gres / cpus / mem per node" if k > 1 else ""
+    return f"{k} × {gres} ({total}{per}{old})"
+
+
 def render_card(rec: dict) -> str:
     b, kind = rec["block"], rec["kind"]
     o = [f"plan {rec['id']} — {rec['action']} on {rec['target']} ({kind}), {rec['created_at']}"]
@@ -982,7 +1042,8 @@ def render_card(rec: dict) -> str:
                  "jobs, also ones the ledger never saw: run-watch's) — a relaunch")
     if kind == "slurm":
         rows = [("name", _dec(b.get("name", ""))), ("partition", _dec(b.get("partition", ""))),
-                ("gres", _dec(b.get("gres", ""))), ("cpus", _dec(b.get("cpus", ""))), ("mem", _dec(b.get("mem", ""))),
+                ("gres", _dec(b.get("gres", ""))), ("nodes", nodes_text(b)),
+                ("cpus", _dec(b.get("cpus", ""))), ("mem", _dec(b.get("mem", ""))),
                 ("time", _dec(b.get("time", ""))), ("account", _dec(b.get("account", ""))),
                 ("extra", _words(b.get("extra", ""))), ("conf extra", _words(b.get("conf_extra", ""))),
                 ("payload", _words(b.get("payload", ""))),
@@ -1005,8 +1066,12 @@ def render_card(rec: dict) -> str:
                      "sbatch")
         if f.extra_res:
             o.append(f"  NOTE       SBATCH_EXTRA word(s) {' '.join(f.extra_res)} — beyond the usual qos / account / "
-                     "exclude / constraint words (time, resources, nodes, anything unknown): a covering grant covers "
-                     "them too; read them before approving")
+                     "exclude / constraint words (time, resources, anything unknown; node / task layout words never reach a plan: submit.sh refuses them): a covering grant covers "
+                     "them too (except an allocation word: its own line below); read them before approving")
+        if f.extra_alloc:
+            o.append(f"  NO GRANT   {' '.join(f.extra_alloc)} changes the allocation the caps check (--max-gpus / "
+                     "--max-cpus / --max-mem-gb count the bound gres / cpus / mem only): only the user's approval of "
+                     "this card")
     bound_flags = _words(b.get("flags", "")) if kind == "slurm" and "flags" in b else None
     if bound_flags:
         o.append(f"  policy     {bound_flags}  (bound: handed to the target's policy, which may add any sbatch option "
@@ -1098,6 +1163,30 @@ def _cfgs(v: object) -> str:
     return " · ".join(shown)
 
 
+def check_nodes(place: harness.Place, block: dict, want: int) -> None:
+    """The block's bound nodes= is the K asked (a block without it — a deploy older than --nodes — reads as 1: fine
+    for K = 1, needs: sync for K > 1); another K, or one that cannot be read, is exit 6: the card would not show what
+    was asked."""
+    if want > 1 and "nodes" not in block:
+        raise _needs_sync(place, f"its plan block has no nodes= (a submit.sh older than --nodes: asked {want} nodes)")
+    try:
+        xw = grants.qwords(str(block.get("extra", ""))) + grants.qwords(str(block.get("conf_extra", "")))
+    except RskError:
+        xw = []                                # unreadable extra: facts() marks it, coverage fails closed there
+    if "nodes" not in block and grants.old_layout(xw):
+        raise _needs_sync(place, "its plan block has no nodes= and its sbatch words may set the node / task count (a "
+                          "submit.sh older than --nodes; the current one refuses them: move the node count to --nodes K)")
+    lay = grants.layout_words(xw, bound_nodes(block)) if "nodes" in block and bound_nodes(block) else []
+    if lay:
+        raise _needs_sync(place, f"its sbatch words set the node / task layout beside nodes= ({' '.join(lay)[:120]}: "
+                          "the policy's or SBATCH_EXTRA's — a submit.sh older than its layout guard; the current one "
+                          "refuses them, exit 2)")
+    got = bound_nodes(block)
+    if got != want:
+        raise RskError(f"[{place.target}] the plan block says nodes={block.get('nodes')!r}, rsk asked {want} — the "
+                       f"deploy and this rsk disagree (rsk sync -T {place.target}); nothing was submitted", CONFLICT)
+
+
 def make_plan(led: L.Ledger, src: Path, proj: Path, place: harness.Place, req: Request, deadline: float) -> dict:
     nonce = new_nonce()
     reply = call(src, proj, place, nonce, plan_words(req, nonce), deadline)
@@ -1120,6 +1209,8 @@ def make_plan(led: L.Ledger, src: Path, proj: Path, place: harness.Place, req: R
     lacks = [k for k in grants.NEEDED[place.kind] if k not in block]
     if lacks:
         raise _needs_sync(place, f"its plan block lacks {', '.join(lacks)} (an api=3 deploy older than this rsk)")
+    if place.kind == "slurm":
+        check_nodes(place, block, req.nodes)
     name = _dec(block.get("name", ""))
     if unsafe_name(name):     # no -n / -N (parse() checked those): the conf's JOB_NAME or the dir's name, resolved there
         raise RskError(f"[{place.target}] the plan names the run {name!r} (the conf's JOB_NAME, else the remote dir's "
@@ -1143,7 +1234,7 @@ def make_plan(led: L.Ledger, src: Path, proj: Path, place: harness.Place, req: R
            "kind": place.kind, "host": place.host, "remote_dir": place.remote_dir, "name": name, "run": L.run_id(name),
            "action": req.action, "class": cls, "chain": req.chain,
            "relaunch_of": req.relaunch_of,
-           "same_name_ok": req.same_name_ok, "gpu_busy_ok": req.gpu_busy_ok, "flags": req.flags,
+           "same_name_ok": req.same_name_ok, "gpu_busy_ok": req.gpu_busy_ok, "flags": req.flags, "nodes": req.nodes,
            "free_name": bool(req.free_name), "name_problems": problems, "name_notes": vague, "earlier": not fresh,
            "payload": req.payload, "plan_nonce": nonce, "block": block, "bound_hash": block["bound_hash"],
            "warnings": int(block["warnings"]), "lines": interesting(reply, place.target),
@@ -1757,8 +1848,8 @@ def cmd_new(ns: argparse.Namespace, led: L.Ledger, src: Path, proj: Path) -> int
 
 def cmd_plans(ns: argparse.Namespace, led: L.Ledger, src: Path, proj: Path) -> int:
     asked = [x for x in (ns.target, ns.relaunch, ns.cls, ns.cmd, ns.policy_flags) if x] + \
-        [x for x in (ns.part, ns.gpus, ns.gtype, ns.time, ns.mem, ns.cpus, ns.name, ns.ids, ns.wsname, ns.nice)
-         if x not in (None, "")] + [x for x in (ns.chain, ns.same_name_ok, ns.gpu_busy_ok, ns.y, ns.free_name) if x]
+        [x for x in (ns.part, ns.gpus, ns.gtype, ns.time, ns.mem, ns.cpus, ns.name, ns.ids, ns.wsname, ns.nice,
+                     ns.nodes) if x not in (None, "")] + [x for x in (ns.chain, ns.same_name_ok, ns.gpu_busy_ok, ns.y, ns.free_name) if x]
     if asked:
         raise RskError("--plan submits a stored plan as it was planned: no -T / flags / command beside it", USAGE)
     approved = ns.approve is not None        # S4: a flag; any words after it are not recorded

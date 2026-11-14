@@ -3,7 +3,10 @@
 # by run-sync next to profile.sh, policy.sh, job.sbatch). Partition limits and gates come from the target's policy.sh
 # (t_partition / t_policy, contract in targets/_template-slurm/policy.sh); this file names no cluster.
 #   submit.sh [--rs-attempt NONCE] [--rs-mode plan] [--rs-expect HASH [--rs-warnings ID]] [--rs-chain] [-p partition] [-g ngpu] [-G gputype]
-#             [-t time] [-m mem] [-c cpus] [-n name] [-y] [--same-name-ok] [--<policy-flag>] -- <cmd...>
+#             [-t time] [-m mem] [-c cpus] [-n name] [--nodes K] [-y] [--same-name-ok] [--<policy-flag>] -- <cmd...>
+# --nodes K (1..64, default 1): K nodes, ONE task each; -g/-m/-c are per node. K=1 sends exactly the single-node words; K>1 adds
+# --nodes=K --ntasks-per-node=1 and exports RS_NODES / RS_SRUN_GRES (job.sbatch srun's the payload once per node). The plan
+# block's bound `nodes=K` (always, after gres=) is in bound_hash. SBATCH_EXTRA never sets the node/task layout (exit 2).
 # Defaults from ../.hpc.conf: <TAG>_KEY beats KEY (DEFAULT_GPUS/CPUS/MEM/TIME ACCOUNT SBATCH_EXTRA JOB_NAME); CLI beats both.
 # -y queues past an availability/occupancy warning. Exit 1 = warning, 2 = usage/data error, 3 = policy refusal,
 # 6 = a job of this name from this project is still live, or not the --rs-expect plan; 75 = NONCE already claimed; sbatch's own rc.
@@ -25,7 +28,7 @@
 # heredoc (bash <= 5.0 writes them to $TMPDIR: a full one would fail a parse silently).
 # rs-api=3
 set -euo pipefail
-unset RS_ATTEMPT RS_CONF_FILE RS_RUN RS_ACKS     # a submit from inside a job (--export=ALL) never inherits its attempt
+unset RS_ATTEMPT RS_CONF_FILE RS_RUN RS_ACKS RS_NODES RS_SRUN_GRES   # a submit from inside a job (--export=ALL) never inherits its attempt
 trap '' HUP                                      # a session that hangs up (ssh -t) cannot stop it between decide and record
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJ="$(cd "$SELF/.." && pwd)"
@@ -45,7 +48,7 @@ while [ "$#" -gt 0 ]; do                                      # old parser exits
     0:--rs-chain) CHAIN=1; shift; continue ;;
     0*:*--rs-*) echo "ERROR: '$1' is not a flag of this submit.sh here (api=3: --rs-attempt NONCE, --rs-mode plan, --rs-expect HASH, --rs-warnings ID, --rs-chain; values as separate words; never an option's value)" >&2; exit 2 ;;
     0:--) _dd=1 ;;
-  esac; _v=""; [ "$_dd" = 1 ] || case "$1" in -[pgGtmcn]) _v=v ;; esac; _av+=("$1"); shift
+  esac; _v=""; [ "$_dd" = 1 ] || case "$1" in -[pgGtmcn]|--nodes) _v=v ;; esac; _av+=("$1"); shift
 done
 set -- ${_av[@]+"${_av[@]}"}
 [ -z "$RS_WARN" ] || [ -n "$EXPECT" ] || { echo "ERROR: --rs-warnings goes with --rs-expect (the approved card's warnings_id)" >&2; exit 2; }
@@ -101,22 +104,26 @@ _k="${TAG}_DEFAULT_GPU_TYPE";  GTYPE="${!_k:-${T_DEFAULT_GPU_TYPE:-any}}"  # (a 
 NGPU=$(ovr DEFAULT_GPUS 1); DEF_CPUS=$(ovr DEFAULT_CPUS); DEF_MEM=$(ovr DEFAULT_MEM)
 TIME=$(ovr DEFAULT_TIME 1-00:00:00); ACCOUNT=$(ovr ACCOUNT); SB_EXTRA=$(ovr SBATCH_EXTRA)
 NAME=$(ovr JOB_NAME "$(basename "$PROJ")")
-MEM=""; NCPU=""; FORCE=0; ACK=0; SAME_OK=0; PART_FROM_CLI=""; GTYPE_FROM_CLI=""; T_FLAGS=(); _tl=DEFAULT_TIME
+MEM=""; NCPU=""; NODES=1; FORCE=0; ACK=0; SAME_OK=0; PART_FROM_CLI=""; GTYPE_FROM_CLI=""; T_FLAGS=(); _tl=DEFAULT_TIME
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -p) PART="$2"; PART_FROM_CLI=1; shift 2 ;; -g) NGPU="$2"; shift 2 ;; -G) GTYPE="$2"; GTYPE_FROM_CLI=1; shift 2 ;;
     -t) TIME="$2"; _tl=-t; shift 2 ;; -m) MEM="$2"; shift 2 ;; -c) NCPU="$2"; shift 2 ;;
     -n) NAME="$2"; shift 2 ;; -y|--force) FORCE=1; shift ;; --same-name-ok) SAME_OK=1; shift ;;
     --) shift; break ;;
-    --partition*|--gres*|--time*|--mem*|--cpus*|--job-name*|--account*|--qos*|--nodelist*|--exclude*)   # sbatch spellings
-      echo "ERROR: '$1' is an sbatch flag — use -p/-g/-t/-m/-c/-n, or SBATCH_EXTRA in .hpc.conf" >&2; exit 2 ;;
+    --nodes) [ "$#" -ge 2 ] || { echo "ERROR: --nodes takes one value K (1..64)" >&2; exit 2; }; NODES="$2"; shift 2 ;;
+    --nodes=*) echo "ERROR: '$1': give --nodes K as two words" >&2; exit 2 ;;
+    --partition*|--gres*|--time*|--mem*|--cpus*|--job-name*|--account*|--qos*|--nodelist*|--exclude*|--ntasks*|--nodefile*|--tasks-per-node*)   # sbatch spellings
+      echo "ERROR: '$1' is an sbatch flag — use -p/-g/-t/-m/-c/-n/--nodes, or SBATCH_EXTRA in .hpc.conf" >&2; exit 2 ;;
     --?*) echo "NOTE: passing '$1' through to policy.sh (not an sbatch flag)" >&2      # policy-owned flags
           T_FLAGS+=("$1"); case "$1" in *-user-asked) ACK=1 ;; esac; shift ;;
-    *) echo "ERROR: unknown arg '$1' (flags: -p -g -G -t -m -c -n -y [--<policy-flag>], then -- <cmd>)" >&2; exit 2 ;;
+    *) echo "ERROR: unknown arg '$1' (flags: -p -g -G -t -m -c -n --nodes -y [--<policy-flag>], then -- <cmd>)" >&2; exit 2 ;;
   esac
 done
 [ "$#" -ge 1 ] || { echo "ERROR: no run command after --" >&2; exit 2; }
 case "$NGPU" in ''|*[!0-9]*) echo "ERROR: -g '$NGPU' must be a positive integer" >&2; exit 2 ;; esac
+case "$NODES" in [123456789]|[123456789][0123456789]) [ "$NODES" -le 64 ] ;; *) false ;; esac \
+  || { echo "ERROR: --nodes '$NODES' must be an integer 1..64" >&2; exit 2; }
 # --requeue FIRST so SBATCH_EXTRA may override it with --no-requeue (sbatch: the last of the pair wins)
 SB_ARGS=(--job-name="$NAME" --chdir="$PROJ" --time="$TIME" --requeue --export=ALL,PROJ="$PROJ",CLUSTER="$CLUSTER",TARGET="$CLUSTER")
 [ -z "$ACCOUNT" ] || SB_ARGS+=(--account="$ACCOUNT")
@@ -210,12 +217,31 @@ _sv="$_sv mcs-label mem mem-bind mem-per-cpu mem-per-gpu mincpus network nodefil
 _sv="$_sv ntasks-per-gpu ntasks-per-node ntasks-per-socket ntasks-per-tres open-mode output partition prefer priority profile"
 _sv="$_sv qos reservation resources segment signal sockets-per-node switches tasks-per-node thread-spec threads-per-core time"
 _sv="$_sv time-min tmp tres-bind tres-per-task uid wait-all-nodes wckey wrap "; _ss=ABCDFGJLMNSabcdeimnopqtwx
+# The node/task layout is --nodes K's (one task per node): -N/--nodes, -n/--ntasks, --ntasks-per-*, --tasks-per-node, -F/--nodefile,
+# -B/--extra-node-info (S:C:T implies tasks) and a -w/--nodelist of several hosts (a comma, a bracket; a '/' = maybe a file of hosts)
+# are refused in every spelling the scan reads: =value, attached, a separate value, a long prefix (--nt*: only ntasks*; --ta*: only
+# tasks-per-node; --nod / --node: ambiguous between nodes, nodefile, nodelist; --nodel*: nodelist) — option words only: an
+# option's separate value is never one (tests/vgate comment_value=).
+_lay() { echo "ERROR: SBATCH_EXTRA '$1' sets the node/task layout — use rsk launch --nodes K (submit.sh --nodes K)" >&2; exit 2; }
 _bad() { echo "ERROR: SBATCH_EXTRA must not contain '$_w' — partition, name/output, arrays, --wait, ':' and bundled short flags are not accepted here. Fix .hpc.conf." >&2; exit 2; }
+# The harness's own words come first and stay as built: a policy may append to SB_ARGS (or rebuild it around them) but never
+# rewrite them — the scans below read only what follows them, and run-watch calls this script directly (no rsk card between).
+SB_ARGS=(${SB_ARGS[@]+"${SB_ARGS[@]}"}); _i=0; for _w in "${SB_H[@]}"; do   # (re-indexed: an `unset SB_ARGS[i]` leaves no hole)
+  [ "$_i" -lt "${#SB_ARGS[@]}" ] && [ "${SB_ARGS[$_i]}" = "$_w" ] || { echo "ERROR: policy.sh rewrote the harness's own sbatch words (SB_ARGS[$_i] is '${SB_ARGS[$_i]-}', the harness's '$_w') — a policy may only append to SB_ARGS; fix the target's policy.sh, nothing submitted" >&2; exit 2; }
+  _i=$((_i + 1)); done
 _np=${#SB_ARGS[@]}; _cx=(); _cxk=""   # where SBATCH_EXTRA's words start in SB_ARGS (before: the harness's, then the policy's); the
 if [ -n "$SB_EXTRA" ]; then           # conf's words; _cxk: one letter per word, v = the previous option's value, o = not (lint reads it)
-  set -f; _prev=""; _val=0   # _val=1: this word is the previous option's value (getopt takes the next word, whatever it is)
+  set -f; _prev=""; _val=0; _wl=""   # _val=1: this word is the previous option's value (getopt takes the next word, whatever it is)
   for _w in $SB_EXTRA; do
-    if [ "$_val" = 1 ]; then _cxk=${_cxk}v; else _cxk=${_cxk}o; fi
+    if [ "$_val" = 1 ]; then _cxk=${_cxk}v   # _wl: the -w / --nodelist whose separate value this is
+      [ -z "$_wl" ] || case "$_w" in *[,[/]*) _lay "$_wl $_w" ;; esac
+    else _cxk=${_cxk}o; _wl=""
+      case "${_w%%=*}" in
+        --nt*|--ta*|--nod|--node|--nodes|--nodef*|-[NnFB]*|--extra-*) _lay "$_w" ;;   # -B / --extra-node-info: S:C:T implies tasks
+        --nodel*) case "$_w" in *=*) case "${_w#*=}" in *[,[/]*) _lay "$_w" ;; esac ;; *) _wl=$_w ;; esac ;;
+        -w*) case "$_w" in -w) _wl=$_w ;; *) case "${_w#-w}" in *[,[/]*) _lay "$_w" ;; esac ;; esac ;;   # -w=a,b too
+      esac
+    fi
     _q=""; case "$_prev" in -q|--qo|--qos) _q="$_w" ;; esac
     case "$_w" in
       --part*|--j*|--ou*|--er*|--ar*|--wai|--wait|:) _bad ;;
@@ -235,6 +261,44 @@ if [ -n "$SB_EXTRA" ]; then           # conf's words; _cxk: one letter per word,
   [ -z "$_x" ] || { echo "ERROR: SBATCH_EXTRA ends with a dangling '$_prev' (an option that takes a value — or an abbreviation of one — with none): sbatch would take the harness's next option as its value — fix .hpc.conf." >&2; exit 2; }
   set +f
 fi
+# The policy's own words (t_policy / t_partition's SB_ARGS+=, between the harness's and SBATCH_EXTRA's) may not set the node/task
+# layout either — sbatch keeps the last --nodes, and the harness adds one only for K > 1 — read with the same spellings and
+# option/value boundaries; a word equal in effect to the harness's own passes: --nodes=K / -NK / --nodes K / -N K with K = --nodes
+# (1 included), --ntasks-per-node=1 / --tasks-per-node=1 (either value form) when K > 1.
+_lp() { echo "ERROR: policy.sh sets the node/task layout ('$1') — only rsk launch --nodes K (submit.sh --nodes K) sets it; fix the target's policy.sh, nothing submitted" >&2; exit 2; }
+_i=0; _val=0; _lo=""; for _w in "${SB_ARGS[@]}"; do
+  if [ "$_i" -lt "${#SB_H[@]}" ] || [ "$_i" -ge "$_np" ]; then _i=$((_i + 1)); continue; fi; _i=$((_i + 1))
+  if [ "$_val" = 1 ]; then _val=0
+    case "$_lo" in
+      "") ;;
+      -N|--nodes) [ "$_w" = "$NODES" ] || _lp "$_lo $_w" ;;
+      -[nFB]) _lp "$_lo $_w" ;;
+      --ntasks-per-node|--tasks-per-node) { [ "$NODES" != 1 ] && [ "$_w" = 1 ]; } || _lp "$_lo $_w" ;;
+      *) case "$_w" in *[,[/]*) _lp "$_lo $_w" ;; esac ;;   # -w / --nodelist: several hosts (or a file of them)
+    esac; _lo=""; continue; fi
+  case "$_w" in
+    -N|--nodes|--ntasks-per-node|--tasks-per-node|-w) _val=1; _lo=$_w; continue ;;
+    "--nodes=$NODES"|"-N$NODES") continue ;;
+    --ntasks-per-node=1|--tasks-per-node=1) [ "$NODES" != 1 ] || _lp "$_w"; continue ;;
+  esac
+  case "${_w%%=*}" in
+    --nt*|--ta*|--nod|--node|--nodes|--nodef*|--extra-*) _lp "$_w" ;;
+    --nodel*) case "$_w" in *=*) case "${_w#*=}" in *[,[/]*) _lp "$_w" ;; esac ;; *) _val=1; _lo=$_w ;; esac; continue ;;
+  esac
+  # a long word takes the next as its value when it is, or abbreviates, a value option (getopt_long: an exact name first —
+  # --wait is no-value though it prefixes wait-all-nodes; an ambiguous prefix makes sbatch refuse the submit)
+  case "$_w" in --?*=*|--wait) ;; --?*) case "$_sv" in *" ${_w#--}"*) _val=1 ;; esac ;;
+    -[!-]*)   # a short word, read as getopt does: a no-value letter (hHOQsvVW) goes on to the next, a value letter takes the rest of
+      _j=1    # the word or, if none, the next word (-k: only the rest); an unknown letter ends it (sbatch refuses the word)
+      while [ "$_j" -lt "${#_w}" ]; do _c=${_w:$_j:1}; _r=${_w:$((_j + 1))}; _j=$((_j + 1))
+        case "$_c" in [hHOQsvVW]) continue ;; k) break ;; [$_ss]) ;; *) break ;; esac
+        if [ -z "$_r" ]; then _val=1; case "$_c" in [NnFBw]) _lo=-$_c ;; *) _lo="" ;; esac; break; fi
+        case "$_c" in N) [ "$_r" = "$NODES" ] || _lp "$_w" ;; [nFB]) _lp "$_w" ;; w) case "$_r" in *[,[/]*) _lp "$_w" ;; esac ;; esac
+        break
+      done ;;
+  esac
+done
+case "$_val:$_lo" in 1:?*) _lp "$_lo (no value)" ;; esac
 if [ "$CHAIN" = 1 ]; then   # --rs-chain: one singleton chain segment; another dependency already set is a conflict, never merged
   _d=""; _prev=""; for _w in "${SB_ARGS[@]}"; do case "$_prev:$_w" in -d:*|--dependency:*|*:--dependency=*|*:-d?*) _d="$_d $_w" ;; esac; _prev=$_w; done
   case "$_d" in "") SB_ARGS+=(--dependency=singleton) ;; *singleton*) ;;
@@ -250,18 +314,18 @@ _i=0; _prev=""; _po=""; for _w in "${SB_ARGS[@]}"; do
   _prev=$_w; _po=$_o; _i=$((_i + 1)); done
 case "$_prev" in -t|--ti|--tim|--time) echo "ERROR: $_po ends with a dangling '$_prev' (no value) — fix .hpc.conf / policy.sh; nothing submitted" >&2; exit 2 ;; esac
 
-# free GPUs of type $2 (or any) in partition $1 -> stdout "FREE<TAB>MAXNODE"; per-node table to stderr. $3: the job's
+# free GPUs of type $2 (or any) in partition $1 -> stdout "FREE<TAB>MAXNODE<TAB>NODES with >= NGPU free"; per-node table to stderr. $3: the job's
 # --exclude host names, comma-separated (NodeHost compared as is): listed `[excluded]`, never counted.
 gpu_avail() {
   sinfo -p "$1" -N -h -O "NodeHost:25,Gres:170,GresUsed:170,StateLong:15" \
-   | awk -v T="$2" -v X="${3:-}" '
+   | awk -v T="$2" -v X="${3:-}" -v N="$NGPU" '
        BEGIN{n=split(X,xa,","); for(i=1;i<=n;i++) if(xa[i]!="") ex[xa[i]]=1}
        function cnt(s,  re,a){re=(T=="any")?"gpu:([^:,(]*:)?[0-9]+":"gpu:" T ":[0-9]+"
                               if(match(s,re)){a=substr(s,RSTART,RLENGTH); sub(/.*:/,"",a); return a+0} return 0}
        {cfg=cnt($2); if(cfg==0) next; used=cnt($3); st=$4; free=cfg-used; if(free<0)free=0; x=($1 in ex)
         printf "  %-12s %d/%d  [%s]%s\n",$1,free,cfg,st,(x?" [excluded]":"") > "/dev/stderr";
-        if(!x && st ~ /^(idle|mix)/ && st !~ /(drain|down|drng|maint|resv|boot|fail|comp|inval|noresp|plnd|unk)/){tot+=free; if(free>maxn)maxn=free}}
-       END{printf "%d\t%d\n",tot+0,maxn+0}'
+        if(!x && st ~ /^(idle|mix)/ && st !~ /(drain|down|drng|maint|resv|boot|fail|comp|inval|noresp|plnd|unk)/){tot+=free; if(free>maxn)maxn=free; if(free>=N)nk++}}
+       END{printf "%d\t%d\t%d\n",tot+0,maxn+0,nk+0}'
 }
 # The nodes this job may not use: its -x / --exclude in SB_ARGS — the harness's, the policy's, SBATCH_EXTRA's words; none
 # after them sets one — read as the scan reads them: an option's separate value is never an option (`--comment -xn1`:
@@ -276,18 +340,25 @@ EXCL=""; EXCL_N=0; _val=0; _prev=""; for _w in "${SB_ARGS[@]}"; do
 # their hosts: nothing matches — the count as before); any other value (a hostlist range `n[1-4]`, a path), or several
 # --exclude: none, a NOTE says so.
 check_gpu_avail() {
-  local out free maxn x=$EXCL
+  local out free maxn nk sh="" lw="" x=$EXCL
   if [ "$EXCL_N" -gt 1 ]; then x=""; echo "NOTE: this job gives --exclude/-x $EXCL_N times — the count below subtracts none of their nodes: it may include GPUs this job cannot use" >&2
   else case "$x" in *[!$AN._,-]*) x=""; echo "NOTE: this job's --exclude '$EXCL' is not a plain comma-separated host list (a hostlist range?) — the count below subtracts none of its nodes: it may include GPUs this job cannot use" >&2 ;; esac; fi
   echo "$1 nodes carrying '$2' (free/cfg, state${x:+; [excluded] = named by its --exclude, not counted}):"
   out=$(gpu_avail "$1" "$2" "$x") || true
-  free=$(printf '%s' "$out" | cut -f1); maxn=$(printf '%s' "$out" | cut -f2)
-  free=${free:-0}; maxn=${maxn:-0}
-  echo "  -> $free free now; up to $maxn on one node (a 1-node job needs $NGPU on ONE node)."; AVAIL="free:$free/max_node:$maxn/gpu_type:$2"
-  if { [ "$free" -lt "$NGPU" ] || [ "$maxn" -lt "$NGPU" ]; }; then
-    [ "$FORCE" = 1 ] || { echo "WARNING: only $free free of '$2' ($maxn on one node). Re-run -y to queue, pick another -G, or lower -g." >&2; exit 1; }
+  free=$(printf '%s' "$out" | cut -f1); maxn=$(printf '%s' "$out" | cut -f2); nk=$(printf '%s' "$out" | cut -f3)
+  free=${free:-0}; maxn=${maxn:-0}; nk=${nk:-0}
+  if [ "$NODES" = 1 ]; then
+    echo "  -> $free free now; up to $maxn on one node (a 1-node job needs $NGPU on ONE node)."; AVAIL="free:$free/max_node:$maxn/gpu_type:$2"
+    { [ "$free" -ge "$NGPU" ] && [ "$maxn" -ge "$NGPU" ]; } || sh="only $free free of '$2' ($maxn on one node)"
+  else   # K nodes, each with NGPU free (the excluded ones not counted)
+    echo "  -> $free free now; up to $maxn on one node; $nk node(s) with $NGPU free (a $NODES-node job needs $NGPU on EACH of $NODES nodes: $((NODES * NGPU)) GPUs in all)."
+    AVAIL="free:$free/max_node:$maxn/nodes_ok:$nk/nodes:$NODES/gpu_type:$2"; lw=" or --nodes"
+    [ "$nk" -ge "$NODES" ] || sh="only $nk node(s) with $NGPU free of '$2' ($free free in all) for a $NODES-node job"
+  fi
+  if [ -n "$sh" ]; then
+    [ "$FORCE" = 1 ] || { echo "WARNING: $sh. Re-run -y to queue, pick another -G, or lower -g$lw." >&2; exit 1; }
     if [ "$PLAN" = 1 ] || [ -n "$EXPECT" ]; then W_AV=1   # the plan and the approved submit print the SAME line (warnings_id)
-      echo "WARNING: only $free free of '$2' ($maxn on one node) — the submit needs -y to queue anyway." >&2
+      echo "WARNING: $sh — the submit needs -y to queue anyway." >&2
       [ "$PLAN" = 1 ] || echo "NOTE: -y: queuing anyway if the approved card showed this warning (its warnings_id is compared before sbatch)" >&2; fi
   fi
 }
@@ -297,6 +368,18 @@ if [ "$P_CPU_ONLY" = 1 ]; then echo "CPU partition '$PART' (no GPU)."
 else
   check_gpu_avail "$PART" "$GTYPE"
   if [ "$GTYPE" = any ]; then GRES=(--gres="gpu:$NGPU"); else GRES=(--gres="gpu:$GTYPE:$NGPU"); fi
+fi
+NODE_ARGS=()   # K>1: one task per node (its cpus/mem/gres per node, as requested); job.sbatch srun's the payload with the same gres
+if [ "$NODES" != 1 ]; then
+  _g=${GRES[0]:-}; _g=${_g#--gres=}
+  case "$_g" in *[!$AN._:-]*) echo "ERROR: the GPU spec '$_g' cannot travel in sbatch's --export list (a ',' or another character outside [A-Za-z0-9._:-]) — nothing submitted" >&2; exit 2 ;; esac
+  NODE_ARGS=(--nodes="$NODES" --ntasks-per-node=1)
+  case "${SB_ARGS[4]:-}" in --export=ALL,PROJ=*) ;; *) echo "ERROR: the harness's --export word is not where submit.sh put it (did policy.sh rewrite SB_ARGS?) — nothing submitted" >&2; exit 2 ;; esac
+  _val=0; for _w in "${SB_ARGS[@]:5}"; do [ "$_val" = 0 ] || { _val=0; continue; }   # an option's separate value is never one
+    case "$_w" in --exp|--expo|--expor|--export|--export=*|--exp=*|--expo=*|--expor=*)   # sbatch keeps the LAST --export: RS_NODES lost
+    echo "ERROR: '$_w' after the harness's --export would drop RS_NODES (one srun-less task on $NODES nodes) — remove it from SBATCH_EXTRA / policy.sh for --nodes K; nothing submitted" >&2; exit 2 ;;
+    --?*=*|-[!-]?*) ;; --?*) case "$_sv" in *" ${_w#--} "*) _val=1 ;; esac ;; -[$_ss]) _val=1 ;; esac; done
+  SB_ARGS[4]="${SB_ARGS[4]},RS_NODES=$NODES,RS_SRUN_GRES=$_g"; SB_H[4]=${SB_ARGS[4]}   # the harness's --export word (bound via nodes=)
 fi
 # a second live copy of this name from this project would race the first on its logs/ckpts: refuse (exit 6) unless the
 # caller says so or SBATCH_EXTRA/policy chains it (--dependency=singleton waits for the first). Same squeue view as run-watch.
@@ -360,8 +443,8 @@ rs_hook() {   # env_hook as bound: '<ENV_HOOK>:<sha256 of $PROJ/ENV_HOOK>' ('<EN
 }
 rs_bound() {   # THE bound list (the plan block's lines kind= … chain=; bound_hash = sha256 of them): what an approval covers (flags= T_FLAGS)
   local g=${GRES[0]:-} x=("${SB_ARGS[@]}"); [ "${x[*]:0:${#SB_H[@]}}" != "${SB_H[*]}" ] || x=("${x[@]:${#SB_H[@]}}")
-  printf 'kind=slurm\ntarget=%q\npartition=%q\ngres=%q\ncpus=%q\nmem=%q\ntime=%q\naccount=%q\nname=%q\nextra=%s\npayload=%s\nenv_kind=%q\nenv_name=%q\nwandb_mode=%q\nenv_hook=%q\nvenv_dir=%q\nuv_sync_args=%q\nconf_extra=%s\nflags=%s\nchain=%s\n' \
-    "$CLUSTER" "$PART" "${g#--gres=}" "$NCPU" "$MEM" "$TIME" "$ACCOUNT" "$NAME" "$(qw ${x[@]+"${x[@]}"})" "$(qw "$@")" \
+  printf 'kind=slurm\ntarget=%q\npartition=%q\ngres=%q\nnodes=%s\ncpus=%q\nmem=%q\ntime=%q\naccount=%q\nname=%q\nextra=%s\npayload=%s\nenv_kind=%q\nenv_name=%q\nwandb_mode=%q\nenv_hook=%q\nvenv_dir=%q\nuv_sync_args=%q\nconf_extra=%s\nflags=%s\nchain=%s\n' \
+    "$CLUSTER" "$PART" "${g#--gres=}" "$NODES" "$NCPU" "$MEM" "$TIME" "$ACCOUNT" "$NAME" "$(qw ${x[@]+"${x[@]}"})" "$(qw "$@")" \
     "${ENV_KIND:-uv}" "$(ovr ENV_NAME)" "${WANDB_MODE:-online}" "$(rs_hook)" "$(ovr VENV_DIR)" "${UV_SYNC_ARGS:-}" "$(qw ${_cx[@]+"${_cx[@]}"})" "$(qw ${T_FLAGS[@]+"${T_FLAGS[@]}"})" "$_chain"
 }
 rs_warn() {   # W_N W_ID: this call's distinct WARNING: lines (out + err; `WARNING (lint):` is not one), every digit run -> #, sorted (+ W_SIL)
@@ -425,7 +508,7 @@ cp "$SELF/profile.sh" "$A/profile.sh" && cp "$SELF/env.sh" "$A/env.sh" || { echo
 if [ -n "${ENV_HOOK:-}" ] && [ -f "$PROJ/$ENV_HOOK" ]; then cp "$PROJ/$ENV_HOOK" "$A/hook" || { echo "ERROR: cannot snapshot ENV_HOOK into $A" >&2; exit 2; }; fi
 # name, ABSOLUTE log paths and the comment go LAST: nothing earlier (SBATCH_EXTRA, SBATCH_* env, --chdir) can falsify them
 unset SBATCH_ARRAY_INX SBATCH_WAIT                       # the two env switches no CLI arg can override
-cmd=(sbatch "${SB_ARGS[@]}" --partition="$PART" ${GRES[@]+"${GRES[@]}"} --cpus-per-task="$NCPU" --mem="$MEM" --job-name="$NAME" \
+cmd=(sbatch "${SB_ARGS[@]}" --partition="$PART" ${GRES[@]+"${GRES[@]}"} --cpus-per-task="$NCPU" --mem="$MEM" ${NODE_ARGS[@]+"${NODE_ARGS[@]}"} --job-name="$NAME" \
      --output="$PROJ/logs/%x_%j.out" --error="$PROJ/logs/%x_%j.out" --comment="${_c:+$_c }rs=$NONCE" "$PROJ/.$CLUSTER/job.sbatch" "$@")
 { printf '+'; printf ' %q' "${cmd[@]}"; echo; } >&2      # the exact argv (what set -x used to show)
 rs_stage sbatch                                         # RS_ATTEMPT reaches the job through --export=ALL (the environment)
@@ -434,7 +517,7 @@ cat "$A/sbatch.err" >&2
 jid=$(printf %s "$out" | awk '/Submitted batch job/{print $4; exit} /^[0-9]+(;|$)/{sub(/;.*/, ""); print; exit}')
 if [ "$rc" = 0 ] && [ -n "$jid" ]; then   # the job exists: its receipt is on disk before a single byte is printed about it
   _argv=$(printf ' %q' "${cmd[@]}")
-  printf 'job=%s\nname=%s\ntarget=%s\npartition=%s\nproj=%s\nnonce=%s\nat=%s\nargv=%s\n' "$jid" "$NAME" "$CLUSTER" "$PART" "$PROJ" "$NONCE" "$(date +%s)" "${_argv# }" > "$A/receipt.tmp" && mv -f "$A/receipt.tmp" "$A/receipt" && RECEIPT=1 \
+  printf 'job=%s\nname=%s\ntarget=%s\npartition=%s\nnodes=%s\nproj=%s\nnonce=%s\nat=%s\nargv=%s\n' "$jid" "$NAME" "$CLUSTER" "$PART" "$NODES" "$PROJ" "$NONCE" "$(date +%s)" "${_argv# }" > "$A/receipt.tmp" && mv -f "$A/receipt.tmp" "$A/receipt" && RECEIPT=1 \
     || echo "WARNING: job $jid was submitted but its receipt could not be written into $A" >&2
   [ "$RECEIPT" = 0 ] || rs_stage done
 fi

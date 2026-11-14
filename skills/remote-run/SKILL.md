@@ -36,7 +36,7 @@ rsk status [-T <t>]... [--days N]                 # FIRST (new session, after a 
 rsk avail [--type T] [--min N]                    # placement left open: free GPUs on EVERY target (clusters + workstations), read-only
 rsk sync -T <t> [-n] [--also <path>]              # push code + deploy the harness (run-sync; -n dry run first on a new project; -D prune: only with --approve)
 rsk bootstrap -T <t> [--job -p <partition>]       # first run / deps changed: uv sync the target venv, or verify the conda env (run-bootstrap; --job: only with --approve)
-rsk launch -T <t> [Slurm: -p P -g N -G TYPE -t TIME -n NAME --chain N | box: -g N or -d IDS [--gpu-busy-ok], -N NAME] [--class C] -- <RUN>
+rsk launch -T <t> [Slurm: -p P -g N -G TYPE -t TIME -n NAME --chain N --nodes K | box: -g N or -d IDS [--gpu-busy-ok], -N NAME] [--class C] -- <RUN>
 rsk launch --plan <id> [--plan <id>]... --approve   # submit the card(s) the user approved (+ --check-after 30: start milestone)
 rsk launch --relaunch <run>                       # the run's next attempt (aNN) with its recorded configuration
 rsk logs -T <t> <jobid|log> [<ckpt-dir>] [-n 40]  # start a review: the status.sh digest, byte-bounded (-n 40 = deep read; or <jobid|relative log> --grep PAT: matching lines)
@@ -80,7 +80,7 @@ resubmit or cancel, check for an existing authorisation first (`rsk launch` / `r
 approvals, grants, denies); act when it covers the action, ask only when it does not. `--approve` is a flag that says
 the user approved what is on screen (the card, the rows, this cancel); rsk records that it was approved, never their words.
 - "Run this set on this target", "you decide", "auto-resume preemptions within N": record it once, `rsk grant add
-  --action launch|relaunch|chain -T <t> [--partition P] [--name '<glob>'] [--max-gpus N] [--max-time T]
+  --action launch|relaunch|chain -T <t> [--partition P] [--name '<glob>'] [--max-gpus N] [--max-nodes K] [--max-time T]
   [--allow-warnings availability|any] --max-live N|none --max-launches N|none --expires <date>|none` — exactly the
   scope and limits they stated (`none` where they set none; unclear → ask). Never invent a grant, never widen one.
   "Never X" → `rsk grant deny …`: a deny always wins (`rsk watch --act` too) and matches what it cannot rule out (a job
@@ -109,8 +109,11 @@ the user approved what is on screen (the card, the rows, this cancel); rsk recor
   grant-covered unless their words allowed it (`--allow-warnings availability` = only the harness's availability gate,
   `any` = every -y gate, a charged partition's too — only when their words say so); a box's launcher / container
   WARNING is never grant-covered, whatever the kind (it may use more GPUs, another user's). A covering grant also
-  covers policy flags, `SBATCH_EXTRA` words outside the grant allowlist and `--same-name-ok` (the card NOTEs them).
-  `--max-time` caps every time limit.
+  covers policy flags, `SBATCH_EXTRA` words outside the grant allowlist and `--same-name-ok` (the card NOTEs them) —
+  never an `SBATCH_EXTRA` word that changes the allocation (`--exclusive`, `--gres`, `--gpus*`, `-c`, `--mem*`, …: the
+  card's NO GRANT line).
+  `--max-time` caps every time limit. A plan of `--nodes K` > 1 needs `max_nodes` ≥ K (absent = 1), and the GPU / CPU /
+  memory caps count totals (per node × K): more nodes are the user's call.
 - Cancel: a run of this project's ledger (rsk launched or adopted it — your own) → `rsk cancel <run>`, no question; it
   is cancelled once its identity checks out (Slurm: name, WorkDir, user; box: pid, start time, boot id). Anything else
   — another job of yours in this WorkDir, a process the ledger does not hold — only with the user's OK for this
@@ -140,7 +143,9 @@ restore `grants.json`, or move it and its `.prev` aside and `rsk grant recount`:
   `srun`…) — let it use the landing (run the command directly), or name its GPUs to the user (only their approval of
   that card covers it, never a grant). Cancel only after the identity check (`rsk cancel`).
 - Slurm: partition and QOS are `submit.sh`'s decision — no raw `sbatch`/`srun`/`salloc`, no `scontrol update`, no
-  `--partition` inside `SBATCH_EXTRA`. A policy refusal (exit 3) is final; `-y` also confirms policy warnings
+  `--partition` inside `SBATCH_EXTRA`. Several nodes = `rsk launch --nodes K` (one task per node; `-g -m -c` per node;
+  the run's command gets `NNODES NODE_RANK MASTER_ADDR MASTER_PORT`, procedure-slurm.md §3): a node or task count in
+  `SBATCH_EXTRA` is refused (exit 2). A policy refusal (exit 3) is final; `-y` also confirms policy warnings
   (availability, occupancy, SU cost): rsk sends it only when the approved card showed warnings or the covering grant's
   kind covers the plan's warnings, and the target then checks they are the same warnings (a new one: exit 6).
 - wandb uses the **user's own key** (the deployed `.wandb_env`), never a cluster's or the box's `~/.netrc`; no key →

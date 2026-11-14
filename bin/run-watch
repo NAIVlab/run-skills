@@ -27,7 +27,7 @@
 # table only later in the watch withdraws its rows' --release not used yet (release-withdrawn). A row's target
 # is a target name rs_targets lists, spelled exactly (R5-8). A row moved to another target keeps only its spent
 # budgets and an unknown submit; so does a line of its own table from before the target column unless that file watched
-# one target only and the row was not removed. Row submit words never carry --rs-*
+# one target only and the row was not removed. Row submit words never carry --rs-* nor --nodes (rows are single-node)
 # (run-watch sends --rs-attempt itself). Numbers (flags, `#@ allow`, after=, --adopt ids) are base 10: 0060 is 60.
 # `#@ ok … conf=` binds an approval to .hpc.conf (sha256[:12]; the submit ssh checks the deployed copy too); an older line
 # without conf= stays valid; a line or table header this copy cannot read is refused, naming a newer run-watch as the likely
@@ -131,6 +131,7 @@ parse_row() {   # parse_row WHERE TI BLOCK LINENO LINE
       case "$w" in
         --) dd=1 ;; -p) p=1 ;;
         -n|--job-name*) die "$at: no -n: the job is named after the row" ;;
+        --nodes*|--ntasks*|--nodefile*|--tasks-per-node*) die "$at: no '$w': run-watch rows are single-node (a multi-node job goes through rsk launch --nodes K)" ;;
         --rs-*) die "$at: no --rs-* word ('$w'): run-watch sends its own --rs-attempt; plan / expect words are rsk's" ;;
         *-user-asked) die "$at: no *-user-asked flag: it is a per-submit user OK, never replayed" ;;
       esac

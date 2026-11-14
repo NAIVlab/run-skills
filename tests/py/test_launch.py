@@ -31,7 +31,9 @@ def block(kind="slurm", target="fx", name="exp--train--a--scratch--s0--a01", war
           **kw) -> str:
     if kind == "slurm":
         bound = [("kind", "slurm"), ("target", target), ("partition", kw.get("partition", "gpu")),
-                 ("gres", kw.get("gres", "gpu:1")), ("cpus", "8"), ("mem", "40G"), ("time", "1-00:00:00"),
+                 ("gres", kw.get("gres", "gpu:1")),
+                 *((("nodes", kw["nodes"]),) if "nodes" in kw else ()),     # submit.sh's nodes= (an older one: none)
+                 ("cpus", "8"), ("mem", "40G"), ("time", "1-00:00:00"),
                  ("account", "''"), ("name", name), ("extra", kw.get("extra", "")), ("payload", payload),   # qw "$@": words
                  ("env_kind", kw.get("env_kind", "uv")), ("env_name", "''"), ("wandb_mode", kw.get("wandb_mode", "online")),
                  ("env_hook", kw.get("hook", "''")),
@@ -290,11 +292,11 @@ class Flow(Fixture):
 
     def test_s3_a_grant_covers_policy_flags_conf_extra_and_same_name_ok(self):
         G.add(self.led, G.new_grant({"targets": ["fx"]}, ["launch"], max_live=None, max_launches=None, expires=None))
-        self.answers = [self.plan_reply(flags="--whole-node", extra="--nodes=2 --exclusive"), self.submitted("101")]
+        self.answers = [self.plan_reply(flags="--whole-node", extra="--licenses=fs:1 --begin=now"), self.submitted("101")]
         rc, text = self.cli("launch", "-T", "fx", "--whole-node", "--", "c")
         self.assertEqual(rc, OK, text)
         self.assertIn("  NOTE       policy flags: a covering grant covers them too", text)
-        self.assertIn("  NOTE       SBATCH_EXTRA word(s) --nodes=2 --exclusive", text)
+        self.assertIn("  NOTE       SBATCH_EXTRA word(s) --licenses=fs:1 --begin=now", text)
         self.assertNotIn("NO GRANT", text)
         self.assertIn("--whole-node", self.calls[-1])
         self.answers = [self.plan_reply(name="exp--train--b--scratch--s0--a01"), self.submitted("102")]
@@ -560,11 +562,11 @@ class ReviewFixes(Fixture):
         self.assertEqual(text.count("submitted: "), 3)
 
     def test_h2_the_card_shows_sbatch_extras_time_and_resources(self):
-        self.answers = [self.plan_reply(extra="--time=7-00:00:00 --nodes=8")]
+        self.answers = [self.plan_reply(extra="--time=7-00:00:00 --licenses=fs:1")]
         rc, text = self.cli("launch", "-T", "fx", "--", "c")
         self.assertEqual(rc, NEEDS_USER, text)
         self.assertIn("  TIME       7-00:00:00 — an SBATCH_EXTRA / policy --time comes after the harness's", text)
-        self.assertIn("  NOTE       SBATCH_EXTRA word(s) --time=7-00:00:00 --nodes=8 — beyond the usual", text)
+        self.assertIn("  NOTE       SBATCH_EXTRA word(s) --time=7-00:00:00 --licenses=fs:1 — beyond the usual", text)
 
     def test_an_api3_deploy_without_the_new_bound_keys_needs_a_sync(self):
         self.answers = [X.Reply(0, block(drop=("env_hook", "venv_dir", "uv_sync_args")), "", api="api=3")]

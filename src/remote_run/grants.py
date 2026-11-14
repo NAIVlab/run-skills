@@ -15,11 +15,12 @@ deny (d-…) or whose kind is missing or damaged, until it is fixed by hand or r
    "created_at": iso, "created_via": "cli"|"import"|"plan-approve", "source": str (non-empty for import),
    "scope": {"targets": [..], "partitions": [..], "gpu_types": [..], "classes": [..], "names": [glob..],
              "runs": [bound_hash..], "plans": [plan id..], "jobs": [job id..], "idents": [identity..],
-             "max_gpus": int, "max_cpus": int, "max_mem_gb": num, "max_time_s": int,
+             "max_gpus": int, "max_cpus": int, "max_mem_gb": num, "max_time_s": int, "max_nodes": int,
              "allow_warnings": "availability"|"any" (a stored true reads as "any", false as none),
              "relaunch_after": "infra"|"any" (accepted, no longer read: a launch grant covers a relaunch after any
              end, a relaunch-only grant only after an infrastructure end)},
-             (every scope key optional: absent = any; a deny takes only the list keys)
+             (every scope key optional: absent = any — but max_nodes: absent = 1, a standing grant covers a
+             multi-node plan only when the user's words gave it more nodes; a deny takes only the list keys)
    "actions": [⊆ launch relaunch resubmit chain cancel cancel_own] (no command checks `resubmit` — run-watch
               budgets its own resubmits under `#@ allow`, --relaunch is `relaunch` — so `rsk grant add` / import
               refuse it in a standing grant; a deny may still name it; cancel_own is accepted, no longer needed),
@@ -44,11 +45,17 @@ The kinds:
             never a workstation plan's launcher / container / env-dropping warnings (launch.sh counts them apart as
             warnings_gpu; a block without it — an older launch.sh — counts as unknown): such a run may use GPUs
             beyond the landing and max_gpus, another user's too, so only the user's approval of that card covers it
-            (gpu_warn_miss(), NF8), whatever the grant's kind. More resources than max_gpus / max_cpus / max_mem_gb /
-            max_time_s is not covered (a time of 0 / UNLIMITED is unlimited; max_time_s holds for every time limit
+            (gpu_warn_miss(), NF8), whatever the grant's kind. A plan on K nodes (bound nodes=K; a block without
+            it = 1) is covered only when max_nodes >= K (absent = 1), and max_gpus / max_cpus / max_mem_gb compare
+            the plan's TOTALS (per node × K: -g / -c / -m are per node). More resources than max_gpus / max_cpus /
+            max_mem_gb / max_time_s is not covered (a time of 0 / UNLIMITED is unlimited; max_time_s holds for every time limit
             sbatch could read: the bound time and each --time / -t of extra — a site policy's, which comes after the
             harness's and wins, included). S3: policy flags (bound flags=) and conf SBATCH_EXTRA words outside
-            EXTRA_ALLOW are covered like the rest of the plan (the card shows them as a NOTE). S1: a grant with
+            EXTRA_ALLOW are covered like the rest of the plan (the card shows them as a NOTE) — except an SBATCH_EXTRA
+            word that changes the allocation the caps check (alloc_words(): --exclusive, --gres, -G/--gpus*,
+            --cpus-per-*, -c, --mem*, --mincpus, -s/--oversubscribe, -O/--overcommit, -S/--core-spec, --thread-spec,
+            --hint, --sockets/cores/threads-per-*, -B/--extra-node-info, --tmp, --tres-per-task, any abbreviation
+            sbatch accepts): only the user's approval of the card (alloc_miss(), "NO GRANT"). Licenses stay coverable. S1: a grant with
             launch also covers a relaunch of a run in its scope, judged exactly as a launch — scope, caps, budgets,
             warnings, denies — whatever the earlier attempt's end or configuration (another target, a fixed
             command), but never while an earlier attempt may still be live (a ledger attempt live or SUBMIT_UNKNOWN,
@@ -114,6 +121,7 @@ API:
                                     RskError(CONFLICT) when grants.json is unreadable
   deny_match(plan, actions, state, *, job=None) -> (deny|None, reason, cancel_own deny|None)   pure (job None = any)
   conf_extra_bad(words) -> [word]   the conf SBATCH_EXTRA words outside EXTRA_ALLOW (the card's NOTE)
+  alloc_words(words) -> [word]      the conf SBATCH_EXTRA words that change the allocation (never grant-covered)
   run_deny(deny) -> bool            it names a run and lists relaunch / resubmit: it matches every launch of that run
   run_globs(names) -> [glob]        a deny's globs that end in --aNN (or a glob matching one: x--a*), with it removed
                                     (R7-1: an attempt's name = its run)
@@ -155,7 +163,7 @@ VIA = ("cli", "import", "plan-approve")
 ACTIONS = ("launch", "relaunch", "resubmit", "chain", "cancel", "cancel_own")
 LAUNCHES = frozenset({"launch", "relaunch", "resubmit", "chain"})
 LISTS = ("targets", "partitions", "gpu_types", "classes", "names", "runs", "plans", "jobs", "idents")
-NUMS = ("max_gpus", "max_cpus", "max_mem_gb", "max_time_s")
+NUMS = ("max_gpus", "max_cpus", "max_mem_gb", "max_time_s", "max_nodes")
 SCOPE_KEYS = LISTS + NUMS + ("allow_warnings", "relaunch_after")
 WARN_KINDS = ("availability", "any")      # scope.allow_warnings: the harness's availability gate only | every -y gate
 INFRA_END = ("PREEMPTED", "NODE_FAIL", "BOOT_FAIL", "REBOOT")   # a relaunch-only grant resumes only after one of these
@@ -168,7 +176,7 @@ GRANT_LIMITS = ("max_live", "max_launches", "expires")
 NO_LIMIT = "no limit (user's words)"
 FLAG_WINDOW_S = 3600            # a grant created (or a deny revoked) within this long after a deny is flagged
 HEX64 = re.compile(r"[0-9a-f]{64}")
-SLURM_BOUND = ("partition", "gres", "cpus", "mem", "time", "account", "name", "extra", "payload", "env_kind",
+SLURM_BOUND = ("partition", "gres", "nodes", "cpus", "mem", "time", "account", "name", "extra", "payload", "env_kind",
                "env_name", "wandb_mode", "env_hook", "venv_dir", "uv_sync_args", "conf_extra", "flags", "chain")
 NOHUP_BOUND = ("name", "gpus_req", "exclude", "nice", "launch_cfg", "busy_ok", "payload", "env_kind", "env_hook",
                "venv_dir", "uv_sync_args", "env_name")
@@ -183,7 +191,8 @@ NOHUP_BOUND = ("name", "gpus_req", "exclude", "nice", "launch_cfg", "busy_ok", "
 NEEDED = {"slurm": ("env_hook", "venv_dir", "uv_sync_args", "conf_extra", "flags", "warnings_avail", "warnings_id"),
           "nohup": ("busy_ok", "launch_cfg", "env_hook", "venv_dir", "uv_sync_args", "info_run_gpu", "warnings_avail",
                     "warnings_id", "info_launchers")}
-# D1: the conf's SBATCH_EXTRA words the card shows without a NOTE — exactly these spellings (sbatch also takes unique
+# D1: the conf's SBATCH_EXTRA words the card shows without a NOTE (never a node / task layout word: submit.sh refuses
+# -N/--nodes, -n/--ntasks, --ntasks-per-*, -F/--nodefile, a multi-host -w/--nodelist, exit 2 — `rsk launch --nodes K`) — exactly these spellings (sbatch also takes unique
 # long-option prefixes: an abbreviation is "anything else", noted; S3: a grant covers them all). A value is `--opt=V`, `-oV` or the NEXT word
 # (always consumed, whatever it is: getopt_long gives a required argument the next word even when it starts with '-').
 EXTRA_VALUE_LONG = ("qos", "account", "exclude", "constraint", "reservation", "signal", "mail-type", "mail-user", "comment")
@@ -357,9 +366,10 @@ class Facts:
     run: str = ""
     partition: str | None = None       # None: no partition (nohup) or unreadable
     gpu_type: str | None = None        # 'any' = none requested, '' = no GPU, None = unknown
-    gpus: int | None = None
-    cpus: int | None = None
-    mem_gb: float | None = None        # math.inf = unbounded (--mem=0, or no limit at all)
+    gpus: int | None = None            # per node (slurm: the gres count)
+    cpus: int | None = None            # per node
+    mem_gb: float | None = None        # per node; math.inf = unbounded (--mem=0, or no limit at all)
+    nodes: int | None = 1              # slurm: bound nodes= (absent = 1: an older deploy); None = unreadable
     time_s: float | None = None        # math.inf = unlimited (a nohup run has no time limit)
     cls: str | None = None             # the run's class: the name's, else the --class label; None = unknown (also when
                                        # the run's first attempt was recorded without one: a class is set only there)
@@ -372,12 +382,17 @@ class Facts:
     warnings_gpu: int | None = None    # nohup: how many of them launch.sh's launcher / container / env-dropping checks
                                        # printed (None: the block does not say — an older launch.sh: unknown)
     extra_res: tuple[str, ...] = field(default=())  # conf_extra words outside EXTRA_ALLOW: the card NOTEs them
+    extra_alloc: tuple[str, ...] = field(default=())  # conf_extra words that change the allocation: NO GRANT (alloc_words)
     conf_extra: bool = False           # the block names the conf's SBATCH_EXTRA words (an older deploy's does not)
     flags: tuple[str, ...] = field(default=())   # slurm: the policy flags submit.sh handed to the policy (bound flags=)
     flags_known: bool = False          # the block names them (an older deploy's does not)
     time_extra: str = ""               # an SBATCH_EXTRA / policy --time / -t (shown on the card: sbatch takes the last)
     time_max_s: float | None = None    # the longest of time and every --time / -t in extra (max_time_s caps it)
     unreadable: tuple[str, ...] = field(default=())
+
+    def total(self, v: float | None) -> float | None:
+        """A per-node amount times the nodes (None when either is unknown): what max_gpus / max_cpus / max_mem_gb cap."""
+        return None if v is None or self.nodes is None else v * self.nodes
 
 
 def slurm_seconds(t: str) -> float:
@@ -505,6 +520,97 @@ def conf_extra_bad(words: list[str]) -> list[str]:
     return bad
 
 
+# sbatch's own options as getopt_long reads them: src/common/slurm_opt.c at SchedMD/slurm slurm-25-11-0-1 (read
+# 2026-11-14), every slurm_cli_opt_t with a .set_func / .set_func_sbatch — its .name, .has_arg (n no_argument, r
+# required_argument, o optional_argument) and a character .val (its short option). getopt_long also takes a unique
+# prefix of a long name (glibc; `--mem-per-c` = --mem-per-cpu); an exact name wins over a longer one (`--mem`).
+SBATCH_LONG = {
+    "account": "r", "acctg-freq": "r", "array": "r", "batch": "r", "bbf": "r", "autocomplete": "r", "begin": "r",
+    "bb": "r", "consolidate-segments": "n", "cluster-constraint": "r", "chdir": "r", "clusters": "r", "cluster": "r",
+    "comment": "r", "constraint": "r", "container": "r", "container-id": "r", "context": "r", "contiguous": "n",
+    "core-spec": "r", "cores-per-socket": "r", "cpu-freq": "r", "cpus-per-gpu": "r", "cpus-per-task": "r",
+    "deadline": "r", "delay-boot": "r", "dependency": "r", "distribution": "r", "error": "r", "exclude": "r",
+    "exclusive": "o", "export": "r", "export-file": "r", "external": "n", "extra": "r", "extra-node-info": "r",
+    "get-user-env": "n", "gid": "r", "gpu-bind": "r", "tres-bind": "r", "gpu-freq": "r", "gpus": "r",
+    "gpus-per-node": "r", "gpus-per-socket": "r", "gpus-per-task": "r", "tres-per-task": "r", "gres": "r",
+    "gres-flags": "r", "help": "n", "hint": "r", "hold": "n", "ignore-pbs": "n", "input": "r", "job-name": "r",
+    "kill-on-invalid-dep": "r", "licenses": "r", "mail-type": "r", "mail-user": "r", "mcs-label": "r",
+    "oom-kill-step": "o", "mem": "r", "mem-bind": "r", "mem-per-cpu": "r", "mem-per-gpu": "r", "mincpus": "r",
+    "network": "r", "nice": "o", "no-kill": "o", "no-requeue": "n", "nodefile": "r", "nodelist": "r", "nodes": "r",
+    "ntasks": "r", "ntasks-per-core": "r", "ntasks-per-node": "r", "ntasks-per-socket": "r", "ntasks-per-tres": "r",
+    "ntasks-per-gpu": "r", "open-mode": "r", "output": "r", "overcommit": "n", "oversubscribe": "n", "parsable": "n",
+    "partition": "r", "prefer": "r", "priority": "r", "profile": "r", "propagate": "o", "qos": "r", "quiet": "n",
+    "reboot": "n", "requeue": "o", "reservation": "r", "resources": "r", "resv-ports": "o", "segment": "r",
+    "signal": "r", "sockets-per-node": "r", "spread-job": "n", "spread-segments": "n", "stepmgr": "n",
+    "switches": "r", "tasks-per-node": "r", "test-only": "n", "thread-spec": "r", "threads-per-core": "r",
+    "time": "r", "time-min": "r", "tmp": "r", "uid": "r", "use-min-nodes": "n", "usage": "n", "verbose": "n",
+    "version": "n", "wait": "n", "wait-all-nodes": "r", "wckey": "r", "wrap": "r"}
+SBATCH_SHORT = {"A": "r", "a": "r", "b": "r", "D": "r", "M": "r", "C": "r", "S": "r", "c": "r", "d": "r", "m": "r",
+                "e": "r", "x": "r", "B": "r", "G": "r", "h": "n", "H": "n", "i": "r", "J": "r", "L": "r", "k": "o",
+                "F": "r", "w": "r", "N": "r", "n": "r", "o": "r", "O": "n", "s": "n", "p": "r", "q": "r", "Q": "n",
+                "t": "r", "v": "n", "V": "n", "W": "n"}
+# The options that change what the job is allocated beyond the bound gres / cpus / mem / nodes the caps count (a grant's
+# max_gpus / max_cpus / max_mem_gb): never grant-covered in the conf's SBATCH_EXTRA, only by the user's approval of the
+# card. Licenses (-L) are none of GPUs / CPUs / memory: coverable. Node / task layout words never reach a plan
+# (submit.sh refuses them, exit 2).
+ALLOC_LONG = frozenset({"exclusive", "gres", "gpus", "gpus-per-node", "gpus-per-socket", "gpus-per-task", "tres-per-task",
+                        "cpus-per-gpu", "cpus-per-task", "mem", "mem-per-cpu", "mem-per-gpu", "mincpus", "oversubscribe",
+                        "overcommit", "core-spec", "thread-spec", "hint", "sockets-per-node", "cores-per-socket",
+                        "threads-per-core", "extra-node-info", "tmp"})
+ALLOC_SHORT = frozenset("cGsOSB")
+
+
+def sbatch_long(opt: str) -> list[str]:
+    """The sbatch long option(s) `--OPT` names as getopt_long resolves it: the exact name, else every name it is a
+    prefix of (one = that option; several = ambiguous, sbatch refuses; none = unknown)."""
+    if opt in SBATCH_LONG:
+        return [opt]
+    return [n for n in SBATCH_LONG if n.startswith(opt)] if opt else []
+
+
+def alloc_words(words: list[str]) -> list[str]:
+    """The words of the conf's SBATCH_EXTRA that may change the allocation (ALLOC_LONG / ALLOC_SHORT, any spelling
+    sbatch accepts: --opt, --opt=V, a unique prefix, -cN, -c N, a short cluster -Oc4), read with getopt_long's
+    boundaries from SBATCH_LONG / SBATCH_SHORT: a required value is `=V` / the rest of a short word / the NEXT word
+    (consumed whatever it is — `--comment --exclusive` is a comment); an optional one only `=V` / the rest of the word.
+    Fail closed: an ambiguous prefix with an allocation option among its candidates counts; an unknown option or a bare
+    word does not consume the next word (sbatch refuses the first, submit.sh the second), so that word is read too."""
+    out, i = [], 0
+    while i < len(words):
+        w = words[i]
+        if w.startswith("--") and len(w) > 2:
+            opt, eq, _ = w[2:].partition("=")
+            names = sbatch_long(opt)
+            if any(n in ALLOC_LONG for n in names):
+                out.append(w)
+            if len(names) == 1 and SBATCH_LONG[names[0]] == "r" and not eq:
+                i += 1                                  # its value: the next word
+        elif len(w) >= 2 and w[0] == "-" and w[1] != "-":
+            j = 1
+            while j < len(w):
+                c = w[j]
+                if c in ALLOC_SHORT:
+                    out.append(w)
+                    break
+                kind = SBATCH_SHORT.get(c)
+                if kind is None:                        # unknown: sbatch refuses the word
+                    break
+                if kind == "n":
+                    j += 1
+                    continue
+                if kind == "r" and j == len(w) - 1:     # -x V: the next word is the value
+                    i += 1
+                break                                   # the rest of the word is the value
+        i += 1
+    return out
+
+
+def alloc_miss(f: "Facts") -> str:
+    """Why no standing grant covers a plan whose conf SBATCH_EXTRA changes the allocation (alloc_words)."""
+    return (f"NO GRANT: {' '.join(f.extra_alloc)} changes the allocation the caps check (max_gpus / max_cpus / "
+            "max_mem_gb count only the bound gres / cpus / mem) — only the user's approval of this card covers it")
+
+
 def extra_time(words: list[str]) -> str:
     """For the card only (never coverage): the last --time / -t value among the SBATCH_EXTRA / policy words (they
     come after the harness's --time: sbatch takes the last). A word an allowlisted value option takes is its value."""
@@ -586,16 +692,31 @@ def facts(plan: dict) -> Facts:
     cpus = get("cpus")
     cpus_n = int(cpus) if cpus and cpus.isdigit() else None
     mem, t = get("mem"), get("time")
-    t_extra, t_all, res = "", [], []
+    nv, nodes = get("nodes"), 1
+    if nv:                                     # absent / empty: an older deploy, one node
+        nodes = int(nv) if re.fullmatch(r"[0-9]{1,3}", nv) and int(nv) >= 1 else None
+        if nodes is None:
+            bad.append("nodes")
+    elif nv is None and "nodes" in plan:       # present but not one value
+        nodes = None
+    t_extra, t_all, res, alloc = "", [], [], []
     if "extra" in plan:                        # policy + SBATCH_EXTRA words: shown, and their times capped (never D1's allowlist)
         try:
             xw = qwords(str(plan["extra"]))
             t_extra, t_all = extra_time(xw), extra_times(xw)
         except RskError:
             bad.append("extra")
+        else:   # a layout word beside the harness's --nodes (an older deploy, or a submit.sh without the policy guard)
+            if nodes is not None and layout_words(xw, None if "nodes" not in plan else nodes):
+                nodes = None
+                bad.append("nodes")
     if "conf_extra" in plan:                   # the conf's SBATCH_EXTRA alone: words outside EXTRA_ALLOW are NOTEd
         try:
-            res = conf_extra_bad(qwords(str(plan["conf_extra"])))
+            cw = qwords(str(plan["conf_extra"]))
+            res, alloc = conf_extra_bad(cw), alloc_words(cw)
+            if nodes is not None and layout_words(cw, None if "nodes" not in plan else nodes):
+                nodes = None
+                bad.append("nodes")
         except RskError:
             bad.append("conf_extra")
     pflags: list[str] = []
@@ -618,14 +739,90 @@ def facts(plan: dict) -> Facts:
             time_max = max([time_s, *(slurm_seconds(v) for v in t_all)])
     except ValueError:
         time_max, _ = None, bad.append("extra")
-    return Facts(**common, partition=part, gpu_type=gt, gpus=gn, cpus=cpus_n, mem_gb=mem_gb, time_s=time_s,
-                 extra_res=tuple(res), conf_extra="conf_extra" in plan, flags=tuple(pflags), flags_known="flags" in plan,
+    return Facts(**common, partition=part, gpu_type=gt, gpus=gn, cpus=cpus_n, mem_gb=mem_gb, time_s=time_s, nodes=nodes,
+                 extra_res=tuple(res), extra_alloc=tuple(alloc), conf_extra="conf_extra" in plan, flags=tuple(pflags), flags_known="flags" in plan,
                  time_extra=t_extra, time_max_s=time_max, unreadable=tuple(bad))
 
 
 def bound(plan: dict) -> dict[str, str]:
     keys = SLURM_BOUND if plan.get("kind") == "slurm" else NOHUP_BOUND
     return {k: str(plan.get(k, "")) for k in keys}
+
+
+LAYOUT_LONG = frozenset({"nodes", "ntasks", "ntasks-per-core", "ntasks-per-gpu", "ntasks-per-node", "ntasks-per-socket",
+                         "ntasks-per-tres", "tasks-per-node", "nodefile", "extra-node-info"})   # + nodelist: several hosts
+LAYOUT_SHORT = frozenset("NnFB")                                                                # + -w: several hosts
+
+
+def _hosts(v: str) -> bool:
+    """A -w / --nodelist value naming several hosts (a comma, a hostlist bracket) or maybe a file of them (a '/')."""
+    return any(c in v for c in ",[/")
+
+
+def layout_words(words: list[str], nodes: int | None = None) -> list[str]:
+    """The option words among WORDS (a block's extra = the policy's + SBATCH_EXTRA's, or conf_extra) that may set the
+    node / task layout (-N -n -F -B --ntasks* --tasks-per-node --nodefile --extra-node-info, a multi-host -w /
+    --nodelist), read with getopt_long's boundaries as alloc_words reads them (SBATCH_LONG / SBATCH_SHORT): a long
+    option in any unique prefix (an ambiguous one with a layout option among its candidates counts: fail closed), a
+    short cluster letter by letter — a no-value letter goes on to the next (`-vN2` = -v -N2), a value letter takes the
+    rest of the word or, if none, the NEXT word, which is then never an option (`--comment --nodes=3` is a comment).
+    With NODES (the block's bound nodes=K) a word equal in effect to the harness's own passes, as submit.sh lets it:
+    a node count of exactly K in any spelling (--nodes=K, --nodes K, -NK, -N K, -vNK), and --ntasks-per-node=1 /
+    --tasks-per-node=1 (either value form) when K > 1. [] = none."""
+    out, i = [], 0
+
+    def ok(name: str, v: str) -> bool:                  # NAME (a long name, or N for -N) = V equals the harness's own
+        if nodes is None:
+            return False
+        if name in ("nodes", "N"):
+            return v == str(nodes)
+        return name in ("ntasks-per-node", "tasks-per-node") and nodes > 1 and v == "1"
+
+    while i < len(words):
+        w = words[i]
+        nxt = words[i + 1] if i + 1 < len(words) else None
+        if w.startswith("--") and len(w) > 2:
+            opt, eq, val = w[2:].partition("=")
+            names = sbatch_long(opt)
+            takes = len(names) == 1 and SBATCH_LONG[names[0]] == "r" and not eq
+            v = val if eq else (nxt if takes else None)
+            shown = w if eq or not takes else f"{w} {nxt if nxt is not None else '(no value)'}"
+            if len(names) > 1 and any(n in LAYOUT_LONG or n == "nodelist" for n in names):
+                out.append(w)                           # ambiguous (--nod, --node, --nt): sbatch refuses it; counted
+            elif len(names) == 1 and names[0] in LAYOUT_LONG:
+                if v is None or not ok(names[0], v):
+                    out.append(shown)
+            elif names == ["nodelist"] and v is not None and _hosts(v):
+                out.append(shown)
+            if takes:
+                i += 1                                  # its value: the next word
+        elif len(w) >= 2 and w[0] == "-" and w[1] != "-":
+            j = 1
+            while j < len(w):
+                c, rest = w[j], w[j + 1:]
+                kind = SBATCH_SHORT.get(c)
+                if kind == "n":
+                    j += 1
+                    continue
+                if kind != "r":                         # unknown (sbatch refuses the word) or optional (-k: the rest)
+                    break
+                v = rest if rest else nxt
+                shown = w if rest else f"{w} {nxt if nxt is not None else '(no value)'}"
+                if c in LAYOUT_SHORT and (v is None or not ok(c, v)):
+                    out.append(shown)
+                elif c == "w" and v is not None and _hosts(v):
+                    out.append(shown)
+                if not rest:
+                    i += 1                              # -x V: the next word is the value
+                break
+        i += 1
+    return out
+
+
+def old_layout(words: list[str]) -> bool:
+    """A block without nodes= (a submit.sh older than --nodes, which let SBATCH_EXTRA / the policy set the layout):
+    does its extra hold a layout word (layout_words, none exempt)? Then the node count is unknown (fail closed)."""
+    return bool(layout_words(words))
 
 
 def same_config(orig: dict, plan: dict) -> list[str]:
@@ -640,7 +837,10 @@ def same_config(orig: dict, plan: dict) -> list[str]:
     a, b = orig.get("bound") or {}, bound(plan)
     for k in sorted(set(a) | set(b)):
         va, vb = str(a.get(k, "")), str(b.get(k, ""))
-        if k == "name":
+        if k == "nodes":                                # absent / empty = 1 (an attempt from before nodes=)
+            if _nodes_v(va) != _nodes_v(vb):
+                diff.append(f"nodes {va[:20] or '1'!r} -> {vb[:20] or '1'!r}")
+        elif k == "name":
             try:
                 if L.run_id(unq(va)) != L.run_id(unq(vb)):
                     diff.append(f"name {va!r} -> {vb!r} (another run)")
@@ -649,6 +849,11 @@ def same_config(orig: dict, plan: dict) -> list[str]:
         elif va != vb and _unq_or(va) != _unq_or(vb):   # '' = "''" (%q of empty) = absent (an attempt from before the key)
             diff.append(f"{k} {va[:60]!r} -> {vb[:60]!r}")
     return diff
+
+
+def _nodes_v(v: str) -> str | list[str]:
+    w = _unq_or(v)
+    return ["1"] if w in ([], "") else w
 
 
 def _unq_or(v: str) -> str | list[str]:
@@ -1212,8 +1417,10 @@ def _scope_misses(scope: dict, f: Facts, deny: bool) -> list[str]:
     if plans and f.plan_id not in plans and not (deny and not f.plan_id):
         miss.append(f"not one of the approved plans ({f.plan_id or 'no plan id'} not in {', '.join(plans[:4])})")
     if not deny:
-        for key, have, label, show in (("max_gpus", f.gpus, "GPUs", str), ("max_cpus", f.cpus, "CPUs", str),
-                                       ("max_mem_gb", f.mem_gb, "GB memory", lambda v: f"{v:g}"),
+        per = f" in total ({f.nodes} nodes)" if f.nodes != 1 else ""      # totals: per node × nodes
+        for key, have, label, show in (("max_gpus", f.total(f.gpus), "GPUs" + per, lambda v: f"{v:g}"),
+                                       ("max_cpus", f.total(f.cpus), "CPUs" + per, lambda v: f"{v:g}"),
+                                       ("max_mem_gb", f.total(f.mem_gb), "GB memory" + per, lambda v: f"{v:g}"),
                                        ("max_time_s", f.time_s if f.time_max_s is None else f.time_max_s,
                                         "time", _dur)):
             cap = scope.get(key)
@@ -1532,8 +1739,16 @@ def _misses(r: dict, plan: dict, f: Facts, needed: tuple[str, ...], state: L.Led
                 miss.append(f"{live_under(r['id'], state, extending)} of {ml} live runs under it")
     else:
         miss = _scope_misses(sc, f, deny=False)
+        mn = sc.get("max_nodes", 1)                     # absent = 1: more nodes are the user's call
+        if f.nodes is None:
+            miss.append(f"nodes not known (the grant allows {mn})")
+        elif f.nodes > mn:
+            miss.append(f"{f.nodes} nodes > {mn}" + ("" if "max_nodes" in sc else
+                                                       " (no --max-nodes: a standing grant covers one node)"))
         if f.kind == "nohup" and f.warnings_gpu != 0:      # NF8: whatever the scope's allow_warnings kind
             miss.append(gpu_warn_miss(f))
+        if f.kind == "slurm" and f.extra_alloc:            # the caps count bound gres / cpus / mem only
+            miss.append(alloc_miss(f))
         if "relaunch" in needed and "launch" in acts and "resubmit" not in needed:
             miss += _any_misses(plan, f, state)    # judged as a launch, but never a second copy beside a live one
         elif {"relaunch", "resubmit"} & set(needed):   # a relaunch-only grant: an infrastructure end, the same config
@@ -1737,7 +1952,8 @@ def describe(rec: dict) -> str:
     if sc.get("runs"):
         parts.append(f"plans {', '.join(h[:12] for h in sc['runs'])}")
     for key, show in (("max_gpus", lambda v: f"<= {v} GPUs"), ("max_cpus", lambda v: f"<= {v} CPUs"),
-                      ("max_mem_gb", lambda v: f"<= {v:g} GB"), ("max_time_s", lambda v: f"<= {_dur(v)}")):
+                      ("max_mem_gb", lambda v: f"<= {v:g} GB"), ("max_time_s", lambda v: f"<= {_dur(v)}"),
+                      ("max_nodes", lambda v: f"<= {v} nodes")):
         if sc.get(key) is not None:
             parts.append(show(sc[key]))
     where = "; ".join(parts) or "anything"
@@ -1950,8 +2166,8 @@ def _scope_from(args: argparse.Namespace, deny: bool) -> dict:
         sc["jobs"] = _jobs_arg(args)
         sc["runs"] = _arg(args, "runs")
         return sc
-    for k in ("max_gpus", "max_cpus", "max_mem_gb"):
-        if getattr(args, k) is not None:
+    for k in ("max_gpus", "max_cpus", "max_mem_gb", "max_nodes"):
+        if getattr(args, k, None) is not None:
             sc[k] = getattr(args, k)
     if args.max_time:
         try:
@@ -2338,6 +2554,9 @@ def add_parsers(sub) -> None:
     a.add_argument("--max-gpus", type=int, default=None)
     a.add_argument("--max-cpus", type=int, default=None)
     a.add_argument("--max-mem-gb", type=float, default=None)
+    a.add_argument("--max-nodes", type=int, default=None, metavar="K",
+                   help="a Slurm plan on up to K nodes (default 1: without it a standing grant covers single-node plans "
+                   "only); --max-gpus / --max-cpus / --max-mem-gb cap the totals (per node × nodes)")
     a.add_argument("--max-time", default="", help="Slurm time (e.g. 2-00:00:00)")
     a.add_argument("--allow-warnings", default=None, choices=WARN_KINDS, metavar="availability|any",
                    help="also plans with warnings, only when the user's words say so: availability = only the "

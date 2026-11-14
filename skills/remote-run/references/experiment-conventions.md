@@ -80,6 +80,10 @@ corrupts the only resume point. Outside the project dir only under the conf's `O
   that signal children too), or rely on periodic saves. A payload without a USR1 handler (a wrapper shell too) dies of
   the warning: sacct says FAILED, not TIMEOUT (only a job still running at the limit is TIMEOUT). A run that cannot
   resume yet goes out with `SBATCH_EXTRA="--no-requeue"` rather than silently retraining from step 0.
+- slurm, several nodes (`rsk launch --nodes K`): every node runs the same command against the same project dir, so one
+  process writes each checkpoint (global rank 0) and every node resumes from the same file; the time-limit USR1 reaches every
+  node's task, a cancel's or preemption's TERM may not leave them time to save (srun kills its tasks on TERM), so save
+  on USR1 and on the run's own schedule; one node failing ends the step on all of them.
 - slurm, longer than the partition's walltime: `--requeue` does not restart a job at its walltime, so chain segments —
   one full `-n` name (including `a<attempt>`) for all segments plus `SBATCH_EXTRA="--dependency=singleton"`: only one
   job of that name runs at a time, the next starts when the previous one terminates (TIMEOUT included), a preempted

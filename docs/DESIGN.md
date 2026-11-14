@@ -17,7 +17,7 @@ This document explains *why* run-skills is shaped the way it is. The user-facing
    launches and cancellations are checked against what the user already allowed (below); new conda envs, remote
    directories and someone else's jobs are never the agent's to decide.
 
-Non-goals: multi-node jobs, non-NVIDIA hardware, a new configuration language or task file, a daemon, a database server
+Non-goals: multi-node jobs beyond one task per node (below: `--nodes K`), heterogeneous jobs, non-NVIDIA hardware, a new configuration language or task file, a daemon, a database server
 or a control plane (rsk runs only when called; its ledger is a few JSON files per project on the user's machine;
 `run-watch` is a foreground command the session owns, with a lease; its state file is a receipt, not a database).
 
@@ -134,8 +134,8 @@ pinned under the project, as above.
 Then, in order: GPU range, cpu/mem heuristics, walltime cap (a request above `MaxTime` would pend forever; a limit of
 `0` in any spelling, `UNLIMITED`, `INFINITE` or `-1` is no limit at all to sbatch and is refused, as is one the script
 cannot read — and that holds for every `--time` / `-t` sbatch could read, the policy's and `SBATCH_EXTRA`'s included,
-because sbatch keeps the last one), a payload guard (no nested `sbatch`/`srun`), a scan of `SBATCH_EXTRA` (no partition
-or forbidden QOS smuggled in; every word an option or the value of the option before it — sbatch's getopt string starts
+because sbatch keeps the last one), a payload guard (no nested `sbatch`/`srun`: the harness runs the one `srun` of a multi-node job), a scan of
+`SBATCH_EXTRA` (no partition, forbidden QOS or node / task layout smuggled in; every word an option or the value of the option before it — sbatch's getopt string starts
 with `+`, so the first other word would become the batch script and the harness's own options after it that script's
 arguments, and a value option at the end would swallow the harness's next option), an availability check with `sinfo`
 (busy → warning, `-y` to queue anyway; a node the job's own last `--exclude` / `-x` names is listed `[excluded]` and never
@@ -147,6 +147,100 @@ as that scan does (an option's separate value, `--comment -t1`, is never linted 
 `sbatch --requeue`.
 The job wrapper writes a header per start (`restart=N`) and an `EXIT rc=N` footer, and forwards Slurm's warning and
 termination signals to the trainer, so the log itself records how each attempt ended.
+
+## Multi-node jobs (`--nodes K`)
+
+What is supported is the common data-parallel shape: K nodes, **one task per node**, each task starting the run's
+command once, and the command (`torchrun`, `accelerate launch`, a launcher of its own) starting the processes of its node.
+`rsk launch -T <slurm target> --nodes K` (long option only, 1..64, default 1; a workstation is one host: exit 2) passes
+`--nodes K` to `submit.sh` only when K > 1, so a single-node plan sends exactly the words it always did, and an older
+`submit.sh` answers `unknown arg` (rsk: `needs: sync`, exit 6). `-g`, `-m`, `-c` stay per node — Slurm's `--gres`,
+`--mem` and `--cpus-per-task` are per node with one task per node — so `submit.sh` adds `--nodes=K --ntasks-per-node=1`
+and exports `RS_NODES=K` and `RS_SRUN_GRES` (the per-node gres it requested). The availability gate needs K nodes each
+with the GPUs free (its own `--exclude` not counted) and its WARNING names K; the card says `nodes: K × <gres> (total N
+GPUs)`. The bound field `nodes=K` is printed always, right after the gres field, so it is inside `bound_hash`: an
+approved card of one node never submits two, and a block without it (an older deploy) reads as one node — a plan asked
+with K > 1 whose block lacks it is `needs: sync`, one showing another K exit 6.
+
+`job.sbatch` with `RS_NODES` > 1: `MASTER_ADDR` = the first line of `scontrol show hostnames "$SLURM_JOB_NODELIST"`
+(empty or failed: `EXIT rc=2`, fail closed; so is a job on several nodes without `RS_NODES` — an `--export` in
+`SBATCH_EXTRA` that dropped it is refused by `submit.sh` for K > 1 anyway, as sbatch keeps the last `--export`), `MASTER_PORT` = a preset value or `20000 + SLURM_JOB_ID % 20000`, exported
+with `NNODES`; the header adds `nodes=K`; then `srun --nodes=K --ntasks-per-node=1 --kill-on-bad-exit=1
+--gres=$RS_SRUN_GRES --export=ALL bash -c '…NODE_RANK=$SLURM_NODEID…; exec "$@"' rs-node <RUN> &`, in the same
+`& child=$! … wait` loop. USR1 (the time-limit warning, `B:USR1@120`) still goes to `$child` — srun — which relays it unchanged
+to every task. TERM does not: srun answers a TERM with SIGKILL to its tasks — `src/srun/srun_job.c` `_srun_signal_mgr` (read
+2026-11-14 at SchedMD/slurm `slurm-25-11-0-1`,
+<https://github.com/SchedMD/slurm/blob/slurm-25-11-0-1/src/srun/srun_job.c#L2257-L2305>): `case SIGTERM: case SIGHUP: …
+info("forcing job termination"); launch_g_fwd_signal(SIGKILL);`, while `default: launch_g_fwd_signal(sig);` passes every
+other signal of `sig_array` (`src/srun/srun.c`: `SIGINT, SIGQUIT, SIGCONT, SIGTERM, SIGHUP, SIGALRM, SIGUSR1, SIGUSR2,
+SIGPIPE`) through. So the multi-node path forwards TERM ONCE (the same claim) with `scancel --signal=TERM "$SLURM_JOB_ID"` and
+keeps waiting for srun: scancel(1) (`doc/man/man1/scancel.1`, same tag) — "When --batch is not used but --signal is used, then
+all job steps will be signaled, but the batch script itself will not be signaled"; in the source, slurmctld `_signal_job`
+(`src/slurmctld/job_mgr.c`) sets `KILL_STEPS_ONLY` when neither `KILL_FULL_JOB` nor `KILL_JOB_BATCH` is set, and slurmd
+`_kill_all_active_steps(…, batch=false)` (`src/slurmd/slurmd/req.c`) then signals every step but `SLURM_BATCH_SCRIPT` — the
+srun step's tasks, never srun (it lives in the batch step). A failed scancel falls back to TERM to srun (`term=srun` in the
+footer: the tasks get SIGKILL). The limit: when the job itself ends (a whole-job `scancel`, preemption by cancel/requeue,
+the time limit), slurmd `_rpc_terminate_job` sends SIGTERM to every step's container, the batch step included
+(`_kill_all_active_steps(&req->step_id, SIGTERM, 0, req->details, true, …)`; slurmstepd `_handle_signal_container` →
+`proctrack_g_signal(step->cont_id, sig)`), so srun receives that TERM directly and may SIGKILL the tasks before their handler
+finishes — whatever job.sbatch does. A multi-node trainer should therefore checkpoint on USR1 (relayed, ~120 s ahead) rather
+than count on TERM; `tests/vgate/multinode.sh` `job_cancel_grace=` shows what a real cluster does. The env check
+(venv python / conda) runs on the batch node; the project dir is on a filesystem every node mounts (as for any Slurm
+target). With one node nothing changes, byte for byte. Each task sees `NNODES NODE_RANK MASTER_ADDR MASTER_PORT`; a
+torchrun payload passes them explicitly — the expansion has to happen on the node, so inside `bash -c '…'`:
+
+```bash
+rsk launch -T <t> --nodes 2 -g 4 -n <run> -- bash -c 'torchrun --nnodes "$NNODES" --node-rank "$NODE_RANK" \
+  --master-addr "$MASTER_ADDR" --master-port "$MASTER_PORT" --nproc-per-node 4 train.py --resume auto'
+```
+
+torchrun would also read them from the environment as `PET_<DEST>`: `torch/distributed/argparse_util.py` (read
+2026-11-14 at pytorch/pytorch `1a6d2a8`,
+<https://github.com/pytorch/pytorch/blob/1a6d2a8249e0b28c119661a8c424f9c145fbe1bd/torch/distributed/argparse_util.py>),
+class `env(Action)`, "Get argument values from ``PET_{dest}`` before defaulting to the given ``default`` value":
+`env_name = f"PET_{dest.upper()}"` / `default = os.environ.get(env_name, default)`; and
+`torch/distributed/run.py` (same commit,
+<https://github.com/pytorch/pytorch/blob/1a6d2a8249e0b28c119661a8c424f9c145fbe1bd/torch/distributed/run.py>) declares
+`"--nnodes", action=env`, `"--node-rank", "--node_rank", type=int, action=env`, `"--master-addr", "--master_addr", …
+action=env` and `"--master-port", "--master_port", … action=env`, with `"--rdzv-backend", … default="static"` — static
+rendezvous, the one that uses `--node-rank` / `--master-addr`. So `PET_NNODES PET_NODE_RANK PET_MASTER_ADDR
+PET_MASTER_PORT` are honoured by that source, and `job.sbatch` exports them too (`PET_NODE_RANK` per task); an explicit
+flag still wins over them (the `env` action only changes the default), and the example passes the flags anyway, which
+works whatever torch version the venv holds.
+
+The Slurm facts this rests on — one task per node under `--ntasks-per-node=1`, `SLURM_NODEID` 0..K-1, the hostnames'
+first line a node of the job, a step's `--gres=gpu:N` giving N GPUs per node, srun relaying USR1 to the tasks, `scancel
+--signal=TERM <job>` reaching every task with srun left running, a TERM to srun itself killing the tasks (`srun_term_kills=`),
+what a whole-job cancel leaves the tasks (`job_cancel_grace=`),
+`--export=ALL` carrying the batch env, `--kill-on-bad-exit` ending the step when one task fails, and whether a step
+inherits the job's `--cpus-per-task` (job.sbatch passes it explicitly, `step_cpus_explicit=`) and the job's
+per-node memory (`step_mem=`) — are reproduced by `tests/vgate/multinode.sh` (`one_task_per_node= nodeid=
+hostnames_first= step_gres= signal_usr1= signal_term= srun_term_kills= job_cancel_grace= export_all= kill_on_bad_exit= step_cpus= step_mem=`; one tiny 2-node job,
+run on a login node only with the user's OK: `ssh <alias> 'bash -s <scratch-dir> <partition> [GRES=gpu:N]' <
+tests/vgate/multinode.sh`).
+
+Three guards keep a node count from arriving any other way. `SBATCH_EXTRA` may not set the node or task layout: `-N` /
+`--nodes`, `-n` / `--ntasks`, `--ntasks-per-node|gpu|socket|core|tres`, `--tasks-per-node`, `-F` / `--nodefile`, `-B` / `--extra-node-info` (sockets:cores:threads imply tasks), and `-w` / `--nodelist`
+naming more than one host (a comma or a hostlist bracket) or maybe a file of them (a `/`) are exit 2 in every spelling the scan reads (`=value`, a
+separate value, an abbreviation sbatch accepts) — `ERROR: SBATCH_EXTRA '<w>' sets the node/task layout — use rsk launch
+--nodes K` — because `--nodes=2` there once allocated two nodes with one used, and a grant that covers the conf's extra
+words would have doubled the GPUs past its cap. The target's policy may not either: after `t_policy` / `t_partition`,
+`submit.sh` scans the words they added to `SB_ARGS` with the same spellings and option / value boundaries (a short cluster
+letter by letter as getopt reads it: `-vN2` is `-v -N2`), and any layout
+word is exit 2 (`ERROR: policy.sh sets the node/task layout ('<w>') …`) — sbatch keeps the last `--nodes`, and the harness
+adds its own only for K > 1, so a policy's `SB_ARGS+=(--nodes=2)` would otherwise give a one-node plan two nodes past
+`max_nodes`. The harness's own leading words (name, chdir, time, requeue, export, account) must still be there, unchanged
+(else exit 2 `policy.sh rewrote the harness's own sbatch words`): the scan reads only what follows them, and `run-watch`
+calls `submit.sh` with no card in between. A word equal in effect to the harness's own passes: `--nodes=K` / `-NK` / `--nodes K` / `-N K` with K = the
+plan's `--nodes` (1 included), and `--ntasks-per-node=1` / `--tasks-per-node=1` when K > 1. rsk holds a plan block to the
+same rule even when it has `nodes=` (`grants.layout_words` over `extra` and `conf_extra`; flags are no sbatch words — what
+the policy makes of them lands in `extra`): a layout word beside `nodes=` (a `submit.sh` older than the policy guard) is
+`needs: sync` at `rsk launch` and an unknown node count for every grant. And grants: the scope key `max_nodes` (absent = 1; `rsk grant add
+--max-nodes K`) must be ≥ K for a plan of K nodes — more resources are the user's call — and the GPU / CPU / memory caps
+compare to totals (per node × K). An approval of a card covers its node count like any other bound field. A block without `nodes=` whose `extra` holds such a word
+(an older deploy) has an unknown node count: `rsk launch` says `needs: sync`, and no record covers it. `run-watch`
+tables stay single-node: a row word asking for nodes or tasks (`--nodes`, `--ntasks…`, `--nodefile`, `--tasks-per-node`)
+is refused when the table is read (exit 2), never submitted as one node.
 
 ## Submission records (the attempt journal)
 
@@ -380,8 +474,8 @@ and it wastes intent the user has already expressed: a user who said "run these 
 should not be asked five times, and a preempted job should not wait overnight for a "yes, resume it". The user's
 policy: no need to ask again every time, but every action must check whether an authorisation exists. Later the user
 found the record keeping itself too strict and cut it (2026-11): rsk no longer stores the user's words (`--approve` is a
-flag), a `launch` grant covers relaunches, a grant may cover policy flags, unlisted `SBATCH_EXTRA` words and
-`--same-name-ok`, and the agent cancels its own runs without asking — only another job or process needs the user's OK.
+flag), a `launch` grant covers relaunches, a grant may cover policy flags, unlisted `SBATCH_EXTRA` words (not one that
+changes the allocation the caps check) and `--same-name-ok`, and the agent cancels its own runs without asking — only another job or process needs the user's OK.
 
 | situation | ask again? |
 |---|---|
@@ -398,8 +492,8 @@ How rsk maps it. `rsk launch` plans on the target first (plan mode, above), stor
 record type, in the project's ledger under rsk's state dir: an **approval** (the plan ids and bound hashes of the cards
 the user approved, expiring with those plans — one record covers a whole sweep, a chain of N segments is one approval
 used N times; a later plan of the same configuration is a new card), a
-**grant** (a standing predicate: targets, partitions, GPU types, classes, name globs, caps on GPUs / CPUs / memory /
-time, which warnings it accepts, the actions allowed, and `max_live` / `max_launches` / `expires` — all three always
+**grant** (a standing predicate: targets, partitions, GPU types, classes, name globs, caps on nodes (`max_nodes`), on GPUs / CPUs / memory
+(totals over the nodes) and on time, which warnings it accepts, the actions allowed, and `max_live` / `max_launches` / `expires` — all three always
 stated, `none` meaning the user's words set none, so a limit is never the agent's invention), and a **deny** (it always
 wins). Covered → act and record the use; not covered → `needs user:` with the card, exit 4; once the user approves the card,
 `--approve` (a flag: rsk records that the card was approved, never what the user said). When the target proves nothing was submitted (a refusal or failure before `sbatch` / `setsid` with no
@@ -436,7 +530,16 @@ the harness's and wins) — and a limit of 0 or `UNLIMITED` is unlimited, so it 
 --exclude -x --constraint -C --reservation --signal --mail-type --mail-user --comment`, `--dependency=singleton` / `-d
 singleton`, `--requeue` / `--no-requeue`, `--nice[=N]` — is named on a card NOTE line, because a time, resource or node option has more spellings
 and abbreviations than any cap could follow; a covering grant covers it too (the grant is the user's standing decision,
-and the card still shows the words). The policy's own `SB_ARGS` words are site policy and never affect coverage;
+and the card still shows the words) — except a node / task layout word, which `submit.sh` refuses before any plan exists
+(Multi-node jobs, above), so no grant can cover a second node that way, and except a word that changes the allocation
+the caps check: the caps compare the bound `gres` / `cpus` / `mem` (× nodes), so `--exclusive`, `--gres`, `-G`/`--gpus*`, `--cpus-per-*`, `-c`, `--mem*`, `--mincpus`, `-s`/`--oversubscribe`, `-O`/`--overcommit`, `-S`/`--core-spec`, `--thread-spec`, `--hint`, `--sockets-per-node`/`--cores-per-socket`/`--threads-per-core`, `-B`/`--extra-node-info`, `--tmp`, `--tres-per-task` — in every spelling
+sbatch accepts (`grants.alloc_words`: getopt_long's boundaries from sbatch's own option table, `src/common/slurm_opt.c` at
+SchedMD/slurm `slurm-25-11-0-1`, <https://github.com/SchedMD/slurm/blob/slurm-25-11-0-1/src/common/slurm_opt.c>: each
+option's `.name`, `.has_arg` and short `.val`; a unique prefix resolves, an ambiguous one with an allocation option among
+its candidates counts, `--comment --exclusive` is a comment) — would let a grant cover more GPUs, CPUs or memory than its
+caps say (`--exclusive` takes whole nodes; with `P_CPU_ONLY=1` the bound gres is empty while `--gres=gpu:4` here asks for
+four GPUs). Such a word is never grant-covered: the card says `NO GRANT   <words> changes the allocation the caps check`
+and only the user's approval of that card covers it. Licenses (`-L`) are none of GPUs / CPUs / memory: coverable. The policy's own `SB_ARGS` words are site policy and never affect coverage;
 `T_SBATCH_EXTRA_ALLOW` widens only the lint. Policy flags (`--<word>` handed to the site's `t_policy`, bound as
 `flags=`) are the same kind of unknown — the policy may turn one into any sbatch option — and are listed the same way;
 so is `--same-name-ok` (a second live copy of a run).

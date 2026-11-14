@@ -1058,13 +1058,56 @@ fi
 for f in templates/hpc.conf.example templates/ws.conf.example templates/ssh_config templates/wandb_env templates/pack/README.md README.md AGENTS.md INSTALL.md LICENSE docs/DESIGN.md docs/packs.md; do
   [ -f "$RS_HOME/$f" ] && ok "$f" || bad "$f"
 done
+echo "-- multi-node jobs (--nodes K): docs and the reproductions behind them --"
+DT=$(tr '\n' ' ' < "$RS_HOME/docs/DESIGN.md" | tr -s ' '); AT=$(tr '\n' ' ' < "$RS_HOME/AGENTS.md" | tr -s ' ')
+PSLT=$(tr '\n' ' ' < "$RS_HOME/$PSL" | tr -s ' '); CKT=$(tr '\n' ' ' < "$RS_HOME/$CKF" | tr -s ' '); ST=$(tr '\n' ' ' < "$RS_HOME/$F" | tr -s ' ')
+PST=$(tr '\n' ' ' < "$RS_HOME/$SK/references/project-setup.md" | tr -s ' '); PKT=$(tr '\n' ' ' < "$RS_HOME/docs/packs.md" | tr -s ' ')
+RMT=$(tr '\n' ' ' < "$RS_HOME/README.md" | tr -s ' '); VMN=$(cat "$RS_HOME/tests/vgate/multinode.sh" 2>/dev/null)
+hasnt "$DT" 'Non-goals: multi-node jobs,' "DESIGN: multi-node is no longer a non-goal"; has "$DT" '## Multi-node jobs (`--nodes K`)' "DESIGN: a Multi-node jobs section"
+hasnt "$PST" 'not supported (one node per job)' "project-setup: -N > 1 is no longer reported as unsupported"; has "$PST" 'rsk launch --nodes K' "project-setup: -N > 1 maps to rsk launch --nodes K"
+for t in "$DT" "$PSLT"; do has "$t" 'one task per node' "a doc: one task per node"; done
+for k in NNODES NODE_RANK MASTER_ADDR MASTER_PORT; do has "$DT" "$k" "DESIGN: the env $k"; has "$PSLT" "$k" "procedure-slurm: the env $k"; done
+for t in "$DT" "$PSLT"; do has "$t" "bash -c 'torchrun --nnodes \"\$NNODES\" --node-rank \"\$NODE_RANK\"" "a doc: the torchrun example expands on the node (bash -c '…')"
+  has "$t" "\-\-master-addr \"\$MASTER_ADDR\" --master-port \"\$MASTER_PORT\"" "...and passes the master address and port"; done
+# torchrun's PET_<DEST> defaults, from PyTorch's source (the URL pins the commit read; quoted lines in DESIGN)
+has "$DT" 'torch/distributed/argparse_util.py' "DESIGN: PET_ evidence names argparse_util.py"; has "$DT" 'env_name = f"PET_{dest.upper()}"' "DESIGN: ...quotes the env action"
+has "$DT" 'github.com/pytorch/pytorch/blob/[0-9a-f]\{40\}/torch/distributed/run.py' "DESIGN: ...and run.py at a pinned commit"
+has "$DT" '"--node-rank", "--node_rank", type=int, action=env' "DESIGN: ...--node-rank is an env action"
+# the SBATCH_EXTRA guard and grants
+for t in "$DT" "$CKT"; do has "$t" 'sets the node/task layout' "a doc: SBATCH_EXTRA's node/task guard, in submit.sh's words"; done
+for w in -N/--nodes -n/--ntasks --ntasks-per-node --ntasks-per-gpu --ntasks-per-socket --ntasks-per-core --ntasks-per-tres -F/--nodefile -w/--nodelist; do
+  has "$CKT" "\`$w\`" "conf-keys: SBATCH_EXTRA refuses $w"; done
+for t in "$DT" "$AT" "$ST" "$RMT"; do has "$t" 'max_nodes' "a doc: the grant scope key max_nodes"; done
+has "$ST" '--max-nodes K' "SKILL: rsk grant add --max-nodes K"; has "$ST" '--nodes K' "SKILL: rsk launch --nodes K"
+has "$ST" 'caps count totals' "SKILL rail: GPU / CPU / memory caps count totals"
+has "$PSLT" 'Ask before going multi-node (more resources)' "procedure-slurm rail: more nodes go back to the user"
+has "$AT" 'bound `nodes=`' "AGENTS: the bound field nodes="; has "$AT" 'grants.EXTRA_ALLOW' "AGENTS: layout words never in EXTRA_ALLOW"
+has "$PKT" 'sees `NODES`' "packs.md: t_policy sees NODES"; has "$PKT" 'Never add `--nodes`' "packs.md: the harness owns the layout"
+has "$RMT" 'rsk launch --nodes K' "README: --nodes K"
+# tests/vgate/multinode.sh: one tiny 2-node job, every fact a key=value, how it is run
+[ -f "$RS_HOME/tests/vgate/multinode.sh" ] && bash -n "$RS_HOME/tests/vgate/multinode.sh" && ok "tests/vgate/multinode.sh exists, parses" || bad "tests/vgate/multinode.sh exists, parses"
+has "$VMN" "ssh <alias> 'bash -s <scratch-dir> <partition> \[GRES=gpu:N\] \[sbatch args...\]' < tests/vgate/multinode.sh" "multinode.sh: how it is run (with the user's OK)"
+has "$DT" "ssh <alias> 'bash -s <scratch-dir> <partition> \[GRES=gpu:N\]' < tests/vgate/multinode.sh" "DESIGN: ...the same"
+for t in "$AT" "$PSLT"; do has "$t" 'tests/vgate/multinode.sh' "a doc cites tests/vgate/multinode.sh"; done
+for k in one_task_per_node= nodeid= hostnames_first= step_gres= signal_usr1= signal_term= srun_term_kills= job_cancel_grace= export_all= kill_on_bad_exit= step_cpus= step_mem=; do
+  has "$DT" "$k" "DESIGN cites multinode.sh's $k"; has "$VMN" "echo \"$k" "...tests/vgate/multinode.sh prints $k"; done
+has "$VMN" '--kill-on-bad-exit=1' "multinode.sh: --kill-on-bad-exit as job.sbatch passes it"; has "$VMN" "exec \"\$@\"' rs-node" "multinode.sh: job.sbatch's bash -c … rs-node shape"
+has "$VMN" 'scancel "$J"' "multinode.sh: cancels only the job it submitted"
+has "$DT" 'srun_job.c#L2257-L2305' "DESIGN: srun's TERM -> SIGKILL cited at the Slurm source"; has "$DT" 'KILL_STEPS_ONLY' "DESIGN: scancel --signal without --batch = steps only, cited"
+has "$(cat "$RS_HOME/remote/job.sbatch")" 'scancel --signal=TERM "${SLURM_JOB_ID:-}"' "job.sbatch: multi-node TERM forwarded with scancel --signal=TERM"
+has "$VMN" 'scancel --signal=TERM "$SLURM_JOB_ID"' "multinode.sh: TERM forwarded as job.sbatch does"
+
 for f in "$RS_HOME"/bin/* "$RS_HOME"/lib/*.sh "$RS_HOME"/remote/* "$RS_HOME"/targets/*/*.sh "$RS_HOME"/tests/*.sh "$RS_HOME"/selftest.sh "$RS_HOME"/install.sh; do
   [ -f "$f" ] || continue; [ "$f" != "$RS_HOME/remote/API" ] || continue   # API is data: the one line api=N (no comment to parse around)
   head -3 "$f" | grep -q '^#[^!]' && ok "header comment: ${f#"$RS_HOME"/}" || bad "header comment: ${f#"$RS_HOME"/}"
 done
 budget() { [ -f "$RS_HOME/$1" ] || { bad "$1 exists"; return; }; local n; n=$(wc -l < "$RS_HOME/$1")
   [ "$n" -le "$2" ] && ok "$1 within $2 lines ($n)" || bad "$1 within $2 lines ($n)"; }
-budget lib/common.sh 178; budget remote/env.sh 170; budget remote/bootstrap.sh 100; budget remote/submit.sh 444; budget remote/job.sbatch 70   # common +3: rs_ref, rs_deploy_profile; +8: rs_legacy_routing (a legacy rule keeps its kind)
+budget lib/common.sh 178; budget remote/env.sh 170; budget remote/bootstrap.sh 100; budget remote/submit.sh 527; budget remote/job.sbatch 116   # common +3: rs_ref, rs_deploy_profile; +8: rs_legacy_routing (a legacy rule keeps its kind)
+# 2026-11-14: submit.sh 444 → 484, job.sbatch 70 → 112 — multi-node (--nodes K: parsing, the SBATCH_EXTRA node/task guard, K nodes in the
+# availability gate, nodes= bound; job.sbatch: MASTER_ADDR / MASTER_PORT checks that fail closed, the one srun per node);
+# then submit.sh 484 → 511 (the policy's SB_ARGS node/task guard), job.sbatch 112 → 116 (TERM via scancel --signal, srun answers TERM with KILL)
+# then submit.sh 511 → 525: the policy's SB_ARGS read as getopt reads short clusters (-vN2 = -v -N2, +9 -2), the harness's own words a policy never rewrites (+5); 525 → 527: an abbreviated long value option takes the next word (--comm X), --wait excepted (+2)
 # 2026-11-12: common +30 (141 → 171) — OUTPUT_ROOT: rs_rpath (one spelling of a remote path, +5), rs_output_root (opt-in, never
 # guessed; absolute or $HOME-relative, plain, never the project dir or inside / around it; each refusal its own message, +14),
 # rs_root_rel (a --root path, env/harness state refused in ANY component — a root is shared, +11)
@@ -1086,7 +1129,7 @@ budget lib/common.sh 178; budget remote/env.sh 170; budget remote/bootstrap.sh 1
 # over SB_ARGS as the scan reads it (+4) and its comment (+4), gpu_avail's [excluded] mark (+2), the NOTEs for a value that is no plain
 # host list and for several --exclude (+3), the check's comment (+2)
 budget remote/status.sh 175   # generous on purpose: every lookup has an explicit failure branch; compressing them hides bugs
-budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 266; budget AGENTS.md 371; budget INSTALL.md 238 # AGENTS +2: cancel --wait / the verdict line / the dir probe / other_dirs; +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
+budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 270; budget AGENTS.md 384; budget INSTALL.md 238 # AGENTS +2: cancel --wait / the verdict line / the dir probe / other_dirs; +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
 # 2026-11-12: AGENTS +6 (OUTPUT_ROOT in Config precedence: prefixable for both kinds, unset by its readers, rs_output_root /
 # rs_root_rel, run-pull --root and run-sync --root's contract, tests/48 (+5); the wrappers line: sync_modes reads --root (+1))
 # 2026-11-12 review: AGENTS +1 (369 → 370) — rs_rpath's local-$HOME reading, credential dirs, the root listed first (-n too)
@@ -1122,7 +1165,7 @@ budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget RE
 # _spaced), status --json's INVALID records (+5); cancel words naming the job, cancel.named / unnamed (+2)); README +0
 # NF8: AGENTS +3 (warnings_gpu in the block and never grant-covered, grants.gpu_warn_miss (+1); a .wandb_env naming HF_HOME /
 # ACCELERATE_ (NF7, +1); --asked and ranges in the cancel approval (+1)); README +0
-budget skills/remote-run/SKILL.md 174; budget bin/run-watch 1102   # round 3: SKILL +11 (the -y rule with grant kinds, --allow-warnings availability|any,
+budget skills/remote-run/SKILL.md 176; budget bin/run-watch 1103   # round 3: SKILL +11 (the -y rule with grant kinds, --allow-warnings availability|any,
 # derived actions and the sticky class, relaunch only after an infrastructure end, cancel approvals bound / 1 h / used up, rsk watch --act vs
 # denies (also in §3), `plan <id> is free again`); run-watch +116 lines (881 → 997), D11 — target column and same-target inheritance, sticky unknowns from any state file
 # (foreign/settled/R_FU, the journal hands back the row's own status), fail-stop inherited with rows plus --release of a non-row trigger, pending
@@ -1161,7 +1204,10 @@ budget skills/remote-run/SKILL.md 174; budget bin/run-watch 1102   # round 3: SK
 # grant: a CANCELLED end, many failures at once, bounded relaunches (+2)); --wait on the cancel line (+0)
 # 2026-11-12: SKILL +2 (OUTPUT_ROOT: the one declared root outside the project dir, reached only with --root (+1); no checkpoint
 # moves by itself — carry it before resuming on another target (+1); rsk pull [--root] (+0))
-budget skills/remote-run/references/experiment-conventions.md 144;   # +4: the run-watch exception (§3, §6, §7); +1: a USR1 death is FAILED; +3: the authorised exceptions (§5, §6, §7)
+# 2026-11-14: run-watch +1 (1102 → 1103) — a row word asking for nodes or tasks is refused: rows are single-node.
+budget skills/remote-run/references/experiment-conventions.md 148;   # +1: multi-node TERM may not leave time to save; +4: the run-watch exception (§3, §6, §7); +1: a USR1 death is FAILED; +3: the authorised exceptions (§5, §6, §7)
+# 2026-11-14: conventions +3 (several nodes: one checkpoint writer, the same resume file, a node failing ends all); README +4 (one node or
+# several, max_nodes); AGENTS +7 (Multi-node jobs: --nodes, nodes=, job.sbatch's srun, the SBATCH_EXTRA guard, max_nodes)
 # 2026-11-07: conventions +4 (a new run's name outside §2 a NOTE / --free-name; the §4 NOTE; a smoke refused only when certain, else a WARNING)
 budget skills/remote-run/references/project-setup.md 100
 for d in hpc-run ws-run; do [ -e "$RS_HOME/$d" ] || [ -e "$RS_HOME/skills/$d" ] && bad "legacy $d/ trees removed" || ok "legacy $d/ trees removed"; done

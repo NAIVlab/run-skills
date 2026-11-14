@@ -151,7 +151,7 @@ only; submit.sh also `--rs-chain`) as separate words before `--` — an older pa
 every check (`FORCE=1`: a -y gate prints its `WARNING:` and goes on; submit.sh probes the policy first, below; launch.sh
 checks the env gate read-only — the venv's python executable, a conda env that activates in a throwaway shell, the `ENV_HOOK`
 file, a valid `ENV_KIND`: else exit 1, no card — and creates nothing outside `.rs/`) and prints ONE `@@plan v1` … `@@end`
-block: `api= kind= target=`, the bound fields (`rs_bound`, one function; also `env_hook=<path>:<sha256>`, `venv_dir`,
+block: `api= kind= target=`, the bound fields (`rs_bound`, one function; slurm `nodes=K` right after `gres=`, always; also `env_hook=<path>:<sha256>`, `venv_dir`,
 `uv_sync_args`; slurm `conf_extra` = the conf's own SBATCH_EXTRA words, then `flags` = `T_FLAGS` (the policy flags, a `%q`
 list), right before `chain`, the last; nohup `launch_cfg=<path>:<sha256>,…` — every launcher config / hostfile
 `rs_launchers` read, sorted, `<path>:unreadable`, empty when none — then `busy_ok=<id>:<uuid>:<user>,…` sorted by id, or
@@ -249,7 +249,10 @@ not > 0) named outside experiment-conventions §2's shape, or with an opaque wor
 words (`launch.env_scan`, GNU env's reading: a box line from its first word) or a Slurm conf (bound `wandb_mode`) leave the tracker on
 for certain, else a card WARNING where rsk cannot tell (`launch.smoke_problem`: a box's conf, a compound line, an expansion, an env
 option, a conf value an ENV_HOOK / conda / `info_wandb_env` may change); a formal launch with it on prints §4's wandb fields (`launch.tracker_note`). A covering grant also covers policy flags (`flags=`),
-`--same-name-ok` and `conf_extra` words outside `grants.EXTRA_ALLOW` (each a card NOTE; policy words never count), and a
+`--same-name-ok` and `conf_extra` words outside `grants.EXTRA_ALLOW` (each a card NOTE; policy words never count) — but never a `conf_extra` word that changes the
+allocation the caps check (`grants.alloc_words`: `--exclusive`, `--gres`, `-G`/`--gpus*`, `--cpus-per-*`, `-c`, `--mem*`, `--mincpus`, `-s`/`--oversubscribe`, `-O`/`--overcommit`, `-S`/`--core-spec`, `--thread-spec`, `--hint`, `--sockets-per-node`/`--cores-per-socket`/`--threads-per-core`, `-B`/`--extra-node-info`, `--tmp`, `--tres-per-task`, in any spelling or abbreviation sbatch accepts, read with
+getopt_long's option / value boundaries from `grants.SBATCH_LONG` / `SBATCH_SHORT` (Slurm's `slurm_opt.c`); licenses stay coverable; the card's
+`NO GRANT … changes the allocation the caps check`), and a
 relaunch under `launch` is judged as a launch whatever the end and the configuration — never while an earlier attempt
 may be live (`grants._any_misses`: `is_live` on any target, or `info_prior_here` above the ledger's count there /
 unreadable). Never grant-covered: warnings the grant's `allow_warnings` kind does not cover (`-y` is sent only for a card
@@ -294,7 +297,7 @@ check reuses it) is static on purpose (hand-built `.venv-foo` dirs must survive 
 `t_partition NAME` sets `P_GPUS=min-max P_CPU_PER_GPU P_MEM_PER_GPU P_GTYPE P_GTYPE_DEFAULT P_PREEMPT P_MAXTIME P_CPU_ONLY
 P_MEM_PER_CPU P_NOTE` (submit.sh resets all to '' first), may `SB_ARGS+=(…)`, returns 1 for unknown. `t_policy` (optional;
 every target should define it so an overlay can wrap it as `t_policy_shipped`) runs right after arg parsing with `PART
-PART_FROM_CLI NGPU GTYPE GTYPE_FROM_CLI TIME FORCE ACK T_FLAGS SB_ARGS SB_EXTRA NAME PROJ CLUSTER TAG PLAN` visible
+PART_FROM_CLI NGPU GTYPE GTYPE_FROM_CLI TIME FORCE ACK T_FLAGS SB_ARGS SB_EXTRA NAME PROJ CLUSTER TAG PLAN NODES` visible
 (`PLAN=1`: plan mode, with `FORCE=1`); its exit code propagates verbatim (3 = refusal; `-y` never unlocks it). In plan mode
 and under `--rs-expect` submit.sh probes `( FORCE=0; t_policy )` (`rs_probe`: a subshell, output journaled and counted), then
 runs the real one, and probes `t_partition` in its own `FORCE=0` subshell right before its real call, with the `PART` that
@@ -307,12 +310,24 @@ docs/packs.md): `echo 'WARNING: …' >&2; [ "$FORCE" = 1 ] || exit 1` — print,
 `tests/vgate/slurm-remote.sh` `bash_exit_fn=`): a function named `exit` outranks the builtin outside POSIX mode; under
 `set -o posix` bash refuses it and the probe fails closed, exit 2. Unknown `--word` flags land in `T_FLAGS` (bound
 `flags=`: a card NOTE, grant-coverable), `--*-user-asked` sets `ACK=1`. Then: (probe) partition → `-g` range → cpu/mem heuristics →
-MaxTime (`P_MAXTIME` else `T_MAXTIME`; explicit limits only) → payload guard → `SBATCH_EXTRA` scan (`-p`, `T_FORBIDDEN_QOS`,
-every word an option or its option's value, no trailing value option) → every `--time`/`-t` in `SB_ARGS` vs MaxTime → sinfo
+MaxTime (`P_MAXTIME` else `T_MAXTIME`; explicit limits only) → payload guard → `SBATCH_EXTRA` scan (`-p`, `T_FORBIDDEN_QOS`, a node / task layout word,
+every word an option or its option's value, no trailing value option) → the policy's own `SB_ARGS` words: no node / task layout
+word but one equal to the harness's (`--nodes=K`, `--ntasks-per-node=1` for K > 1; getopt's clusters: `-vN2` = `-v -N2`, as `grants.layout_words`), else exit 2 `policy.sh sets the node/task layout`; the harness's leading words rewritten: exit 2 → every `--time`/`-t` in `SB_ARGS` vs MaxTime → sinfo
 availability (`WARNING: only … Re-run -y`; the nodes of `SB_ARGS`' last `--exclude`/`-x` not counted, a hostlist range: a NOTE) → duplicate guard (`--same-name-ok`, singleton chains and `--rs-chain` skip it) →
 `SBATCH_EXTRA` lint on the scan's words (WARN: not in the allowlist + `T_SBATCH_EXTRA_ALLOW`, or a harness option) → plan
 block / `--rs-expect` check → snapshots → `sbatch` (env `RS_ATTEMPT`, last `--comment` + ` rs=<NONCE>`). Nothing
 cluster-named lives in shared code; a policy's own EXIT trap, `exit` or fds stay in submit.sh's subshell, away from the journal.
+
+### Multi-node jobs (slurm; DESIGN "Multi-node jobs")
+
+`rsk launch --nodes K` (1..64; a workstation: exit 2) sends `submit.sh --nodes K` only when K > 1 (old submit.sh: `needs: sync`);
+`-g -m -c` per node; K > 1 adds `--nodes=K --ntasks-per-node=1`, exports `RS_NODES` / `RS_SRUN_GRES`; bound `nodes=` (absent = 1).
+`job.sbatch`: `MASTER_ADDR` = line 1 of `scontrol show hostnames` (none: `EXIT rc=2`), `MASTER_PORT`, `NNODES`, then one `srun
+--nodes=K --ntasks-per-node=1 --kill-on-bad-exit=1 --gres=… --export=ALL bash -c '…NODE_RANK=$SLURM_NODEID…' rs-node <RUN> &` in
+the usual wait loop, USR1 to srun (relayed), TERM once as `scancel --signal=TERM $SLURM_JOB_ID` (srun answers TERM with SIGKILL;
+failed: TERM to srun, `term=srun`); K = 1 unchanged. `SBATCH_EXTRA` node / task layout words are exit 2 (never in `grants.EXTRA_ALLOW`), so are the policy's own (`SB_ARGS+=`; one equal
+to the harness's passes); rsk: a layout word in a block's `extra` / `conf_extra` beside `nodes=` = `needs: sync`, nodes unknown (`grants.layout_words`); grants:
+`max_nodes` (absent = 1) ≥ K, caps on totals; run-watch rows single-node. Facts: `tests/vgate/multinode.sh`.
 
 ### Tests contract (`tests/lib.sh`)
 

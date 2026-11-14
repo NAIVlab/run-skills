@@ -33,7 +33,8 @@ has "$R" '^job=1$' "receipt: job id"; has "$R" '^name=jn$' "receipt: name"; has 
 has "$R" '^target=fx-slurm$' "receipt: target (a project dir two targets share: whose receipt it is, info_prior_here)"
 has "$R" "^proj=$P\$" "receipt: proj"; has "$R" "^nonce=$N\$" "receipt: nonce"; has "$R" '^at=[0-9][0-9]*$' "receipt: at (epoch)"
 has "$R" "^argv=sbatch --job-name=jn .*--comment=rs=$N $P/\.fx-slurm/job\.sbatch echo hi\$" "receipt: argv = the sbatch argv (printf %q, one line)"
-[ "$(wc -l < "$A/receipt")" = 8 ] && ok "receipt: exactly 8 key=value lines" || bad "receipt: 8 lines (got $(wc -l < "$A/receipt"))"
+has "$R" '^nodes=1$' "receipt: nodes (1: no --nodes)"
+[ "$(wc -l < "$A/receipt")" = 9 ] && ok "receipt: exactly 9 key=value lines" || bad "receipt: 9 lines (got $(wc -l < "$A/receipt"))"
 has "$(cat "$A/out")" '^log: .*/logs/jn_1\.out' "out = what went to stdout (the log: line)"
 has "$(cat "$A/err")" '^+ sbatch ' "err = what went to stderr (the + sbatch line)"
 cmp -s "$A/conf" "$P/.hpc.conf" && ok "snapshot: conf = .hpc.conf at submit time" || bad "snapshot: conf"
@@ -254,12 +255,12 @@ for x in '--requeue train.sh' '--comment x y' '--exclude=n1 bare' '-- x' '-' '--
   rc_is 2 "$RC" "SBATCH_EXTRA '$x': refused" "$O"; has "$O" "^ERROR: SBATCH_EXTRA word '[^']*' is no option and no option's value: sbatch would run it as the batch script" "...named ($x)"
   rc_is 2 "$(subo "$L" --rs-mode plan -- echo hi >/dev/null; echo $?)" "...a plan stops there too ($x)"; done
 nosub "...nothing submitted"
-for x in '--exclude=n1 --acc' '--qos=high -A' '--mem' '--nodelist' '--ntasks-per' '--exclude=n1 --dependency'; do
+for x in '--exclude=n1 --acc' '--qos=high -A' '--mem' '--nodelist' '--gres-fl' '--exclude=n1 --dependency'; do
   printf 'REMOTE_DIR=/x\nSBATCH_EXTRA="%s"\n' "$x" > "$L/.hpc.conf"; O=$(subo "$L" --rs-chain -- echo hi); RC=$?
   rc_is 2 "$RC" "SBATCH_EXTRA '$x' (a value option, or an abbreviation of one, at the end): refused" "$O"; has "$O" "^ERROR: SBATCH_EXTRA ends with a dangling '" "...named ($x)"; done
 nosub "...nothing submitted"
 for x in '--qos high --account a1 -A a2 --exclude n1 -x n2 --constraint c -C c --reservation r --signal B:USR1@60 --mail-type END --mail-user u --comment c' \
-         '--dependency singleton -d singleton --gres-flags enforce-binding --nodes 1 -N 1 --mem 9G -c 4 --hint nomultithread --requeue' \
+         '--dependency singleton -d singleton --gres-flags enforce-binding --mem-bind local -m block --mem 9G -c 4 --hint nomultithread --requeue' \
          '--exclude=n1 --nice' '--no-requeue' '--hold' '-v' '--exclusive' '--comment -t1 --qos=high' '--comment --requeue --qos=high'; do
   printf 'REMOTE_DIR=/x\nSBATCH_EXTRA="%s"\n' "$x" > "$L/.hpc.conf"; O=$(subo "$L" -- echo hi); RC=$?
   rc_is 0 "$RC" "SBATCH_EXTRA '$x': every word an option or an option's value: submitted" "$O"; done
@@ -313,12 +314,12 @@ PP=$(mk_proj fx-slurm "$PC"); printf 'path=/l\ncommit=0123abc\ndirty=2\n' > "$PP
 PA=(-g 2 -t 2:00:00 -m 64G -c 4 -n pj -- python t.py --msg "a b")
 O=$(subo "$PP" --rs-attempt pl1 --rs-mode plan "${PA[@]}"); RC=$?; A=$PP/.rs/attempts/pl1; B=$(blk "$O")
 rc_is 0 "$RC" "plan mode" "$O"; nosub "...sbatch never runs"
-[ "$(printf '%s\n' "$B" | sed 's/=.*//' | tr '\n' ' ')" = "@@plan v1 api kind target partition gres cpus mem time account name extra payload env_kind env_name wandb_mode env_hook venv_dir uv_sync_args conf_extra flags chain info_avail info_conf_sha256 info_profile_sha256 info_policy_sha256 info_policy_local_sha256 info_source_commit info_source_dirty info_prior info_prior_here info_wandb_env warnings warnings_avail warnings_id bound_hash @@end " ] \
+[ "$(printf '%s\n' "$B" | sed 's/=.*//' | tr '\n' ' ')" = "@@plan v1 api kind target partition gres nodes cpus mem time account name extra payload env_kind env_name wandb_mode env_hook venv_dir uv_sync_args conf_extra flags chain info_avail info_conf_sha256 info_profile_sha256 info_policy_sha256 info_policy_local_sha256 info_source_commit info_source_dirty info_prior info_prior_here info_wandb_env warnings warnings_avail warnings_id bound_hash @@end " ] \
   && ok "ONE block, exactly these keys in this order" || { bad "plan block keys"; printf '%s\n' "$B" | sed 's/^/    | /'; }
 [ "$(printf '%s\n' "$O" | grep -c '^@@plan v1$')" = 1 ] && ok "...printed once, on stdout" || bad "...printed once"
 has "$(PATH="$T/bin:$PATH" bash "$PP/.fx-slurm/submit.sh" --rs-mode plan "${PA[@]}" 2>/dev/null)" '^@@end$' "...(stdout alone carries it)"
 has "$B" "^api=$(sed -n 's/^api=//p' "$PP/.fx-slurm/API")\$" "api= is the deployed .<t>/API's"; has "$B" '^kind=slurm$' "kind=slurm"; has "$B" '^target=fx-slurm$' "target="
-for kv in partition=gpu gres=gpu:2 cpus=4 mem=64G time=2:00:00 account=acct name=pj 'payload=python t\.py --msg a\\ b' env_kind=conda env_name=tagged wandb_mode=disabled "env_hook=''" "venv_dir=''" "uv_sync_args=''" chain=0; do
+for kv in partition=gpu gres=gpu:2 nodes=1 cpus=4 mem=64G time=2:00:00 account=acct name=pj 'payload=python t\.py --msg a\\ b' env_kind=conda env_name=tagged wandb_mode=disabled "env_hook=''" "venv_dir=''" "uv_sync_args=''" chain=0; do
   has "$B" "^$kv\$" "bound: $kv"; done
 has "$B" '^extra=--mail-type=END[\\]*,FAIL --exclude=n1$' "bound: extra = the SB_ARGS words after the harness's own (SBATCH_EXTRA here), %q each"
 hasnt "$B" '^extra=.*--job-name\|^extra=.*--chdir\|^extra=.*--export\|^extra=.*--account\|^extra=.*--requeue' "...never the harness's --job-name/--chdir/--time/--requeue/--export/--account"
@@ -335,7 +336,7 @@ has "$(cat "$A/result")" '^stage=plan rc=0 verdict=planned at=' "journal: stage=
 cmp -s "$A/conf" "$PP/.hpc.conf" && ok "...the conf is snapshotted (as for every call)" || bad "...conf snapshot"
 [ ! -e "$A/profile.sh" ] && [ ! -e "$A/env.sh" ] && [ ! -e "$A/hook" ] && [ ! -e "$A/receipt" ] && [ ! -d "$PP/logs" ] && ok "...nothing else: no profile/env/hook snapshot, receipt or logs/" || bad "a plan snapshots only the conf"
 O=$(subo "$PP" --rs-attempt pl2 --rs-mode plan -y --same-name-ok "${PA[@]}"); [ "$(bh "$O")" = "$H1" ] && ok "NONCE, -y, --same-name-ok are not bound (same hash)" || bad "unbound flags keep the hash"
-for v in "-g 3" "-G h100" "-c 5" "-m 65G" "-t 3:00:00" "-n pk" "--gpu-user-asked" "--rs-chain"; do   # each against the same PA
+for v in "-g 3" "-G h100" "-c 5" "-m 65G" "-t 3:00:00" "-n pk" "--gpu-user-asked" "--rs-chain" "--nodes 2"; do   # each against the same PA
   O=$(subo "$PP" --rs-mode plan "${PA[@]:0:10}" $v -- python t.py --msg "a b"); [ -n "$(bh "$O")" ] && [ "$(bh "$O")" != "$H1" ] && ok "bound: '$v' changes the hash" || bad "bound: '$v' changes the hash"; done
 O=$(subo "$PP" --rs-mode plan "${PA[@]:0:10}" -- python t.py --msg "a  b"); [ "$(bh "$O")" != "$H1" ] && ok "bound: the payload argv (word boundaries count)" || bad "bound: the payload"
 for c in 'ACCOUNT=other' 'ENV_KIND=uv' 'FXSLURM_ENV_NAME=t2' 'WANDB_MODE=online' 'SBATCH_EXTRA="--exclude=n1"' 'DEFAULT_TIME=5:00' \
@@ -357,6 +358,27 @@ O=$(subo "$PP" --rs-attempt fl1 --rs-mode plan --whole-node "${PA[@]}"); HW=$(bh
 O=$(subo "$PP" --rs-expect "$HW" "${PA[@]}"); rc_is 6 $? "R4-6: an approved card with --whole-node, submitted without it: exit 6" "$O"; nosub "...nothing submitted"
 has "$O" '^changed: flags$' "...changed: flags"
 O=$(subo "$PP" --rs-expect "$HW" --whole-node "${PA[@]}"); rc_is 0 $? "...with it: submits" "$O"
+
+echo "-- --nodes K: bound nodes= (always, right after gres=), in bound_hash and --rs-expect --"
+stub_sinfo gpu "$(printf '%s\n' 'n2   gpu:a100:4   gpu:a100:0   idle' 'n3   gpu:a100:4   gpu:a100:0   idle')"   # (n1: excluded by the conf)
+O=$(subo "$PP" --rs-mode plan "${PA[@]}"); B=$(blk "$O")
+has "$B" '^nodes=1$' "K=1 (default): nodes=1 in the block"; [ "$(printf '%s\n' "$B" | sed -n '/^gres=/{n;p;}')" = nodes=1 ] && ok "...right after gres=" || bad "nodes= position"
+[ "$(bh "$O")" = "$H1" ] && ok "...and the hash of a plain plan is the same as before (--nodes 1 adds nothing)" || bad "plain plan hash"
+O=$(subo "$PP" --rs-mode plan --nodes 1 "${PA[@]}"); [ "$(bh "$O")" = "$H1" ] && ok "--nodes 1 = no --nodes (the same hash)" || bad "--nodes 1 hash"
+O=$(subo "$PP" --rs-attempt nd2 --rs-mode plan --nodes 2 "${PA[@]}"); B=$(blk "$O"); H2N=$(bh "$O")
+has "$B" '^nodes=2$' "K=2: nodes=2"; has "$B" '^gres=gpu:2$' "...gres stays per node"; has "$B" '^cpus=4$' "...cpus per node"; has "$B" '^mem=64G$' "...mem per node"
+has "$B" '^extra=--mail-type=END[\\]*,FAIL --exclude=n1$' "...extra unchanged (the --export word is the harness's)"
+[ "$H2N" != "$H1" ] && [ "$(bnd "$O" | sha)" = "$H2N" ] && ok "...in bound_hash (sha256 of kind= … chain=)" || bad "nodes in bound_hash"
+O=$(subo "$PP" --rs-expect "$H2N" "${PA[@]}"); rc_is 6 $? "the approved 2-node card submitted without --nodes: exit 6" "$O"; nosub "...nothing submitted"
+has "$O" '^changed: nodes$' "...changed: nodes"
+O=$(subo "$PP" --rs-expect "$H1" --nodes 2 "${PA[@]}"); rc_is 6 $? "a 1-node card submitted with --nodes 2: exit 6" "$O"; nosub "...nothing submitted"
+O=$(subo "$PP" --rs-expect "$H2N" --nodes 2 "${PA[@]}"); rc_is 0 $? "...the 2-node card with --nodes 2: submits" "$O"
+has "$O" '^ARG:--nodes=2$' "...sbatch --nodes=2"; has "$O" '^ARG:--ntasks-per-node=1$' "...--ntasks-per-node=1"
+has "$O" '^ARG:--export=ALL,PROJ=.*,RS_NODES=2,RS_SRUN_GRES=gpu:2$' "...the --export list carries RS_NODES and RS_SRUN_GRES"
+has "$(cat "$(last_attempt "$PP")/receipt")" '^nodes=2$' "...the receipt records nodes=2"
+O=$(subo "$PP" --rs-expect "$H1" "${PA[@]}"); rc_is 0 $? "the 1-node card: submits" "$O"; hasnt "$O" 'ARG:--nodes\|ARG:--ntasks\|RS_NODES\|RS_SRUN_GRES' "...with no node/task word and no RS_NODES"
+has "$(cat "$(last_attempt "$PP")/receipt")" '^nodes=1$' "...the receipt records nodes=1"
+rm -f "$T/sinfo.d/gpu"
 wid() { printf '%s\n' "$1" | sed -n 's/^warnings_id=//p'; }   # the block's warnings_id
 wdig() { printf '%s\n' "$@" | sed -E 's/[0-9]+/#/g' | LC_ALL=C sort -u | sha; }   # the digest of these WARNING: lines (digits masked)
 

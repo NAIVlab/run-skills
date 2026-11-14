@@ -477,6 +477,11 @@ echo "-- review L9: a row never carries --rs-* words; the journal's verdict=plan
 reset; q; table "#@ allow launch" "a fx-slurm - --rs-mode plan -p gpu -g 1 -t 1:00:00 -- python train.py"; O=$(rw t.tsv --approve "go"); RC=$?
 [ "$RC" = 2 ] && has "$O" "no --rs-\* word ('--rs-mode')" "a row with --rs-mode: the table is refused (exit 2)" || bad "--rs-* row (rc=$RC)"
 table "a fx-slurm - -p gpu -- python train.py --rs-mode plan"; O=$(rw t.tsv --once); [ "$?" != 2 ] && ok "...after --, the payload's own words are its business" || bad "--rs-* after --"
+echo "-- multi-node: rows stay single-node (submit.sh --nodes K is rsk launch's), refused, never silently one node --"
+for w in "--nodes 2" "--nodes=2" "--ntasks=2" "--ntasks-per-node=1" "--nodefile=f" "--tasks-per-node=1"; do
+  reset; q; table "#@ allow launch" "a fx-slurm - -p gpu $w -g 1 -t 1:00:00 -- python train.py"; O=$(rw t.tsv --once 2>&1); RC=$?
+  [ "$RC" = 2 ] && [ "$(nsub)" = 0 ] && has "$O" "run-watch rows are single-node" "a row with '$w': the table is refused (exit 2), nothing submitted" || bad "row '$w' (rc=$RC)"; done
+table "a fx-slurm - -p gpu -- python train.py --nodes 2"; O=$(rw t.tsv --once); [ "$?" != 2 ] && ok "...after --, the payload's --nodes is its own" || bad "--nodes after --"
 reset; approved "#@ allow launch" "a fx-slurm - $ROW"; q; touch "$WORLD/sbatch.fail"; rw t.tsv --once --act --max-active 2 >/dev/null; rm -f "$WORLD/sbatch.fail"
 N=$(st a 16); [ "$(st a 2)" = submit-unknown ] && [ -d "$P/.rs/attempts/$N" ] || bad "L9 setup ($(st a 2) $N)"
 printf 'stage=plan rc=0 verdict=planned at=1\n' > "$P/.rs/attempts/$N/result"; O=$(rw t.tsv --once --act --max-active 2)

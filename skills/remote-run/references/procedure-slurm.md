@@ -90,12 +90,26 @@ confirm the command checkpoints AND auto-resumes — jobs are submitted `--reque
 same command; if it cannot resume, say so in the plan (`SBATCH_EXTRA="--no-requeue"` opts it out). Longer than the
 partition's MaxTime → a singleton segment chain (conventions §6): the plan states the segment count and walltime.
 
+**Several nodes** (`--nodes K`, 2..64; the default is one node and sends exactly the single-node words): one task per
+node, started by the harness's own `srun` (never the payload's), which runs `<RUN>` once on each node with `NNODES`,
+`NODE_RANK` (= `SLURM_NODEID`, 0..K-1), `MASTER_ADDR` (the job's first host) and `MASTER_PORT` exported; `-g`, `-m`
+and `-c` are per node (`nodes: K × <gres> (total N GPUs)` on the card; the availability gate wants K nodes with the
+GPUs free). The command starts its node's processes itself — pass the variables explicitly, expanded on the node:
+`-- bash -c 'torchrun --nnodes "$NNODES" --node-rank "$NODE_RANK" --master-addr "$MASTER_ADDR" --master-port
+"$MASTER_PORT" --nproc-per-node <g> train.py …'` (torchrun also reads the `PET_*` forms the harness sets). One failing node ends the step (`--kill-on-bad-exit=1`); USR1 (the
+time-limit warning) reaches every node's task through srun; a TERM the job script gets is passed on with `scancel
+--signal=TERM <job>` (srun would answer it with SIGKILL), but when the job itself is cancelled or preempted srun is signalled
+too and may kill the tasks at once — a multi-node run checkpoints on USR1 and on its own schedule, never only on TERM. Ask before going multi-node (more resources): a grant covers it only with `max_nodes` ≥ K, its
+GPU / CPU / memory caps against the totals. Node or task counts in `SBATCH_EXTRA` (`-N`, `-n`, `--ntasks-per-*`,
+`--nodefile`, a multi-host `--nodelist`) are refused, exit 2 — use `--nodes`. The Slurm facts behind it:
+`tests/vgate/multinode.sh` (`docs/DESIGN.md`, Multi-node jobs).
+
 ## 4. Submit (runs on the login node)
 ```
-rsk launch -T <t> -p <partition> -g <ngpu> [-G <gputype>] [-t <time>] [-m <mem>] [-c <cpus>] [-n <name>] [--chain N] [--class C] [--<policy-flag>] -- <RUN>
+rsk launch -T <t> -p <partition> -g <ngpu> [-G <gputype>] [-t <time>] [-m <mem>] [-c <cpus>] [-n <name>] [--nodes K] [--chain N] [--class C] [--<policy-flag>] -- <RUN>
 rsk launch --plan <id> [--plan <id>]... --approve                        # the card(s) the user approved: submit
 rsk launch … --check-after 30                                              # + the start milestone: one read 30 s later
-ssh <host> 'bash <REMOTE_DIR>/.<t>/submit.sh -p <partition> -g <ngpu> [-G <gputype>] [-t <time>] [-m <mem>] [-c <cpus>] [-n <name>] [-y] -- <RUN>'   # without rsk
+ssh <host> 'bash <REMOTE_DIR>/.<t>/submit.sh -p <partition> -g <ngpu> [-G <gputype>] [-t <time>] [-m <mem>] [-c <cpus>] [-n <name>] [--nodes K] [-y] -- <RUN>'   # without rsk
 ```
 `rsk launch` drives this `submit.sh`: one ssh with `--rs-mode plan` (below) for the card, then, once a record covers
 the plan (an approval made by `--approve`, or a grant), one ssh per submit with `--rs-expect <bound_hash> --rs-warnings
@@ -131,7 +145,9 @@ and digest, exit 1 (it was launched; a fix and a relaunch are a new decision). A
 fact is unknown: a run with an attempt recorded without a class matches a class deny; a record must allow all); the
 card's header says which (`plan <id> — relaunch on <t> …`). Its
 `conf extra` row lists the conf's own `SBATCH_EXTRA` words; a NOTE line names those outside the grant allowlist
-(`conf-keys.md`, `SBATCH_EXTRA`): a covering grant covers them too. Its `TIME` line shows an `SBATCH_EXTRA` / policy
+(`conf-keys.md`, `SBATCH_EXTRA`): a covering grant covers them too (node / task layout words never get this far: exit 2) —
+except a word that changes the allocation the caps check (`--exclusive`, `--gres`, `-G`/`--gpus*`, `--cpus-per-*`, `-c`, `--mem*`, `--mincpus`, `-s`/`--oversubscribe`, `-O`/`--overcommit`, `-S`/`--core-spec`, `--thread-spec`, `--hint`, `--sockets-per-node`/`--cores-per-socket`/`--threads-per-core`, `-B`/`--extra-node-info`, `--tmp`, `--tres-per-task`, any abbreviation): its `NO GRANT` line means
+only the user's approval of that card covers the plan. Its `TIME` line shows an `SBATCH_EXTRA` / policy
 `--time` (sbatch takes the last one) — for information: a grant's `max_time` holds for every time limit sbatch could
 read, the policy's included, and a limit of 0 / UNLIMITED never fits it. Its `warnings` row reads `N (M of them the
 availability gate's)`. Its `source` row compares the deployed `.run-source` commit with this checkout's HEAD: `same

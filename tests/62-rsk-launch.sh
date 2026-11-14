@@ -290,24 +290,56 @@ rsk grant deny --quote "stop launching anything on fx today" -T fx-slurm --actio
 [ "$RC" = 3 ] && has "$O" 'denied by d-' "M1: a deny of launch stops --chain -> exit 3" || bad "M1 deny chain (rc=$RC)"; nosub "...nothing submitted"
 
 echo "-- review H2 / D1 / S3: SBATCH_EXTRA words are a grant's call too (the card NOTEs them); only their times meet max_time_s --"
-R=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\nWANDB_MODE=disabled\nSBATCH_EXTRA="--time=12:00:00 --nodes=2"\n' "$R" > "$R/.hpc.conf"; CWD=$R
+R=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\nWANDB_MODE=disabled\nSBATCH_EXTRA="--time=12:00:00 --licenses=fs:1"\n' "$R" > "$R/.hpc.conf"; CWD=$R
 rsk grant add --quote "1-GPU smoke runs up to an hour are fine" -T fx-slurm --action launch --max-gpus 1 --max-time 1:00:00 --max-live 9 --max-launches 9 --expires 2099-12-31 >/dev/null
 : > "$T/sbatch.log"; O=$(rsk launch -T fx-slurm -n exp--smoke--x--scratch--s0--a01 -g 1 -t 30 -- python t.py); RC=$?
 [ "$RC" = 4 ] && has "$O" '12:00:00 time > 1:00:00' "H2/D1: --time=12:00:00 in SBATCH_EXTRA over the grant's max_time -> exit 4" || bad "H2 extra time (rc=$RC)"
-has "$O" "^  TIME       12:00:00 — an SBATCH_EXTRA / policy --time" "...the card says which time sbatch takes"; has "$O" '^  NOTE       SBATCH_EXTRA word(s) --time=12:00:00 --nodes=2' "...and NOTEs the words"
+has "$O" "^  TIME       12:00:00 — an SBATCH_EXTRA / policy --time" "...the card says which time sbatch takes"; has "$O" '^  NOTE       SBATCH_EXTRA word(s) --time=12:00:00 --licenses=fs:1' "...and NOTEs the words"
 hasnt "$O" 'NO GRANT' "...S3: no NO GRANT line for them"
-has "$O" '^  conf extra --time=12:00:00 --nodes=2$' "...the conf's words are bound (conf_extra)"; nosub "...nothing submitted"
+has "$O" '^  conf extra --time=12:00:00 --licenses=fs:1$' "...the conf's words are bound (conf_extra)"; nosub "...nothing submitted"
 printf 'REMOTE_DIR=%s\nENV_KIND=none\nWANDB_MODE=disabled\nSBATCH_EXTRA="--time=23:00:00 --comment -t1"\n' "$R" > "$R/.hpc.conf"
 : > "$T/sbatch.log"; O=$(rsk launch -T fx-slurm -n exp--smoke--x--scratch--s0--a01 -g 1 -t 30 -- python t.py); RC=$?   # grants#1
 [ "$RC" = 4 ] && has "$O" '23:00:00 time > 1:00:00' "grants#1: a time hidden behind --comment's value still meets max_time_s (exit 4)" || bad "grants#1 (rc=$RC)"; nosub "...nothing submitted"
-n=0; for X in "--thread-spec=1" "-S 1" "--core-spec=1"; do n=$((n + 1))   # grants#3: S3 — covered, NOTEd
+n=0; for X in "--thread-spec=1" "-S 1" "--core-spec=1" "--exclusive" "-c 4" "--gres=gpu:4"; do n=$((n + 1))   # F2: allocation words — NO GRANT
   printf 'REMOTE_DIR=%s\nENV_KIND=none\nWANDB_MODE=disabled\nSBATCH_EXTRA="%s"\n' "$R" "$X" > "$R/.hpc.conf"
   : > "$T/sbatch.log"; O=$(rsk launch -T fx-slurm -n exp--smoke--x$n--scratch--s0--a01 -g 1 -t 30 -- python t.py); RC=$?
-  [ "$RC" = 0 ] && has "$O" "^  NOTE       SBATCH_EXTRA word(s) $X" "S3: SBATCH_EXTRA '$X' -> grant-covered, the card NOTEs it" || bad "S3 '$X' (rc=$RC)"
+  [ "$RC" = 4 ] && has "$O" "^  NO GRANT   ${X%% *}[^ ]* changes the allocation the caps check" "F2: SBATCH_EXTRA '$X' changes the allocation -> never grant-covered (exit 4), the card's NO GRANT line" || { bad "F2 '$X' (rc=$RC)"; printf '%s\n' "$O" | tail -4 | sed 's/^/    | /'; }
+  nosub "...'$X': nothing submitted"
 done
+printf 'REMOTE_DIR=%s\nENV_KIND=none\nWANDB_MODE=disabled\nSBATCH_EXTRA="--licenses=fs:1"\n' "$R" > "$R/.hpc.conf"   # grants#3: S3 — covered, NOTEd
+: > "$T/sbatch.log"; O=$(rsk launch -T fx-slurm -n exp--smoke--xl--scratch--s0--a01 -g 1 -t 30 -- python t.py); RC=$?
+[ "$RC" = 0 ] && has "$O" "^  NOTE       SBATCH_EXTRA word(s) --licenses=fs:1" "S3: SBATCH_EXTRA '--licenses=fs:1' (no allocation word) -> grant-covered, the card NOTEs it" || bad "S3 licenses (rc=$RC)"
 printf 'REMOTE_DIR=%s\nENV_KIND=none\nWANDB_MODE=disabled\nSBATCH_EXTRA="--comment -t1 --qos=normal"\n' "$R" > "$R/.hpc.conf"
 : > "$T/sbatch.log"; O=$(rsk launch -T fx-slurm -n exp--smoke--y--scratch--s0--a01 -g 1 -t 30 -- python t.py); RC=$?
 [ "$RC" = 0 ] && has "$O" '^covered by g-' "D1: allowlisted words (--comment's value '-t1', --qos) -> grant-covered" || { bad "D1 allowlisted (rc=$RC)"; printf '%s\n' "$O" | tail -4 | sed 's/^/    | /'; }
+
+echo "-- multi-node: SBATCH_EXTRA node / task words refused; rsk launch --nodes 2 -> card -> approve -> sbatch --nodes=2 --"
+R=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\nWANDB_MODE=disabled\nSBATCH_EXTRA="--nodes=2"\n' "$R" > "$R/.hpc.conf"; CWD=$R
+: > "$T/sbatch.log"; O=$(rsk launch -T fx-slurm -n exp--smoke--mn0--scratch--s0--a01 -g 1 -- python t.py); RC=$?
+[ "$RC" = 2 ] && has "$O" "SBATCH_EXTRA '--nodes=2' sets the node/task layout — use rsk launch --nodes K" "SBATCH_EXTRA --nodes=2 -> exit 2, pointing at rsk launch --nodes K" || { bad "SBATCH_EXTRA --nodes (rc=$RC)"; printf '%s\n' "$O" | tail -4 | sed 's/^/    | /'; }
+nosub "...nothing submitted"
+printf 'REMOTE_DIR=%s\nENV_KIND=none\nWANDB_MODE=disabled\n' "$R" > "$R/.hpc.conf"
+stub_sinfo "-p gpu" "$(printf 'nodeA   gpu:whatever:4   gpu:whatever:0   idle\nnodeB   gpu:whatever:4   gpu:whatever:0   idle')"   # two free nodes
+rsk grant add -T fx-slurm --action launch --max-gpus 8 --max-live 9 --max-launches 9 --expires 2099-12-31 >/dev/null
+O=$(rsk launch -T fx-slurm -n exp--smoke--mn--scratch--s0--a01 -g 2 --nodes 2 -- python t.py); RC=$?; PMN=$(pid_of "$O")
+[ "$RC" = 4 ] && [ -n "$PMN" ] && has "$O" '2 nodes > 1' "--nodes 2: a grant without --max-nodes covers one node only -> the card, exit 4" || { bad "--nodes 2 plan (rc=$RC)"; printf '%s\n' "$O" | tail -30 | sed 's/^/    | /'; }
+has "$O" '^  nodes      2 × gpu:2 (total 4 GPUs; gres / cpus / mem per node)$' "...the card: nodes 2 × gpu:2 (total 4 GPUs)"
+has "$(grep -- '--rs-mode plan' "$T/ssh-body.log" | tail -n 1)" ' --nodes 2 ' "...the plan asked submit.sh for --nodes 2"
+nosub "...nothing submitted"
+O=$(rsk launch --plan "$PMN" --approve "yes, two nodes"); RC=$?
+[ "$RC" = 0 ] && has "$O" '^submitted: exp--smoke--mn--scratch--s0 a01 job ' "approved -> submitted" || { bad "--nodes 2 approve (rc=$RC)"; printf '%s\n' "$O" | tail -8 | sed 's/^/    | /'; }
+has "$(tail -n 1 "$T/sbatch.log")" '--nodes=2 ' "...sbatch got --nodes=2"; has "$(tail -n 1 "$T/sbatch.log")" '--ntasks-per-node=1' "...and --ntasks-per-node=1"
+has "$(tail -n 1 "$T/sbatch.log")" 'RS_NODES=2' "...the job's environment carries RS_NODES=2"
+has "$(pyl 'print(L.Ledger(sys.argv[2]).read_run(sys.argv[3]).data["attempts"]["a01"]["request"]["bound"].get("nodes"))' "$R" exp--smoke--mn--scratch--s0)" '^2$' "...the ledger attempt records nodes=2"
+: > "$T/sbatch.log"; O=$(rsk launch -T fx-slurm -n exp--smoke--mn1--scratch--s0--a01 -g 2 -- python t.py); RC=$?
+[ "$RC" = 0 ] && has "$O" '^  nodes      1 × gpu:2 (total 2 GPUs)$' "K=1: the card says one node; grant-covered, submitted" || { bad "K=1 (rc=$RC)"; printf '%s\n' "$O" | tail -8 | sed 's/^/    | /'; }
+hasnt "$(tail -n 1 "$T/sbatch.log")" '--nodes\|--ntasks' "...no --nodes / --ntasks word for one node"
+rsk grant add -T fx-slurm --action launch --max-gpus 4 --max-nodes 2 --max-live 9 --max-launches 9 --expires 2099-12-31 >/dev/null
+: > "$T/sbatch.log"; O=$(rsk launch -T fx-slurm -n exp--smoke--mn2--scratch--s0--a01 -g 2 --nodes 2 -- python t.py); RC=$?
+[ "$RC" = 0 ] && has "$O" '^covered by g-' "a grant with --max-nodes 2 and --max-gpus 4 covers 2 × 2 GPUs" || { bad "max-nodes grant (rc=$RC)"; printf '%s\n' "$O" | tail -8 | sed 's/^/    | /'; }
+O=$(rsk launch -T fx-slurm -n exp--smoke--mn3--scratch--s0--a01 -g 3 --nodes 2 -- python t.py); RC=$?
+[ "$RC" = 4 ] && has "$O" '6 GPUs in total (2 nodes) > ' "...2 × 3 GPUs: over every grant's GPU total -> exit 4" || bad "GPU totals (rc=$RC)"
+rm -f "$T/sinfo.d/-p gpu"
 
 echo "-- review M4: the submit carries the card's warning count; a failed squeue under --rs-expect is never a -y gate --"
 R=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\nWANDB_MODE=disabled\n' "$R" > "$R/.hpc.conf"; CWD=$R

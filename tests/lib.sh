@@ -2,7 +2,10 @@
 # Caller sets RS_HOME (harness root) and RS_USER_DIR (fixtures in phase A, the real overlay in phase B).
 # Scratch dir $T (removed on exit); counters PASS/FAIL; helpers ok bad has hasnt nosub mk_proj sub with_path
 # stub_sinfo stub_fail stub_rsync last_attempt fulltmp fulltmp_ok. ssh prints $T/run-source.remote for run-sync's
-# stamp read; sbatch prints ARG:<each arg> and ENV:RS_ATTEMPT=<its env>. Stubs sbatch scontrol squeue sinfo ssh uv live in $T/bin, on PATH ONLY
+# stamp read; sbatch prints ARG:<each arg> and ENV:RS_ATTEMPT=<its env>; scontrol answers `show hostnames` from $T/hostnames; srun runs
+# its command once per --nodes=K (SLURM_NODEID set), relays USR1 and answers TERM with SIGKILL to its tasks (as srun does); scancel
+# logs to $T/scancel.log and, with --signal=SIG, sends SIG to srun's tasks (steps only, never the batch shell). Stubs sbatch scontrol
+# srun scancel squeue sinfo ssh uv live in $T/bin, on PATH ONLY
 # for invocations prefixed PATH="$T/bin:$PATH" (sub/with_path do this) — forget it and you hit real binaries.
 : "${RS_HOME:?tests/lib.sh: set RS_HOME}"
 export RS_USER_DIR="${RS_USER_DIR:-$HOME/.config/run-skills}"
@@ -18,7 +21,36 @@ nosub(){ [ ! -s "$T/sbatch.log" ] && ok "$1" || { bad "$1"; sed 's/^/    | /' "$
 # ---------- stubs ----------
 mkdir -p "$T/bin" "$T/sinfo.d"
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/sbatch.log"\nfor a in "$@"; do echo "ARG:$a"; done\necho "ENV:RS_ATTEMPT=${RS_ATTEMPT:-}"\necho "Submitted batch job 1"\n' "$T" > "$T/bin/sbatch"
-printf '#!/usr/bin/env bash\necho "NodeName=node01 AllocTRES=cpu=8,gres/gpu=1"\n' > "$T/bin/scontrol"
+cat > "$T/bin/scontrol" <<EOS
+#!/usr/bin/env bash
+# show hostnames LIST: the lines of \$T/hostnames (default n1, n2; an empty file = no host), its exit in \$T/hostnames.rc
+case "\$*" in
+  "show hostnames "*) echo "\$*" >> "$T/scontrol.log"; if [ -f "$T/hostnames" ]; then cat "$T/hostnames"; else printf 'n1\\nn2\\n'; fi; exit "\$(cat "$T/hostnames.rc" 2>/dev/null || echo 0)" ;;
+  *) echo "NodeName=node01 AllocTRES=cpu=8,gres/gpu=1" ;;
+esac
+EOS
+cat > "$T/bin/srun" <<EOS
+#!/usr/bin/env bash
+# srun stub (job.sbatch's multi-node path): logs SRUN:<args>, runs the command once per --nodes=K with SLURM_NODEID=0..K-1,
+# relays USR1 to every task, answers TERM with SIGKILL to them (srun_job.c _srun_signal_mgr: SIGTERM -> launch_g_fwd_signal(SIGKILL)),
+# lists the task pids in \$T/srun.pids (for the scancel stub) and exits with the first non-zero task status
+printf 'SRUN:%s\\n' "\$*" >> "$T/srun.log"; n=1
+while [ "\$#" -gt 0 ]; do case "\$1" in --nodes=*) n=\${1#--nodes=} ;; --*) ;; *) break ;; esac; shift; done
+pids=""; i=0; while [ "\$i" -lt "\$n" ]; do SLURM_NODEID=\$i "\$@" & pids="\$pids \$!"; i=\$((i + 1)); done
+echo "\$pids" > "$T/srun.pids"
+trap 'kill -USR1 \$pids 2>/dev/null' USR1; trap 'echo "srun: forcing job termination" >&2; kill -KILL \$pids 2>/dev/null' TERM
+rc=0; for p in \$pids; do while :; do wait "\$p"; r=\$?; [ "\$r" -gt 128 ] && kill -0 "\$p" 2>/dev/null && continue
+  kill -0 "\$p" 2>/dev/null || { wait "\$p" 2>/dev/null; r=\$?; }; break; done; [ "\$rc" != 0 ] || rc=\$r; done
+exit "\$rc"
+EOS
+cat > "$T/bin/scancel" <<EOS
+#!/usr/bin/env bash
+# scancel stub: logs its words; --signal=SIG|-s SIG JOB (no --batch / --full) = SIG to the job's step tasks: srun's (\$T/srun.pids)
+echo "\$*" >> "$T/scancel.log"; sig=""; b=0; rc=\$(cat "$T/scancel.rc" 2>/dev/null || echo 0); [ "\$rc" = 0 ] || exit "\$rc"   # \$T/scancel.rc: fail, signal nothing
+while [ "\$#" -gt 0 ]; do case "\$1" in --signal=*) sig=\${1#--signal=} ;; -s) sig=\$2; shift ;; -b|--batch|-f|--full) b=1 ;; esac; shift; done
+[ -z "\$sig" ] || [ "\$b" = 1 ] || [ ! -s "$T/srun.pids" ] || kill -"\$sig" \$(cat "$T/srun.pids") 2>/dev/null
+exit 0
+EOS
 printf '#!/usr/bin/env bash\nexit 0\n' > "$T/bin/squeue"
 cat > "$T/bin/sinfo" <<EOS
 #!/usr/bin/env bash
