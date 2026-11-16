@@ -301,11 +301,23 @@ taken (exit 2): retry.
 ## 5. Monitor / manage — start reviews with a bounded digest; cadence, milestones, detect-only: `experiment-conventions.md` §7
 ```
 rsk logs -T <t> logs/<name>-<timestamp>.log [<ckpt-dir>] [-n 40]                             # the same digest as below, from the local project root (rsk status: all of its runs)
+rsk wait <run>... | --all-live [--timeout S]                                                 # in the background: one line per run that ends (ENDED / FAILED + digest), exit 0 all rc 0
 rsk logs -T <t> logs/<name>-<timestamp>.log --grep 'loss|Traceback' [-i] [-n 20]             # only matching lines of the log's last 8 MiB (no pipe of yours)
 ssh <host> "bash ~/<WS_REMOTE_DIR>/.ws/status.sh logs/<name>-<timestamp>.log [<ckpt-dir>]"   # review digest (~2 KB): PID alive/gone/reused, log size/age, hints, last 5 lines, ckpt-dir activity
 ssh <host> "bash ~/<WS_REMOTE_DIR>/.ws/status.sh -n 40 logs/<name>-<timestamp>.log"          # deep read on an anomaly: 40 lines × 200 chars, still byte-bounded
 ssh <host> "nvidia-smi --query-gpu=index,uuid,utilization.gpu,memory.used --format=csv,noheader; nvidia-smi --query-compute-apps=pid,gpu_uuid,used_memory --format=csv,noheader"   # join on the uuid
 ```
+**Waiting for runs to end:** run `rsk wait <run>…` (or `--all-live`) in the background under whatever wake-up or
+notification mechanism your runtime offers; act on each line it prints (`ENDED`, `FAILED` + `state=` / `rc=`, `UNOBSERVABLE <t>`, a heartbeat
+`waiting: K of N …`) and on its verdict line. Never hand-write a polling loop around `rsk exec` / `tail` / ssh: zsh does not
+split an unquoted `$VAR`, and a loop that discards read errors stays silent while runs end. `rsk status` / `rsk logs` are
+a one-off look; `rsk watch` follows a run table.
+It reports a run `ENDED` / `FAILED` only on a read of its target made during this wait: an end the ledger recorded earlier
+waits for a complete read (`<STATE> per the ledger, unverified` until then — an unreadable target ends nothing; a requeued
+job is waited for), and `UNCERTAIN` (two reads disagree, or a live process's identity cannot be checked) is not ended: the
+next read decides. `--timeout S` is one deadline for the whole command, reads and digests included (exit 5: say which runs
+are unverified or unread, never "done"). Exit 2 = an unknown or ambiguous RUN (a reused pid, a job id two attempts hold:
+name the run or its log path); a name the ledger lacks while a searched target is unreadable = exit 5 (narrow it with `-T`).
 `status.sh` takes the PID from `<log>.pid` (written beside the log by the run's wrapper — the process-group leader —
 so a later session finds the run without the launch output) and reports `proc=alive pid= etime= cpu= cmd=`, `gone`, `zombie`, or `unknown` (ps failed, or the process is
 much younger than the launch: a reused pid or clock skew — never assumed to be the run). Then the log: size/age, `scan=full|partial hints: …` counted over the

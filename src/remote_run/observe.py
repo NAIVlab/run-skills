@@ -9,7 +9,8 @@ exist under a readable parent is "not synced here" (Slurm still matches jobs aga
 (an unmounted filesystem) stays unobservable. The remote script is sent on
 stdin inside a function, so a cut-off transfer runs nothing (the same shape as bin/run-watch).
 
-The same read lists the attempt journal (`.rs/attempts/*/`: the newest 50 plus any NONCES asked for, each with its
+A caller may name nohup logs to read beside the newest 50 (script's LOGS: rsk wait names every watched run's, so
+one whose log fell out of that set is still read; rsk status names none). The same read lists the attempt journal (`.rs/attempts/*/`: the newest 50 plus any NONCES asked for, each with its
 result, stage, the identity keys of its receipt, the last 512 bytes of its argv and, for asked NONCES, the processes
 that still name it), the box's boot_id (nohup: a run whose receipt names another boot ended with that boot), the jobs
 whose Slurm comment carries `rs=<NONCE>` (when asked: COMMENTS=1) and, for nohup logs, `<log>.rc` (the wrapper's
@@ -85,7 +86,12 @@ SLURM = _DIRPROBE + "\n" + _ATTEMPTS + "\n" + r'''rs_obs() {
 }
 rs_obs'''
 
-NOHUP = _DIRPROBE + "\n" + _ATTEMPTS + "\n" + r'''rs_obs() {
+# rs_pst PID -> its start time (/proc/PID/stat field 22, clock ticks since boot: what launch.sh's receipt calls start),
+# counted after the LAST ')' (a comm may hold one); nothing when unreadable. No here-string: parameter expansion only.
+_PSTART = r'''rs_pst() { local s; s=$(cat "/proc/$1/stat" 2>/dev/null) || return 0; s=${s##*)}; set -f; set -- $s; set +f
+  [ "$#" -ge 20 ] && printf '%s' "${20}"; return 0; }'''
+
+NOHUP = _DIRPROBE + "\n" + _ATTEMPTS + "\n" + _PSTART + "\n" + r'''rs_obs() {
   echo @@start; now=$(date +%s); echo "@@now $now"; U=${USER:-$(id -un)}
   case "$RDIR" in "~/"*) RDIR="$HOME/${RDIR#\~/}" ;; esac
   case "$(rs_dir "$RDIR")" in
@@ -96,7 +102,15 @@ NOHUP = _DIRPROBE + "\n" + _ATTEMPTS + "\n" + r'''rs_obs() {
   esac
   echo "@@pwd $(pwd)|$(pwd -P)"; echo "@@boot $(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
   echo @@ws
-  for l in $(ls -1t logs/*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].log 2>/dev/null | head -n 50); do
+  set -f; ll=""   # LOGS: logs a caller names (rsk wait: every watched one), read beside the newest 50
+  for l in $LOGS; do
+    case "$l" in logs/*/*|*[!A-Za-z0-9._,+=@%/-]*) continue ;;
+      logs/*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].log) ;; *) continue ;; esac
+    [ -f "$l" ] && [ ! -L "$l" ] && ll="$ll
+$l"
+  done; set +f
+  for l in $({ ls -1t logs/*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].log 2>/dev/null | head -n 50
+               [ -z "$ll" ] || printf '%s\n' "$ll"; } | awk 'NF && !s[$0]++'); do
     s=$(stat -c "%Y %s" "$l") || { echo "@@partial stat"; continue; }; p=nopid
     if [ -f "$l.pid" ]; then
       pid=$(head -c 64 "$l.pid" | head -n 1 | tr -d " \t\r"); pm=$(stat -c %Y "$l.pid" 2>/dev/null); p=unknown
@@ -106,7 +120,7 @@ NOHUP = _DIRPROBE + "\n" + _ATTEMPTS + "\n" + r'''rs_obs() {
         elif [ "$prc" != 0 ] || [ "$#" -lt 2 ] || [ -n "${1//[0-9]/}" ] || [ -z "$pm" ]; then p=unknown
         elif [ "$1" -lt $(( now - pm - 60 )) ]; then p=reused
         elif [ "${2#Z}" != "$2" ]; then p=gone
-        else p="alive:$1:$pid"; fi ;;
+        else p="alive:$1:$pid:$(rs_pst "$pid")"; fi ;;
       esac
     fi
     r=""; [ ! -f "$l.rc" ] || r=$(head -c 128 "$l.rc" | head -n 1 | LC_ALL=C tr -c 'A-Za-z0-9=' ',')   # rc=N term=N at=T
@@ -135,6 +149,7 @@ class Job:
     log: str = ""
     pid: str = ""
     rc: dict = field(default_factory=dict)   # nohup <log>.rc: {"rc", "term", "at"} once the wrapper ended
+    pstart: str = ""        # nohup, alive: /proc/PID/stat start ticks ('' = unreadable): the receipt's `start`
 
 
 @dataclass
@@ -146,6 +161,7 @@ class Observation:
     partial: list[str] = field(default_factory=list)
     now: int = 0                                   # remote clock
     observed_at: float = 0.0                       # local clock when the answer arrived
+    started_at: float = 0.0                        # local clock when its ssh started (0 = not known: observed_at)
     jobs: list[Job] = field(default_factory=list)
     attempts: dict[str, dict] = field(default_factory=dict)   # nonce -> {mtime missing result stage receipt gate procs}
     attempts_ok: bool = False                      # the journal was listed in full (no @@partial attempts)
@@ -163,10 +179,21 @@ NONCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _RS = re.compile(r"(?:^|\s)rs=([A-Za-z0-9][A-Za-z0-9._-]{0,63})\s*$")
 
 
-def script(place: Place, days: int, nonces: list[str] | tuple[str, ...] = (), comments: bool = False) -> str:
+# a log a caller may name (script's LOGS): one file of the project's logs/ dir in launch.sh's shape, plain characters
+LOG = re.compile(r"logs/[A-Za-z0-9][A-Za-z0-9._,+=@%-]*-[0-9]{8}-[0-9]{6}\.log")
+LOGS_MAX = 200          # named logs per read (each one: the same per-file byte bounds as a discovered one)
+
+
+def script(place: Place, days: int, nonces: list[str] | tuple[str, ...] = (), comments: bool = False,
+           logs: list[str] | tuple[str, ...] = ()) -> str:
+    """The read of PLACE. LOGS (nohup; opt-in, rsk status names none): project logs (logs/<name>-<stamp>.log, relative
+    to the project dir) read beside the newest 50 the discovery lists — so a watched run whose log fell out of that set
+    is still read. Each one is checked here (LOG) and again remotely (its shape, a regular file, no symlink); others
+    are skipped, at most LOGS_MAX."""
     asked = " ".join(n for n in nonces if NONCE.fullmatch(n))
+    named = " ".join(list(dict.fromkeys(x for x in logs if LOG.fullmatch(x)))[:LOGS_MAX])
     head = (f"RDIR={shlex.quote(place.remote_dir)} DAYS={int(days)} NONCES={shlex.quote(asked)} "
-            f"COMMENTS={int(bool(comments))} FS_WAIT={int(FS_WAIT)}\n")
+            f"COMMENTS={int(bool(comments))} FS_WAIT={int(FS_WAIT)} LOGS={shlex.quote(named)}\n")
     return head + (SLURM if place.kind == "slurm" else NOHUP) + "\n"   # each one self-contained (rs_att inside)
 
 
@@ -301,8 +328,9 @@ def parse(place: Place, text: str, rc: int, err: str) -> Observation:
                 o.jobs.append(Job("", name, "ENDED", end=_int(rcd.get("at", "")) or mtime, source="pid", log=log,
                                   reason=p.split(":")[0], exit_code=rcd["rc"], rc=rcd))
             elif p.startswith("alive:"):
-                _, up, pid = p.split(":")
-                o.jobs.append(Job(pid, name, "ALIVE", start=o.now - _int(up), source="pid", log=log, pid=pid))
+                _, up, pid, *st = p.split(":")
+                o.jobs.append(Job(pid, name, "ALIVE", start=o.now - _int(up), source="pid", log=log, pid=pid,
+                                  pstart=st[0] if st and st[0].isdigit() else ""))
             else:
                 state = {"gone": "ENDED", "nopid": "NOPID", "reused": "ENDED", "unknown": "UNKNOWN"}.get(p, "UNKNOWN")
                 o.jobs.append(Job("", name, state, end=mtime, source="pid", log=log, reason=p))
@@ -318,15 +346,23 @@ def run(place: Place, body: str, deadline: float = 60.0) -> subprocess.Completed
 
 
 def observe(places: list[Place], days: int, deadline: float = 60.0, nonces: dict[str, list[str]] | None = None,
-            comments: dict[str, bool] | None = None) -> list[Observation]:
+            comments: dict[str, bool] | None = None, logs: dict[str, list[str]] | None = None) -> list[Observation]:
     """One ssh per place, in parallel; each one is killed at the deadline (then: unobservable, timeout).
-    NONCES / COMMENTS (per target name): attempts to report even when older than the newest 50 / list rs= comments."""
+    NONCES / COMMENTS / LOGS (per target name): attempts to report even when older than the newest 50 / list rs=
+    comments / nohup logs to read beside the newest 50 (script's LOGS; none unless a caller opts in)."""
     def one(place: Place) -> Observation:
+        t0 = time.time()
+        o = _one(place)
+        o.started_at = o.started_at or t0
+        return o
+
+    def _one(place: Place) -> Observation:
         if place.error:
             return Observation(place, why=f"its profile does not load: {place.error}", observed_at=time.time())
         try:
             done = run(place, script(place, days, (nonces or {}).get(place.target, ()),
-                                     (comments or {}).get(place.target, False)), deadline)
+                                     (comments or {}).get(place.target, False), (logs or {}).get(place.target, ())),
+                       deadline)
             return parse(place, done.stdout, done.returncode, done.stderr)
         except subprocess.TimeoutExpired:
             return Observation(place, why=f"no answer within {deadline:.0f} s", observed_at=time.time())
@@ -338,6 +374,14 @@ def observe(places: list[Place], days: int, deadline: float = 60.0, nonces: dict
         return []
     with ThreadPoolExecutor(max_workers=min(8, len(places))) as pool:
         return list(pool.map(one, places))
+
+
+def obs_window(o: Observation) -> tuple[float, float]:
+    """O's window for ordering it against other reads in the ledger (Ledger.observe's win): [the local wall clock when
+    its ssh started, when its answer arrived] — every reader of a project's ledger runs on this machine, so one clock
+    orders them; the remote state it reports was read somewhere inside it. An Observation built elsewhere (no start):
+    [answer, answer]."""
+    return (o.started_at or o.observed_at), max(o.observed_at, o.started_at or o.observed_at)
 
 
 def age(seconds: float) -> str:

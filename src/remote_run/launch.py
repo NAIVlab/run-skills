@@ -1398,11 +1398,8 @@ def refresh(led: L.Ledger, src: Path, proj: Path, runs: set[str], deadline: floa
     oldest = min((L.epoch(att.get("created_at")) or time.time()) for att in live.values()
                  if att["target"] in {p.target for p in places})
     days = max(2, min(30, int((time.time() - oldest) // 86400) + 2))
-    asked = {p.target: sorted({str(s.get("nonce")) for _r, _a, _t, s in S._subs(st0, p.target)
-                               if s.get("submit") == "unknown"}) for p in places}
-    comments = {p.target: p.kind == "slurm" and bool(asked[p.target]) for p in places}
-    obs = observe.observe(places, days, min(deadline, 60.0), nonces=asked, comments=comments)
-    for n in S.record(led, st0, obs):
+    obs, notes = S.read(led, places, days, min(deadline, 60.0))
+    for n in notes:
         out(f"ledger: {n}")
     after = led.state().runs
     for (r, aid), att in sorted(live.items()):

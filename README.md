@@ -53,7 +53,8 @@ guard rails built in, and gives the agent a short, per-site reference instead of
   make an agent comply (only `rsk` is bound).
 - **Cheap, honest monitoring.** One deployed script, `status.sh`, returns a ~2 KB digest of a run: scheduler or PID
   state, restarts, exit footer, error/OOM/NaN hint counts, the wandb URL and the last lines — all from byte-bounded
-  reads. The agent reviews often while a run is young or odd and backs off while it is healthy.
+  reads. The agent reviews often while a run is young or odd and backs off while it is healthy; to wait for runs to
+  end it runs `rsk wait` in the background, one read-only line per run that ends, never a hand-written polling loop.
 - **Experiment conventions.** Smoke / pilot / train / eval / ablate run classes, structured run names, a fixed
   wandb project/group/name mapping, and a checkpoint + auto-resume contract (Slurm jobs go out with `--requeue`;
   runs longer than the walltime cap become `--dependency=singleton` segment chains). `rsk launch` points out a new run
@@ -160,7 +161,7 @@ trainer that cannot resume from a checkpoint. Nothing runs until you say go.
    │                  recorded permission? submit : wait for your OK (rsk launch --plan <id> --approve)
    ├─ submit          Slurm: submit.sh → site policy → partition limits → MaxTime → availability → sbatch
    │                  workstation: run-launch → nohup on the idlest free GPUs (never one another job uses unasked)
-   ├─ monitor         rsk status / rsk logs (the status.sh digest), byte-bounded; stopping a run: the agent's own, or your call
+   ├─ monitor         rsk wait / status / logs (the status.sh digest), byte-bounded; stopping a run: the agent's own, or your call
    └─ run-pull        copy results back (the same transfer path as run-sync; never deletes local files)
 ```
 

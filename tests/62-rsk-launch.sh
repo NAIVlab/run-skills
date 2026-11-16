@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/62-rsk-launch.sh — phase A: rsk launch / cancel / watch end to end, the real CLI (python -I, src on the path)
+# tests/62-rsk-launch.sh — phase A: rsk launch / cancel / watch / wait end to end, the real CLI (python -I, src on the path)
 # against the fixture targets with an EXECUTING ssh stub (the "remote" runs here: HOME=$T/home), so the deployed
 # submit.sh / launch.sh make the plan and the stub sbatch / scancel / setsid'd runs record what was done. Stub
 # squeue/sacct render one jobs table ($T/jobs: id|user|name|state|workdir|comment) in whatever fields are asked.
@@ -36,6 +36,8 @@ cat > "$T/bin/ssh" <<EOS
 # \`bash -s\` takes its body on stdin. \$T/ssh.drop: the next submit (--rs-expect) runs, then its reply is lost (255).
 # \$T/ssh.noconnect: ssh's own refusal, nothing run (the session never opened). \$T/ssh.fallback: a ProxyCommand's first
 # route refused (the same line on stderr), its second connected: the command RUNS there, then the link dies (255, no output).
+# \$T/ssh.hang: the session hangs (its pid appended to \$T/ssh-hang.pids), as a dead link or a hung mount would.
+[ ! -f "$T/ssh.hang" ] || { echo \$\$ >> "$T/ssh-hang.pids"; exec sleep 60; }
 while [ \$# -gt 0 ]; do case "\$1" in -o) shift 2 ;; -*) shift ;; *) break ;; esac; done
 echo "\$1" >> "$T/ssh-host.log"
 [ ! -f "$T/ssh.noconnect" ] || { echo "ssh: connect to host \$1 port 22: Connection refused" >&2; exit 255; }
@@ -956,3 +958,77 @@ if grep -q 'kill -KILL \$\$' "$W7/.ws/launch.sh"; then
   has "$(att box--train--k1--scratch--s0 a01)" '^SUBMITTED submitted [0-9]' "...ledger: submitted with the pid (never NOT_SUBMITTED)"
   has "$(rsk grant list)" 'launches 1/1' "...the grant's use is kept (launches 1/1)"
 else bad "R4-8 setup: the deployed launch.sh has no 'stage done' line to kill itself after"; fi
+
+echo "-- rsk wait: launched fixture runs end; one line per event, the digest, the verdict line (read-only) --"
+PWT=$(mk_proj fx-slurm 'x'); printf 'REMOTE_DIR=%s\nENV_KIND=none\nWANDB_MODE=disabled\n' "$PWT" > "$PWT/.hpc.conf"; CWD=$PWT
+rsk grant add --quote "smoke runs here are fine" -T fx-slurm --class smoke --action launch --max-gpus 1 --max-live 5 --max-launches 5 --expires 2099-12-31 >/dev/null
+O=$(rsk launch -T fx-slurm -n exp--smoke--wa--scratch--s0--a01 -g 1 -- python t.py); WA=$(jid "$O")
+O=$(rsk launch -T fx-slurm -n exp--smoke--wb--scratch--s0--a01 -g 1 -- python t.py); WB=$(jid "$O")
+O=$(rsk launch -T fx-slurm -n exp--smoke--wc--scratch--s0--a01 -g 1 -- python t.py); WC=$(jid "$O")
+[ -n "$WA" ] && [ -n "$WB" ] && [ -n "$WC" ] && ok "wait: three smoke runs launched ($WA $WB $WC)" || bad "wait: launches ($WA/$WB/$WC)"
+mkdir -p "$PWT/logs"; printf 'step 1\nTraceback (most recent call last):\nRuntimeError: boom\n' > "$PWT/logs/exp--smoke--wb--scratch--s0--a01_$WB.out"
+jobstate "$WA" COMPLETED; jobstate "$WB" FAILED; : > "$T/scancel.log"; NS=$(wc -l < "$T/sbatch.log")
+O=$(rsk wait exp--smoke--wa--scratch--s0 exp--smoke--wb--scratch--s0); RC=$?
+[ "$RC" = 1 ] && has "$O" "^ENDED  exp--smoke--wa--scratch--s0--a01 \[fx-slurm\] rc=0 .* log " "wait: an already-ended run -> ENDED rc=0 in the first round" \
+  || { bad "wait: ENDED (rc=$RC)"; printf '%s\n' "$O" | sed 's/^/    | /'; }
+has "$O" "^FAILED exp--smoke--wb--scratch--s0--a01 \[fx-slurm\] state=FAILED rc=0 traceback=1 error=1 — RuntimeError: boom log .*/logs/exp--smoke--wb--scratch--s0--a01_$WB.out\$" \
+  "...FAILED names the state, the digest (status.sh's hint counts + last line) and the log"
+[ "$(printf '%s\n' "$O" | grep -c '^ENDED \|^FAILED ')" = 2 ] && ok "...one line per ended run" || bad "...one line per ended run"
+has "$(lastln "$O")" '^rsk wait: exit 1 (the remote command ran and failed' "...the verdict line, last: exit 1 (a run failed)"
+[ ! -s "$T/scancel.log" ] && [ "$(wc -l < "$T/sbatch.log")" = "$NS" ] && ok "...read-only: no scancel, no sbatch" || bad "wait: read-only"
+has "$(att exp--smoke--wa--scratch--s0 a01)" '^COMPLETED submitted' "...the ledger reconciled as rsk status does"
+O=$(rsk wait exp--smoke--nosuch--scratch--s0); RC=$?
+[ "$RC" = 2 ] && has "$O" 'unknown run exp--smoke--nosuch--scratch--s0 — rsk status lists' "wait: an unknown run -> exit 2" || bad "wait: unknown (rc=$RC)"
+hasnt "$O" '^waiting:' "...nothing waited"
+# a run that ends while rsk wait waits (Slurm), and a box run that ends on its own (nohup, <log>.rc) — both in the background
+WW=$(mk_proj ws-box 'x'); ln -s "$WW" "$H/projects/ww"; printf 'WS_REMOTE_DIR=projects/ww\nENV_KIND=none\n' > "$WW/.ws.conf"
+CWD=$WW; rsk grant add --quote "launch on the box" -T ws-box --action launch --max-live 5 --max-launches 5 --expires 2099-12-31 >/dev/null
+O=$(rsk launch -T ws-box -d 2 -N box--train--wt--scratch--s0 -- sleep 3); RC=$?
+[ "$RC" = 0 ] && has "$O" '^launched: box--train--wt--scratch--s0 a01' "wait: a box run launched (sleep 3)" || { bad "wait: box launch (rc=$RC)"; printf '%s\n' "$O" | tail -4 | sed 's/^/    | /'; }
+( CWD=$WW; rsk wait box--train--wt--scratch--s0 --every 10 --timeout 120 > "$T/wait-box.out"; echo "rc=$?" >> "$T/wait-box.out" ) &
+WBX=$!
+CWD=$PWT; ( rsk wait exp--smoke--wc--scratch--s0 --every 10 --timeout 120 > "$T/wait-slurm.out"; echo "rc=$?" >> "$T/wait-slurm.out" ) &
+WSL=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q '^waiting: ' "$T/wait-slurm.out" 2>/dev/null && break; sleep 0.5; done
+has "$(cat "$T/wait-slurm.out")" '^waiting: 1 of 1 still running (.*) — exp--smoke--wc--scratch--s0--a01 \[fx-slurm\]: PENDING' \
+  "wait: never silent — the first round says what it waits for, on which target"
+O=$(rsk wait exp--smoke--wc--scratch--s0 --every 10 --timeout 3); RC=$?
+[ "$RC" = 5 ] && has "$O" '^TIMEOUT after 3s: 1 of 1 not ended — exp--smoke--wc--scratch--s0--a01 \[fx-slurm\]: PENDING' \
+  "wait: --timeout -> the TIMEOUT line naming the run's last state, exit 5" || { bad "wait: timeout (rc=$RC)"; printf '%s\n' "$O" | sed 's/^/    | /'; }
+has "$(lastln "$O")" '^rsk wait: exit 5 (unknown or unreachable)$' "...the verdict line, last"
+( cd "$PWT" && HOME="$T/lhome" PATH="$T/bin:$PATH" exec "$PY" -I -c "$RSK_PY" "$SRC" wait exp--smoke--wc--scratch--s0 --every 10 \
+  > "$T/wait-term.out" 2>&1 ) &
+WTM=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q '^waiting: ' "$T/wait-term.out" 2>/dev/null && break; sleep 0.5; done
+kill -TERM "$WTM"; wait "$WTM"; RC=$?
+O=$(cat "$T/wait-term.out")
+[ "$RC" = 130 ] && has "$O" '^interrupted: 1 of 1 not ended — exp--smoke--wc--scratch--s0--a01 \[fx-slurm\]: PENDING' \
+  "wait: SIGTERM -> the interrupted line, exit 130" || { bad "wait: SIGTERM (rc=$RC)"; printf '%s\n' "$O" | sed 's/^/    | /'; }
+hasnt "$O" 'Traceback' "...no traceback"; has "$(lastln "$O")" '^rsk wait: exit 130 (interrupted' "...the verdict line, last"
+jobstate "$WC" COMPLETED
+wait "$WSL" "$WBX"
+O=$(cat "$T/wait-slurm.out")
+has "$O" "^ENDED  exp--smoke--wc--scratch--s0--a01 \[fx-slurm\] rc=0 " "wait: the run that ended meanwhile -> ENDED at the next round" \
+  || printf '%s\n' "$O" | sed 's/^/    | /'
+has "$O" '^rsk wait: exit 0 (ok)$' "...the verdict line: exit 0"; has "$O" '^rc=0$' "...its exit code 0"
+O=$(cat "$T/wait-box.out")
+has "$O" '^ENDED  box--train--wt--scratch--s0 \[ws-box\] rc=0 .* log .*/logs/box--train--wt--scratch--s0-[0-9-]*\.log$' \
+  "wait: a box run's own end (<log>.rc) -> ENDED rc=0 with its log" || printf '%s\n' "$O" | sed 's/^/    | /'
+has "$O" '^rc=0$' "...exit 0"
+# a hung target: --timeout is one deadline for the whole command (never --deadline 60 s per read); a SIGTERM while the
+# read hangs ends it at once — the start line came before the read, and no ssh rsk wait started outlives it
+CWD=$PWT; : > "$T/ssh-hang.pids"; touch "$T/ssh.hang"; S0=$(date +%s)
+O=$(rsk wait exp--smoke--wc--scratch--s0 --every 10 --timeout 3); RC=$?; S1=$(date +%s)
+[ "$RC" = 5 ] && [ $((S1 - S0)) -le 8 ] && has "$O" '^TIMEOUT after 3s: 1 of 1 not ended — exp--smoke--wc--scratch--s0--a01 \[fx-slurm\]: not read yet' \
+  "wait: a hung read -> TIMEOUT at --timeout ($((S1 - S0))s), exit 5" || { bad "wait: hung read (rc=$RC, $((S1 - S0))s)"; printf '%s\n' "$O" | sed 's/^/    | /'; }
+has "$(printf '%s\n' "$O" | head -2)" '^rsk wait: 1 run(s) — read every 10s, timeout 3s (read-only)$' "...the start line first, before the read answered"
+has "$(printf '%s\n' "$O" | sed -n 2p)" '^targets: fx-slurm (1 run(s))$' "...then the targets line"
+( cd "$PWT" && HOME="$T/lhome" PATH="$T/bin:$PATH" exec "$PY" -I -c "$RSK_PY" "$SRC" wait exp--smoke--wc--scratch--s0 --every 10 \
+  > "$T/wait-hung.out" 2>&1 ) &
+WTH=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ "$(wc -l < "$T/ssh-hang.pids")" -ge 2 ] && break; sleep 0.5; done
+S0=$(date +%s); kill -TERM "$WTH"; wait "$WTH"; RC=$?; S1=$(date +%s); rm -f "$T/ssh.hang"
+[ "$RC" = 130 ] && [ $((S1 - S0)) -le 4 ] && has "$(cat "$T/wait-hung.out")" '^interrupted: 1 of 1 not ended' \
+  "wait: SIGTERM while the read hangs -> exit 130 at once" || { bad "wait: SIGTERM mid-read (rc=$RC, $((S1 - S0))s)"; sed 's/^/    | /' "$T/wait-hung.out"; }
+LEFT=""; while read -r P; do kill -0 "$P" 2>/dev/null && LEFT="$LEFT $P"; done < "$T/ssh-hang.pids"
+[ -z "$LEFT" ] && ok "...every ssh rsk wait started is gone (terminated and reaped)" || { bad "...ssh left running:$LEFT"; kill $LEFT 2>/dev/null; }

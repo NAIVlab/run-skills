@@ -11,6 +11,7 @@ UNKNOWN = 5        # the outcome or the remote state is unknown / unreachable
 CONFLICT = 6       # an existing run, lock, drift or stale deploy blocks the action
 LEASE_ENDED = 7    # a watch lease ended while runs were still moving
 PLACEMENT = 8      # placement undecided
+INTERRUPTED = 130  # SIGINT / SIGTERM ended a command that reports it (rsk wait), as a shell reports a signal
 
 EXIT_CODES = {
     OK: "ok",
@@ -22,6 +23,7 @@ EXIT_CODES = {
     CONFLICT: "conflict with existing state",
     LEASE_ENDED: "watch lease ended with runs still moving",
     PLACEMENT: "placement undecided",
+    INTERRUPTED: "interrupted (SIGINT / SIGTERM)",
 }
 
 

@@ -13,6 +13,8 @@
     rsk launch -T T [flags] -- CMD  plan on the target → a record that covers it, else the card + exit 4 (needs user)
     rsk launch --plan ID [--plan ID]... --approve     submit the plan(s) the user approved (a sweep: one approval)
     rsk cancel RUN | --job J -T T [--approve]   a live ledger run, or the user's OK; identity checked, then scancel / kill
+    rsk wait RUN... | --all-live [--timeout S] [--every S] [--json]   wait, read-only, until runs end: one line per
+                                    event (ENDED / FAILED + digest, UNOBSERVABLE), a heartbeat, then the verdict line
     rsk watch TABLE... [run-watch flags]   bin/run-watch under the project's watch lease (one watcher per project)
     rsk sync|bootstrap|pull -T T [args] / rsk avail [args]   the harness's bin/run-* (cwd = project, TARGET set)
     rsk doctor                      offline checks: install, the remote-run skill, packs, targets, ledger grants naming an
@@ -22,9 +24,9 @@
 
 Exit codes: 0 ok · 1 the remote command ran and failed (rsk exec / rsk logs print its code) · 2 usage/config/setup ·
 3 refused · 4 needs the user · 5 unknown/unreachable · 6 conflict · 7 watch lease ended · 8 placement ·
-141 stdout's reader left (`| head`). rsk launch and rsk cancel end stdout with ONE verdict line, always the last:
-`rsk launch: exit N (<meaning>)`, plus ` — <the error's first line>` when an error ended the command (that error
-also goes to stderr as `rsk: …`). A script wrapping rsk keeps that line or the exit code: a grep of the lines
+130 interrupted (rsk wait) · 141 stdout's reader left (`| head`). rsk launch, rsk cancel and rsk wait end stdout
+with ONE verdict line, always the last: `rsk launch: exit N (<meaning>)`, plus ` — <the error's first line>` when an
+error ended the command (that error also goes to stderr as `rsk: …`). A script wrapping rsk keeps that line or the exit code: a grep of the lines
 above it can miss a refusal.
 """
 
@@ -38,14 +40,14 @@ import sys
 from pathlib import Path
 
 from remote_run import __version__, adopt, cancel, config, grants, harness, install, launch, legacy, packs, paths, state
-from remote_run import watch, wrappers
+from remote_run import wait, watch, wrappers
 from remote_run import remote_exec
 from remote_run import status as status_cmd
 from remote_run.errors import EXIT_CODES, OK, UNKNOWN, USAGE, RskError
 
 
 SKILL = "remote-run"                          # the one skill install.sh installs
-VERDICT = ("launch", "cancel")                # their last stdout line is the verdict: verdict_line()
+VERDICT = ("launch", "cancel", "wait")        # their last stdout line is the verdict: verdict_line()
 VERDICT_WHY = 240                             # the error's first line, cut to this many characters
 REPLACED_SKILLS = ("hpc-run", "ws-run")       # the skills it replaced: install.sh uninstalls them from every root
 
@@ -400,6 +402,7 @@ def build_parser() -> argparse.ArgumentParser:
     adopt.add_parser(sub)
     launch.add_parser(sub)
     cancel.add_parser(sub)
+    wait.add_parser(sub)
     watch.add_parser(sub)
     wrappers.add_parsers(sub)
     d = sub.add_parser("doctor", help="offline checks of this install")

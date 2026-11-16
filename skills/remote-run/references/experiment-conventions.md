@@ -101,8 +101,9 @@ corrupts the only resume point. Outside the project dir only under the conf's `O
 
 ## 7. Monitor — cadence, milestones, what a check may decide
 An agent review normally starts with one deployed `status.sh` digest (procedure §5); investigate further as needed.
-Use your runtime's waiting and notification mechanisms; state the wake-up mechanism and its coverage. For many
-jobs or long waits, follow one `run-watch` (procedure §5) instead of polling job by job.
+Use your runtime's waiting and notification mechanisms; state the wake-up mechanism and its coverage. To wait for runs
+to end, run `rsk wait <run>…` (or `--all-live`) in the background under that mechanism and act on its lines (procedure §5);
+never hand-write a polling loop around `rsk exec` / `tail`. A run table: follow one `run-watch` (`rsk watch`).
 Waiting inside a command does not itself arrange a later review. Without a way to return later, report a snapshot
 and the next check time for re-invocation. Do not promise unattended monitoring without a working wake-up mechanism.
 - **Choose the cadence from evidence.** Start with frequent reviews and widen as both liveness (training advancing,

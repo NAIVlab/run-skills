@@ -111,10 +111,12 @@ def reference(src: Path, target: str) -> str:
     return done.stdout.strip() if done.returncode == 0 else ""
 
 
-def places(src: Path, project: Path) -> list[Place]:
+def places(src: Path, project: Path, timeout: float = 60) -> list[Place]:
     """Every target whose conf (.hpc.conf for slurm, .ws.conf for nohup) in PROJECT resolves a remote dir, and every
-    target whose profile does not load (Place.error). A conf that does not source fails the whole read: USAGE."""
-    done = subprocess.run(["bash", "-c", _PLACES], env=env(src), cwd=project, capture_output=True, text=True, timeout=60)
+    target whose profile does not load (Place.error). A conf that does not source fails the whole read: USAGE.
+    TIMEOUT s at most (subprocess.TimeoutExpired; rsk wait passes what is left of its --timeout)."""
+    done = subprocess.run(["bash", "-c", _PLACES], env=env(src), cwd=project, capture_output=True, text=True,
+                          timeout=timeout)
     found = []
     for line in done.stdout.splitlines():
         f = line.split("\t")

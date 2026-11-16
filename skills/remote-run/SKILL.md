@@ -30,7 +30,7 @@ if it is missing (or the user asks to set the project up), follow `references/pr
 `rsk` is uv's tool command (off PATH: `$(uv tool dir --bin)/rsk`); reads are one BatchMode ssh per target. Exit: 0 ok ·
 1 failed on the target · 2 usage / setup gap · 3 refused (policy or the user's deny: final) · 4 needs the user · 5 no
 answer (state unknown) · 6 conflict (plan again, sync, or follow the live run) · 8 too few free GPUs. The flow: `rsk status`
-→ `rsk avail` (placement open) → `rsk sync` / `rsk bootstrap` → `rsk launch` → monitor (`rsk status`, `rsk logs`, `rsk watch`) → `rsk cancel` → `rsk pull`.
+→ `rsk avail` (placement open) → `rsk sync` / `rsk bootstrap` → `rsk launch` → monitor (`rsk wait`, `rsk status`, `rsk logs`, `rsk watch`) → `rsk cancel` → `rsk pull`.
 ```
 rsk status [-T <t>]... [--days N]                 # FIRST (new session, after a summary): ledger runs, jobs on each target, grants, `needs user:`; UNOBSERVABLE = unknown, never "none"
 rsk avail [--type T] [--min N]                    # placement left open: free GPUs on EVERY target (clusters + workstations), read-only
@@ -40,9 +40,10 @@ rsk launch -T <t> [Slurm: -p P -g N -G TYPE -t TIME -n NAME --chain N --nodes K 
 rsk launch --plan <id> [--plan <id>]... --approve   # submit the card(s) the user approved (+ --check-after 30: start milestone)
 rsk launch --relaunch <run>                       # the run's next attempt (aNN) with its recorded configuration
 rsk logs -T <t> <jobid|log> [<ckpt-dir>] [-n 40]  # start a review: the status.sh digest, byte-bounded (-n 40 = deep read; or <jobid|relative log> --grep PAT: matching lines)
+rsk wait <run>... | --all-live [--timeout S]      # wait for runs to end, read-only: in the background, act on each ENDED / FAILED / UNOBSERVABLE line; exit 5 = not known to have ended (never report it done)
 rsk exec -T <t> -- <cmd> [args]                   # ONE bounded read in the remote project dir instead of a raw ssh: squeue sacct sinfo nvidia-smi
                                                   #   ps df ls stat quota mfsgetquota, head/tail -c N <relative path>, …; no pipes, no $VAR
-rsk watch <table> [--act] [--once] [--for S]      # many jobs or long waits: run-watch under the project's lease (procedure §5); --act: every row checked against the denies
+rsk watch <table> [--act] [--once] [--for S]      # a run table (many jobs, resubmits): run-watch under the project's lease (procedure §5); --act: every row checked against the denies
 rsk watch <table> --approve                      # the user OKed the shown rows + `#@ allow` (Slurm); --act / --approve go through rsk watch only
 rsk cancel <run> [--job <id|pid>] [--approve] [--wait S]   # identity check, then scancel / TERM → KILL (--approve: not this ledger's run, the user OKed it)
 rsk pull -T <t> [-n] [--root] <path>...           # copy results back (run-pull; -n = count + size first; --root: under OUTPUT_ROOT)
@@ -165,8 +166,11 @@ restore `grants.json`, or move it and its `.prev` aside and `rsk grant recount`:
   so the command must pick up from its latest checkpoint on relaunch. Smoke tests always run `WANDB_MODE=disabled`.
 - Monitoring (`experiment-conventions.md` §7): widen review intervals only with evidence; anomalies and milestones
   need closer attention. Choose low-cost waiting or notifications supported by the runtime; state the wake-up mechanism
-  and coverage, or report a snapshot and the next check time. Start reviews with the `status.sh` digest (`rsk logs`);
-  keep log reads byte-bounded. Report every finding promptly, healthy status in one line. Detect-only — stopping,
+  and coverage, or report a snapshot and the next check time. To wait for runs to end, run `rsk wait <run>…` (or `--all-live`)
+  in the background under the runtime's wake-up or notification mechanism and act on its lines; never hand-write a polling
+  loop around `rsk exec` / `tail` (zsh does not split `$VAR`; a loop that discards read errors stays silent). `rsk status`
+  / `rsk logs` = a one-off look (reviews start with that `status.sh` digest), `rsk watch` = run tables; keep log reads
+  byte-bounded. Report every finding promptly, healthy status in one line. Detect-only — stopping,
   killing or resubmitting a run is the user's call, except what they authorised and a tool checks: `run-watch --act`
   (Slurm) first-submits or resubmits only table rows the user approved (rows + budget shown, their OK recorded with
   `rsk watch <table> --approve`), within the table's `#@ allow` budget, `fail-stop` cancels included (`rsk watch --act`

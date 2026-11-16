@@ -123,7 +123,7 @@ for r in 'check for an existing authorisation first' 'act when it covers the act
          'A grant records the scope and limits the user allowed; it is bookkeeping, not proof of consent' 'constrains only what goes through it' \
          'Record only what the user allowed' 'show the card verbatim, wait for the user.s words' 'say so in your report' \
          'Exit 5 after a submit = SUBMIT_UNKNOWN, never resubmitted' \
-         'The flow: `rsk status` → `rsk avail` (placement open) → `rsk sync` / `rsk bootstrap` → `rsk launch` → monitor (`rsk status`, `rsk logs`, `rsk watch`) → `rsk cancel` → `rsk pull`'; do
+         'The flow: `rsk status` → `rsk avail` (placement open) → `rsk sync` / `rsk bootstrap` → `rsk launch` → monitor (`rsk wait`, `rsk status`, `rsk logs`, `rsk watch`) → `rsk cancel` → `rsk pull`'; do
   has "$ST" "$r" "authorisation rail: $r"; done
 for r in 'Confirm before every submit' 'without an explicit OK' 'recycl' '--asked' '--quote' '--relaunch-after' 'cancel_own' '<their words>' '<the user.s words>'; do
   hasnt "$ST" "$r" "the replaced rail is gone from $F (it contradicts the user's policy): $r"; done
@@ -275,6 +275,62 @@ has "$(cat "$RS_HOME/$IDX")" 'The user fixed it' "INDEX: a fixed placement is us
 for f in $F $PSL $PNO; do
   has "$(cat "$RS_HOME/$f")" 'run-watch' "$f: many jobs or long waits go through run-watch"
   hasnt "$(cat "$RS_HOME/$f")" 'Monitor(\|/loop\|CronCreate\|ScheduleWakeup\|run_in_background' "$f names no runtime-specific waiting tool"; done
+# rsk wait: the agents' waiter for runs to end (a hand-written loop under zsh stayed silent while runs ended) — every doc that says
+# how to monitor names it, in the background under the runtime's own wake-up mechanism, and never a polling loop of the agent's
+for f in $F $PSL $PNO $SK/references/experiment-conventions.md; do
+  ft=$(tr '\n' ' ' < "$RS_HOME/$f" | tr -s ' ')
+  has "$ft" 'run `rsk wait <run>…` (or `--all-live`) in the background under' "$f: wait for runs to end with rsk wait, in the background"
+  has "$ft" '[Nn]ever hand-write a polling loop around `rsk exec` / `tail`' "$f: never a hand-written polling loop"; done
+for f in $F $PSL $PNO; do
+  has "$(tr '\n' ' ' < "$RS_HOME/$f" | tr -s ' ')" 'zsh does not split .*\$VAR' "$f: why (zsh does not split \$VAR)"
+  has "$(cat "$RS_HOME/$f")" '^rsk wait <run>\.\.\. | --all-live' "$f: rsk wait in the command list"; done
+has "$(cat "$RS_HOME/docs/DESIGN.md")" '^## Waiting (`rsk wait`)$' "DESIGN: the Waiting section"
+WDT=$(tr '\n' ' ' < "$RS_HOME/docs/DESIGN.md" | tr -s ' ')
+for r in 'where `for L in $LOGS` does not word-split' 'stayed silent for 30 minutes' 'never a second implementation' \
+         'every RUN is resolved before the first wait (unknown = exit 2, nothing waited)' 'the first round prints at least one line' \
+         'never taken as "ended"' 'never above 600 s' '5 = `--timeout`' \
+         'only on evidence from a good read of its target made during this wait' '`<STATE> per the ledger, unverified`' \
+         'exit 5, never a false ENDED' 'a requeued job is waited for' '`--timeout S` is ONE deadline from the command.s start' \
+         'with no minimum, and nothing starts after it' 'the heartbeat and the TIMEOUT line come on time while a read hangs' \
+         'if any of them cannot be read it is exit 5' 'are exit 2 naming the candidates' '`resolved: <RUN> -> <name> \[<target>\]`' \
+         'none starts after' 'one older than what the submission last recorded is dropped' 'reopens its recorded end' \
+         'one that overlaps and DISAGREES (live vs ended) is applied to neither side' 'A start time alone is no order' \
+         'taken as the local clock having gone back' 'a read confirming it records a window' 'is a confirmation: the end stays' \
+         'the same boot_id, pid AND /proc start as its receipt' 'uncertain, never reopened, never ended' \
+         'only once every submission of the attempt ended, none uncertain' 'as the ledger.s reconciliation accepted it' \
+         'no change is written once either passed' 'The start line comes before anything that may block' \
+         'and while the discovery or the ledger hangs' 'never while this round.s own read shows one of them live' \
+         '(a confirmation of the end: the run.s own process is over)' 'replaces the recorded end (audit `end_replaced`' \
+         'a cached `COMPLETED 0:0` never stands against a fresh `FAILED 1:0`' 'each workstation read names the logs of every watched run there' \
+         'whose log fell out of the newest 50 before its end was recorded still gets its evidence; `rsk status` names none'; do
+  has "$WDT" "$r" "DESIGN Waiting: $r"; done
+# … the procedures say what an agent may conclude from it: an end only on a read of this wait, one deadline, exit 2 / 5
+for f in $PSL $PNO; do ft=$(tr '\n' ' ' < "$RS_HOME/$f" | tr -s ' ')
+  for r in 'only on a read of its target made during this wait' '`<STATE> per the ledger, unverified` until then' \
+           'an unreadable target ends nothing' '`--timeout S` is one deadline for the whole command' 'never "done"' \
+           '`UNCERTAIN` (two reads disagree, or a live process.s identity cannot be checked) is not ended' \
+           'a reused pid, a job id two attempts hold' 'while a searched target is unreadable = exit 5'; do
+    has "$ft" "$r" "$f: rsk wait — $r"; done; done
+has "$(cat "$RS_HOME/$F")" 'exit 5 = not known to have ended (never report it done)' "$F: rsk wait's exit 5 is never \"done\""
+has "$(tr '\n' ' ' < "$RS_HOME/AGENTS.md" | tr -s ' ')" '`wait.py` (`rsk wait RUN…|--all-live`: read-only, no grant check' "AGENTS: wait.py in the module list"
+# … and the code says what the docs promise: the bounds, the line prefixes, the exit codes
+WPY=$(cat "$RS_HOME/src/remote_run/wait.py")
+for r in '^EVERY = 60 ' '^EVERY_MIN = 10$' '^EVERY_MAX = 600 ' '^HEARTBEAT = 300 ' '^BACKOFF_AFTER = 1800 ' "'ENDED' if ok else 'FAILED'" \
+         'f"UNOBSERVABLE {t}: {o.why}' 'f"OBSERVABLE again {t}"' 'f"waiting: {len(p)} of {len(self.items)} still running' \
+         'f"TIMEOUT after {int(a.timeout)}s"' 'return UNKNOWN' 'unknown run {w} — rsk status lists' \
+         '^DIGEST_WAIT = 60.0 ' '^DISCOVERY_WAIT = 60.0 ' '^RECORD_NEED = 6.0 ' '^WORKERS = 8 ' '^STOP_GRACE = 2.0 ' \
+         'f"{end\[.state.\]} per the ledger, unverified"' 'f"resolved: {w} -> {i.label} \[{i.target}\]"' 'is ambiguous' \
+         'win, at = observe.obs_window(o)' 'dl = min(self.args.deadline, left)' 'wait = min(DIGEST_WAIT, left)' \
+         'shown_live = \[x for x in sent if readable and _live_here(o, item.kind, x)\]' \
+         'logs = _watched_logs(st0, self.items, p.target)'; do
+  has "$WPY" "$r" "wait.py: $r (as the docs say)"; done
+has "$(cat "$RS_HOME/src/remote_run/errors.py")" '^INTERRUPTED = 130 ' "errors.py: rsk wait's interrupt is exit 130"
+LPY=$(cat "$RS_HOME/src/remote_run/ledger.py")
+for r in '^SKEW_S = 3600.0 ' 'def order(rec' 's.get("end") and not s.get("uncertain")' 'return "UNCERTAIN"'; do
+  has "$LPY" "$r" "ledger.py: $r (as DESIGN Waiting says)"; done
+has "$(cat "$RS_HOME/src/remote_run/observe.py")" 'alive:\$1:\$pid:\$(rs_pst "\$pid")' "observe.py: a live box pid carries its /proc start (DESIGN Waiting)"
+has "$(cat "$RS_HOME/src/remote_run/cli.py")" '^VERDICT = ("launch", "cancel", "wait")' "cli.py: rsk wait ends with the verdict line"
+has "$(tr '\n' ' ' < "$RS_HOME/README.md" | tr -s ' ')" 'it runs `rsk wait` in the background' "README: rsk wait in the monitoring story"
 for f in $PSL $PNO; do
   has "$(tr '\n' ' ' < "$RS_HOME/$f")" 'Never  *detach it (no `nohup`, `setsid`, cron)' "$f: run-watch stays owned by the session"; done
 has "$(tr '\n' ' ' < "$RS_HOME/$PSL")" 'only after their explicit OK run `rsk watch <table> --approve' "procedure-slurm: --approve only after the user's OK (through rsk watch: R4-7)"
@@ -1129,7 +1185,7 @@ budget lib/common.sh 178; budget remote/env.sh 170; budget remote/bootstrap.sh 1
 # over SB_ARGS as the scan reads it (+4) and its comment (+4), gpu_avail's [excluded] mark (+2), the NOTEs for a value that is no plain
 # host list and for several --exclude (+3), the check's comment (+2)
 budget remote/status.sh 175   # generous on purpose: every lookup has an explicit failure branch; compressing them hides bugs
-budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 270; budget AGENTS.md 384; budget INSTALL.md 238 # AGENTS +2: cancel --wait / the verdict line / the dir probe / other_dirs; +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
+budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 271; budget AGENTS.md 387; budget INSTALL.md 238 # AGENTS +2: cancel --wait / the verdict line / the dir probe / other_dirs; +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
 # 2026-11-12: AGENTS +6 (OUTPUT_ROOT in Config precedence: prefixable for both kinds, unset by its readers, rs_output_root /
 # rs_root_rel, run-pull --root and run-sync --root's contract, tests/48 (+5); the wrappers line: sync_modes reads --root (+1))
 # 2026-11-12 review: AGENTS +1 (369 → 370) — rs_rpath's local-$HOME reading, credential dirs, the root listed first (-n too)
@@ -1165,7 +1221,7 @@ budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget RE
 # _spaced), status --json's INVALID records (+5); cancel words naming the job, cancel.named / unnamed (+2)); README +0
 # NF8: AGENTS +3 (warnings_gpu in the block and never grant-covered, grants.gpu_warn_miss (+1); a .wandb_env naming HF_HOME /
 # ACCELERATE_ (NF7, +1); --asked and ranges in the cancel approval (+1)); README +0
-budget skills/remote-run/SKILL.md 176; budget bin/run-watch 1103   # round 3: SKILL +11 (the -y rule with grant kinds, --allow-warnings availability|any,
+budget skills/remote-run/SKILL.md 180; budget bin/run-watch 1103   # round 3: SKILL +11 (the -y rule with grant kinds, --allow-warnings availability|any,
 # derived actions and the sticky class, relaunch only after an infrastructure end, cancel approvals bound / 1 h / used up, rsk watch --act vs
 # denies (also in §3), `plan <id> is free again`); run-watch +116 lines (881 → 997), D11 — target column and same-target inheritance, sticky unknowns from any state file
 # (foreign/settled/R_FU, the journal hands back the row's own status), fail-stop inherited with rows plus --release of a non-row trigger, pending
@@ -1204,8 +1260,12 @@ budget skills/remote-run/SKILL.md 176; budget bin/run-watch 1103   # round 3: SK
 # grant: a CANCELLED end, many failures at once, bounded relaunches (+2)); --wait on the cancel line (+0)
 # 2026-11-12: SKILL +2 (OUTPUT_ROOT: the one declared root outside the project dir, reached only with --root (+1); no checkpoint
 # moves by itself — carry it before resuming on another target (+1); rsk pull [--root] (+0))
+# 2026-11-16: SKILL +4 (rsk wait: the command line (+1); the monitoring rail — rsk wait in the background, never a hand-written
+# polling loop, why (zsh, discarded errors), status / logs / watch for what (+3)).
 # 2026-11-14: run-watch +1 (1102 → 1103) — a row word asking for nodes or tasks is refused: rows are single-node.
-budget skills/remote-run/references/experiment-conventions.md 148;   # +1: multi-node TERM may not leave time to save; +4: the run-watch exception (§3, §6, §7); +1: a USR1 death is FAILED; +3: the authorised exceptions (§5, §6, §7)
+budget skills/remote-run/references/experiment-conventions.md 149;   # +1: multi-node TERM may not leave time to save; +4: the run-watch exception (§3, §6, §7); +1: a USR1 death is FAILED; +3: the authorised exceptions (§5, §6, §7)
+# 2026-11-16: conventions +1 (§7: rsk wait in the background, never a polling loop); README +1 (rsk wait in the monitoring
+# bullet); AGENTS +3 (wait.py in the module list)
 # 2026-11-14: conventions +3 (several nodes: one checkpoint writer, the same resume file, a node failing ends all); README +4 (one node or
 # several, max_nodes); AGENTS +7 (Multi-node jobs: --nodes, nodes=, job.sbatch's srun, the SBATCH_EXTRA guard, max_nodes)
 # 2026-11-07: conventions +4 (a new run's name outside §2 a NOTE / --free-name; the §4 NOTE; a smoke refused only when certain, else a WARNING)

@@ -43,9 +43,16 @@ API (every mutator takes the lock itself; hold `with led.locked():` around a che
                                               again = no-op
   led.set_submission(run, attempt, nonce, **fields)   e.g. submit='submitted', job='123' (SUBMIT_UNKNOWN -> known)
   led.find_nonce(nonce) -> (run, attempt) | None      led.find_job(target, job) / led.find_log(target, log)
-  led.observe(run, attempt, key, state, source, at=None, detail='', end=None)
+  led.observe(run, attempt, key, state, source, at=None, detail='', end=None, win=None)
                                               last GOOD observation of one submission (key = job id or log); a
                                               failed read must never call it. end={'state','rc','evidence'} closes it
+                                              (an end already recorded is kept: a confirmation; a strictly newer read
+                                              showing another end replaces it: audited `end_replaced`); a live state
+                                              clears an end (a requeue: audited `reopened`). win = the read's window
+                                              (ssh start, answer; epoch s, None = now): apply_observation's rules
+  led.observe_outcome(...same...) -> (record, 'applied'|'stale'|'reopened'|'replaced'|'uncertain')
+  led.apply_changes(run, changes, deadline=None, cancel=None) -> (record, [outcome, ...])
+                                              several observe / uncertain changes of one run in one write (status.record)
   led.grants() -> Loaded                      led.write_grants(doc) (grants.py owns the record type)
   led.create_plan(record) -> id               O_EXCL; id 'p-<UTC stamp>-<hex>' unless given
   led.read_plan(id) -> Loaded                 led.plans() -> [record, ...] oldest first
@@ -70,14 +77,20 @@ ATTEMPT:
    "request": {"action", "plan" (id), "bound_hash", "bound" {bound fields of the plan}, "class", "grant" (record id),
                "card"} (an older attempt may carry "quote": the user's words, no longer recorded),
    "submissions": [SUBMISSION, ...],
-   "observed": null | {"state", "at", "source", "key"},     the newest good observation of any submission
+   "observed": null | {"state", "at", "source", "key", "obs_w"},  the newest good observation of any submission
    "result": null | {"state", "rc", "at", "evidence"}}       set once no submission can still be live
 SUBMISSION:
   {"nonce", "at", "submit": "submitted"|"unknown"|"not_submitted"|"adopted", "evidence",
    "job": str (Slurm id, '' if none), "proc": null | {"pid", "pgid", "start", "boot_id", "log", "gpu_ids"} (nohup),
-   "seen": null | {"state", "at", "source"}, "end": null | {"state", "rc", "at", "evidence"}}
-attempt_state(attempt) -> 'SUBMIT_UNKNOWN' | 'NOT_SUBMITTED' | result/observed state | 'SUBMITTED';
-is_live(attempt) -> bool (unknown counts as live: a budget never assumes a lost submit did not happen).
+   "seen": null | {"state", "at", "source"}, "end": null | {"state", "rc", "at", "evidence"},
+   "obs_w": [start, end] epoch s (local wall clock) of the read the submission's state came from (absent in older
+            ledgers: unknown age; an `obs_t` of the format before it = [obs_t, obs_t]),
+   "uncertain": null | {"why", "at", "state", "source"}: two reads disagree (overlapping windows, live vs ended), the
+            clock went back, or a live process's identity could not be checked — counted live until a read whose
+            window is strictly newer decides (is_live; attempt_state UNCERTAIN)}
+attempt_state(attempt) -> 'SUBMIT_UNKNOWN' | 'UNCERTAIN' | 'NOT_SUBMITTED' | result/observed state | 'SUBMITTED';
+is_live(attempt) -> bool (unknown counts as live: a budget never assumes a lost submit did not happen; an uncertain
+end too).
 """
 
 from __future__ import annotations
@@ -139,6 +152,8 @@ def attempt_state(att: dict) -> str:
     subs = att.get("submissions") or []
     if any(s.get("submit") == "unknown" for s in subs):
         return "SUBMIT_UNKNOWN"
+    if any(s.get("uncertain") for s in subs):
+        return "UNCERTAIN"
     if subs and all(s.get("submit") == "not_submitted" for s in subs):
         return "NOT_SUBMITTED"
     if att.get("observed"):
@@ -151,9 +166,9 @@ def is_live(att: dict) -> bool:
     if att.get("result"):
         return False
     for s in att.get("submissions") or []:
-        if s.get("submit") == "not_submitted" or s.get("end"):
+        if s.get("submit") == "not_submitted" or (s.get("end") and not s.get("uncertain")):
             continue
-        if s.get("submit") == "unknown":
+        if s.get("submit") == "unknown" or s.get("uncertain"):
             return True
         seen = (s.get("seen") or {}).get("state", "")
         if seen not in TERMINAL:
@@ -385,7 +400,8 @@ class Ledger:
             return bool(h and h[2] == threading.get_ident())
 
     @contextlib.contextmanager
-    def locked(self, timeout: float = 30.0, wait: bool = True) -> Iterator[None]:
+    def locked(self, timeout: float = 30.0, wait: bool = True,
+               cancel: threading.Event | None = None) -> Iterator[None]:
         key = str(self.dir / "lock")
         tid = threading.get_ident()
         with _GUARD:
@@ -403,8 +419,10 @@ class Ledger:
                     mine[1] -= 1
             return
         tl = _tlock(key)
-        if not tl.acquire(timeout=timeout if wait else 0):
-            raise RskError(f"the project ledger is busy (another rsk thread holds {key})", CONFLICT)
+        until = time.monotonic() + (timeout if wait else 0)
+        while not tl.acquire(timeout=max(0.0, min(0.05, until - time.monotonic()))):
+            if time.monotonic() >= until or (cancel is not None and cancel.is_set()):
+                raise RskError(f"the project ledger is busy (another rsk thread holds {key})", CONFLICT)
         try:
             self.ensure()
             fd = os.open(key, os.O_RDWR | os.O_CREAT, 0o600)
@@ -414,7 +432,7 @@ class Ledger:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
                 except BlockingIOError:
-                    if time.monotonic() >= end:
+                    if time.monotonic() >= end or (cancel is not None and cancel.is_set()):
                         holder = os.pread(fd, 200, 0).decode("utf-8", "replace").strip() or "?"
                         os.close(fd)
                         raise RskError(f"the project ledger is busy: lock {key} held by {holder} — wait for it to "
@@ -536,25 +554,63 @@ class Ledger:
         return self.update_run(run, put)
 
     def observe(self, run: str, attempt: str, key: str, state: str, source: str, at: str | None = None,
-                detail: str = "", end: dict | None = None) -> dict:
-        """A GOOD observation of one submission (KEY = its job id or log path). END closes that submission."""
-        when = at or now()
+                detail: str = "", end: dict | None = None, win: tuple[float, float] | None = None) -> dict:
+        """A GOOD observation of one submission (KEY = its job id or log path). END closes that submission. WIN = the
+        read's window (ssh start, answer; epoch s, None = now): apply_observation decides what it may change."""
+        return self.observe_outcome(run, attempt, key, state, source, at=at, detail=detail, end=end, win=win)[0]
+
+    def observe_outcome(self, run: str, attempt: str, key: str, state: str, source: str, at: str | None = None,
+                        detail: str = "", end: dict | None = None,
+                        win: tuple[float, float] | None = None) -> tuple[dict, str]:
+        """observe(), and what became of it: (record, 'applied' | 'stale' | 'reopened' | 'replaced' | 'uncertain')."""
+        rec, outs = self.apply_changes(run, [("observe", attempt, key, state, source, at or now(), end, detail,
+                                               win)])
+        return rec, outs[0]
+
+    def apply_changes(self, run: str, changes: list[tuple], deadline: float | None = None,
+                      cancel: threading.Event | None = None) -> tuple[dict, list[str]]:
+        """Several changes to one run's submissions in ONE write, under the lock: ("observe", attempt, key, state,
+        source, at, end, detail, win) -> apply_observation; ("uncertain", attempt, key, why, at, state, source, win)
+        -> mark_uncertain. A reopen and a new uncertainty go to the audit. DEADLINE (time.monotonic()) / CANCEL: the
+        lock is waited for no longer, and nothing is written once either passed (RskError CONFLICT: the caller keeps
+        its in-memory view)."""
+        outs: list[str] = []
+        events: list[dict] = []
 
         def put(rec: dict) -> None:
-            att = rec["attempts"][attempt]
-            for s in att.get("submissions") or []:
-                if key and key in (s.get("job"), (s.get("proc") or {}).get("log")):
-                    s["seen"] = {"state": state, "at": when, "source": source, **({"detail": detail} if detail else {})}
-                    if state in CANCEL_SENT:   # rsk cancel: the marker cancel_pending() reads after later reads
-                        s["cancel"] = {"state": state, "at": when}
-                    if end:
-                        s["end"] = {"at": when, **end}
-                    elif state not in TERMINAL and s.get("end"):   # a requeued job is live again
-                        s["end"] = None
-                        att["result"] = None
-            att["observed"] = {"state": state, "at": when, "source": source, "key": key}
-            _settle(att)
-        return self.update_run(run, put)
+            if (cancel is not None and cancel.is_set()) or (deadline is not None and time.monotonic() >= deadline):
+                raise RskError("ledger write cut: out of time or stopped", CONFLICT)
+            for c in changes:
+                att = (rec.get("attempts") or {}).get(c[1])
+                if att is None:
+                    outs.append("stale")
+                    continue
+                key = c[2]
+                was = [dict(x.get("end") or {}) for x in _subs_of(att, key) if x.get("end")]
+                if c[0] == "observe":
+                    _k, aid, key, state, source, when, end, detail, win = c
+                    got = apply_observation(att, key, state, source, when, detail, end, win=win)
+                    if got == "reopened":
+                        events.append({"event": "reopened", "attempt": aid, "key": key, "state": state,
+                                       "source": source, "win": list(_win(win)), "ended": was[0] if was else {}})
+                    elif got == "replaced":
+                        events.append({"event": "end_replaced", "attempt": aid, "key": key, "state": state,
+                                       "source": source, "win": list(_win(win)), "ended": was[0] if was else {},
+                                       "end": dict(end or {})})
+                else:
+                    _k, aid, key, why, when, state, source, win = c
+                    got = mark_uncertain(att, key, why, when, state, source, win)
+                if got == "uncertain":
+                    events.append({"event": "uncertain", "attempt": c[1], "key": key,
+                                   "why": att_uncertain(att, key).get("why", ""), "ended": was[0] if was else {}})
+                outs.append(got)
+        wait = 30.0 if deadline is None else max(0.0, min(30.0, deadline - time.monotonic()))
+        with self.locked(timeout=wait, cancel=cancel):
+            rec = self.update_run(run, put)
+            for e in events:
+                ev = e.pop("event")
+                self.audit(ev, run=run, **e)
+        return rec, outs
 
     def find_nonce(self, nonce: str) -> tuple[str, str] | None:
         for run, got in self.runs().items():
@@ -841,6 +897,182 @@ def _settle(att: dict) -> None:
     elif all(s.get("submit") == "not_submitted" for s in subs):
         e = subs[-1]
         att["result"] = {"state": "NOT_SUBMITTED", "rc": "", "at": now(), "evidence": e.get("evidence", "")}
+
+
+SKEW_S = 3600.0   # s: a read whose window ends this much before the recorded one started = the clock went back
+
+
+def _win(win: tuple[float, float] | None) -> tuple[float, float]:
+    if win is None:
+        t = time.time()
+        return t, t
+    a, b = float(win[0]), float(win[1])
+    return (a, b) if a <= b else (b, a)
+
+
+def obs_window(d: dict | None) -> tuple[float, float] | None:
+    """The window [ssh start, answer] (epoch s, local wall clock) of the read a submission's (or an attempt's
+    `observed`) state came from; None = unknown (an older ledger). An `obs_t` (the format before it) = [t, t]."""
+    d = d or {}
+    w = d.get("obs_w")
+    try:
+        if isinstance(w, (list, tuple)) and len(w) == 2:
+            return _win((float(w[0]), float(w[1])))
+        if d.get("obs_t"):
+            t = float(d["obs_t"])
+            return t, t
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _subs_of(att: dict, key: str) -> list[dict]:
+    return [s for s in att.get("submissions") or [] if key and key in (s.get("job"), (s.get("proc") or {}).get("log"))]
+
+
+def att_uncertain(att: dict, key: str) -> dict:
+    for s in _subs_of(att, key):
+        if s.get("uncertain"):
+            return s["uncertain"]
+    return {}
+
+
+def _rec_ended(s: dict) -> bool | None:
+    """Does the submission's recorded state say it ended (None: never observed)?"""
+    if s.get("end"):
+        return True
+    st = (s.get("seen") or {}).get("state")
+    return None if not st else st in TERMINAL
+
+
+def order(rec: tuple[float, float] | None, new: tuple[float, float], agree: bool) -> str:
+    """How a read with window NEW relates to the recorded one REC: 'apply' | 'stale' | 'conflict' | 'skew'.
+    No recorded window (an older ledger: an end of unknown age): apply. A window strictly newer (it starts after the
+    recorded one ended): apply. Strictly older: dropped ('stale') — unless it ends more than SKEW_S before the
+    recorded one started and disagrees: the local clock went back ('skew'). Overlapping: agreeing (both live or both
+    ended) = the later-started one stands; disagreeing = 'conflict' (neither is known to be newer)."""
+    if rec is None or new[0] > rec[1]:
+        return "apply"
+    if new[1] < rec[0]:
+        return "skew" if not agree and rec[0] - new[1] > SKEW_S else "stale"
+    if agree:
+        return "apply" if new[0] >= rec[0] else "stale"
+    return "conflict"
+
+
+def mark_uncertain(att: dict, key: str, why: str, when: str, state: str, source: str,
+                   win: tuple[float, float] | None, widen: bool = True) -> str:
+    """The submissions of KEY are uncertain: counted live (is_live) whatever end they hold, until a read whose window
+    is strictly newer than their (widened) window decides. A read older than the recorded one changes nothing
+    ('stale'). Returns 'uncertain' or 'stale'."""
+    new = _win(win)
+    got = "stale"
+    for s in _subs_of(att, key):
+        rec = obs_window(s)
+        if rec is not None and new[1] < rec[0] and rec[0] - new[1] <= SKEW_S:
+            continue
+        s["uncertain"] = {"why": why, "at": when, "state": state, "source": source}
+        s["obs_w"] = list(new) if rec is None or not widen else [min(rec[0], new[0]), max(rec[1], new[1])]
+        s.pop("obs_t", None)
+        att["result"] = None
+        got = "uncertain"
+    if got == "uncertain":
+        _settle(att)
+    return got
+
+
+def apply_observation(att: dict, key: str, state: str, source: str, when: str, detail: str = "",
+                      end: dict | None = None, win: tuple[float, float] | None = None,
+                      obs_t: float | None = None) -> str:
+    """Ledger.observe()'s change to one ATTEMPT record, in place (pure: rsk wait applies it to its in-memory copy when
+    the ledger could not be written). WIN = the read's window [ssh start, answer] (epoch s; None = now; OBS_T = an
+    instant). Per submission of KEY, order() decides: a stale read changes nothing; a conflicting one (overlapping,
+    live vs ended) or one from before a clock step back marks it uncertain (mark_uncertain, the window widened to
+    both) — counted live, neither state taken; an applied one records its window and state, clears an uncertainty,
+    keeps an end already recorded when it shows the same end (a confirmation: the end stays, the watermark moves),
+    marks it uncertain when an overlapping read (either way) shows another end, replaces it when it is strictly newer (or the end has no window) and shows another end —
+    another state, or another known exit code: a job requeued and ended again between two reads; the result is
+    recomputed — and reopens an end when it is live (a requeue). Returns 'stale' (nothing changed), 'uncertain',
+    'reopened', 'replaced' or 'applied'."""
+    new = _win(win if win is not None or obs_t is None else (obs_t, obs_t))
+    new_ended = bool(end) or state in TERMINAL
+    outs: list[str] = []
+    for s in _subs_of(att, key):
+        was, rec = _rec_ended(s), obs_window(s)
+        # two ends that differ (COMPLETED 0:0 vs FAILED 1:0) disagree like live vs ended: overlapping either way = conflict
+        other_end = bool(was and end and s.get("end") and _end_differs(s["end"], end))
+        how = order(rec, new, (was is None or was == new_ended) and not other_end)
+        if s.get("uncertain") and how == "apply" and rec is not None and new[0] <= rec[1]:
+            how = "undecided"      # uncertain: only a read that began after every read in question decides
+        if how == "undecided":
+            outs.append("stale")   # nothing changes: still uncertain (said once, when it became so)
+            continue
+        if how == "conflict" and s.get("uncertain"):   # still undecided: the window widens, the first reason stays
+            rec = obs_window(s) or new
+            s["obs_w"] = [min(rec[0], new[0]), max(rec[1], new[1])]
+            s.pop("obs_t", None)
+            att["result"] = None
+            outs.append("stale")
+            continue
+        if how in ("conflict", "skew"):
+            why = (("conflicting reads: overlapping reads show different ends ("
+                    f"{s['end'].get('state')} {s['end'].get('rc') or '-'} vs {end.get('state')} {end.get('rc') or '-'})")
+                   if other_end else ("conflicting reads: one shows it " + ("ended" if new_ended else "live")
+                                      + ", an overlapping one " + ("ended" if was else "live"))) if how == "conflict" else (
+                "the local clock went back: this read ends over 1 h before the recorded one started")
+            s["uncertain"] = {"why": why, "at": when, "state": state, "source": source}
+            rec = obs_window(s) or new
+            # skew too keeps the widened window: a clock step back is not proven, and a reset watermark would let older
+            # delayed reads decide (only a read that began after every read in question does)
+            s["obs_w"] = [min(rec[0], new[0]), max(rec[1], new[1])]
+            s.pop("obs_t", None)
+            att["result"] = None
+            outs.append("uncertain")
+            continue
+        if how == "stale":
+            outs.append("stale")
+            continue
+        s["obs_w"] = list(new)
+        s.pop("obs_t", None)
+        s.pop("uncertain", None)
+        s["seen"] = {"state": state, "at": when, "source": source, **({"detail": detail} if detail else {})}
+        if state in CANCEL_SENT:   # rsk cancel: the marker cancel_pending() reads after later reads
+            s["cancel"] = {"state": state, "at": when}
+        if end:
+            had = s.get("end")
+            if not had:
+                s["end"] = {"at": when, **end}
+                outs.append("applied")
+            elif (rec is None or new[0] > rec[1]) and _end_differs(had, end):
+                # a strictly newer read shows another end (requeued and ended again between two reads): it replaces
+                # the recorded one, and the attempt's result is recomputed from it
+                s["end"] = {"at": when, **end}
+                att["result"] = None
+                outs.append("replaced")
+            else:   # an equivalent end, or a read not strictly newer: the recorded end stands (the watermark moves)
+                outs.append("applied")
+        elif not new_ended and s.get("end"):   # a requeued job is live again
+            s["end"] = None
+            att["result"] = None
+            outs.append("reopened")
+        else:
+            outs.append("applied")
+    if outs and all(o == "stale" for o in outs):
+        return "stale"
+    if "applied" in outs or "reopened" in outs or "replaced" in outs:
+        ob = obs_window(att.get("observed"))
+        if ob is None or new[0] >= ob[0]:
+            att["observed"] = {"state": state, "at": when, "source": source, "key": key, "obs_w": list(new)}
+    _settle(att)
+    return ("uncertain" if "uncertain" in outs else "reopened" if "reopened" in outs else
+            "replaced" if "replaced" in outs else "applied")
+
+
+def _end_differs(had: dict, end: dict) -> bool:
+    """Does END contradict the recorded end HAD: another state, or an exit code it knows that differs (an end with no
+    exit code — squeue's row, a pid gone without .rc — confirms one that has it)."""
+    rc = str(end.get("rc") or "")
+    return str(end.get("state") or "") != str(had.get("state") or "") or (rc != "" and rc != str(had.get("rc") or ""))
 
 
 def _is_run(d: Any) -> bool:

@@ -73,7 +73,8 @@ has "$(cat "$A/out")" '^attempt: \.rs/attempts/r1$' "out keeps the attempt line"
 S=$( cd "$H/projects/n" && bash .ws/status.sh "$(kv log "$A/receipt")" )
 has "$S" "^proc=alive pid=$PID " "status.sh: proc=alive for the wrapper pid"; has "$S" '^starts=1 restart=0 footer=none' "status.sh: the header opens a start"
 if command -v python3 >/dev/null 2>&1 && PR=$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); from remote_run import observe; print(observe.NOHUP)' "$RS_HOME/src" 2>/dev/null); then
-  has "$(RDIR="$N" bash -c "$PR" 2>&1)" "^logs/rcpt-.* alive:[0-9]*:$PID\$" "rsk status's nohup probe: alive, with the wrapper pid"
+  has "$(RDIR="$N" bash -c "$PR" 2>&1)" "^logs/rcpt-.* alive:[0-9]*:$PID:$(kv start "$A/receipt")\$" \
+    "rsk status's nohup probe: alive, with the wrapper pid and its /proc start = the receipt's start (rsk's identity check)"
 else echo "  SKIP: python3 / remote_run not importable: rsk's nohup probe not exercised"; fi
 
 echo "-- duplicates: a receipt whose pid, /proc start and boot_id still match --"

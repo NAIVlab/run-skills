@@ -776,6 +776,83 @@ status — but under load bash 5.2.37 returned -1 there (3 of 60 group TERMs), w
 that gives 127 or a value outside 0–255 keeps the 143 (`tests/61`, opt-in: `RS_STRESS_TEST=1 bash selftest.sh` keeps
 every core busy for about a minute and checks 40 such TERMs; a plain selftest lists it among its SKIP lines).
 
+## Waiting (`rsk wait`)
+
+Agents waited for runs by writing their own polling loops around `rsk exec … tail`. One ran under zsh, where
+`for L in $LOGS` does not word-split: its tail read a file that did not exist, its stderr was discarded, and the loop
+stayed silent for 30 minutes while four evals had already finished. A loop each agent writes is a new, untested program
+every time, and its failure mode is silence. `rsk status` reads once; `rsk watch` schedules a run table; neither waits.
+
+`rsk wait RUN… | --all-live` is the tested waiter. It is read-only (no submit, no cancel, nothing written on the target,
+no grant check, like `rsk status`) and reads through the same code as `rsk status` — `observe.script` + `observe.parse`,
+one ssh per involved target per round, in parallel, `observe.FS_WAIT` for a hung mount, the same ledger reconciliation
+(`status.record`) — never a second implementation. One addition: each workstation read names the logs of every
+watched run there (`observe.script`'s `LOGS`), read beside the discovery's newest 50 with the same per-file byte bounds —
+each checked in Python and again remotely (`logs/<name>-<stamp>.log` in the project's own `logs/`, a regular file, no
+symlink, at most 200) — so a watched run whose log fell out of the newest 50 before its end was recorded still gets its
+evidence; `rsk status` names none. Only the ssh runner is its own (the same options as `observe.run`):
+every ssh it starts is tracked, so a signal or the end terminates and reaps each one (killed after 2 s) and none starts
+after; a task still queued then never runs.
+What it guarantees: every RUN is resolved before the first wait (unknown = exit 2, nothing waited) — `-T` filters the
+ledger's attempts before the latest one or a name is picked; a name the ledger does not hold is looked up on every
+searched target, and if any of them cannot be read it is exit 5 naming what the readable ones show (never the readable
+subset; `-T` narrows the search); a workstation pid the ledger launched more than once (reused), or alive now under a
+log no launch of it has, and a Slurm job id two attempts hold, are exit 2 naming the candidates; a RUN only the first
+read resolves is listed as `resolving (first read)`, then gets a `resolved: <RUN> -> <name> [<target>]` line. A live
+process under a pid is a launch's only with that launch's log, boot_id AND /proc start (the receipt's `start`, field 22
+of `/proc/<pid>/stat`, which the read reports beside each live pid): an identity that cannot be read or does not match
+is exit 2 too. The start line comes before anything that may block — target discovery, the ledger, the first read — then
+a `targets:` line, so the first round prints at least one line; every event is one flushed stdout line,
+never repeated — `ENDED` / `FAILED` with the state or rc, a one-line digest from `rsk logs`' own logic and the log path,
+`UNOBSERVABLE <target>` when a read fails (never taken as "ended") and `OBSERVABLE again`, a `waiting: K of N …`
+heartbeat. The main thread only supervises: target discovery, every ledger read and write, the reads and the digests
+run on 8 worker threads, each awaited with a timeout of min(the next heartbeat, the deadline), so the heartbeat and the
+TIMEOUT line come on time while a read hangs, and while the discovery or the ledger hangs.
+When a run is ENDED: only on evidence from a good read of its target made during this wait, as the ledger's
+reconciliation accepted it (the ordering below: a read reconciliation drops or finds in conflict never ends anything) —
+the job or process itself seen ended (a fresh sighting of it live beats any end the ledger cached: a requeued job is
+waited for), or, for an end the ledger already holds, a complete read (no partial section) that does not list the job;
+and only once every submission of the attempt ended, none uncertain (the digest still reads the newest) — and never while
+this round's own read shows one of them live (a recorded end newer than this read is still not taken against it: a
+clock that went back less than 1 h looks just like that; `wait._live_here`, read again). While its target cannot be read,
+or the read is partial, such a run shows as `<STATE> per the ledger, unverified`, is never reported, and keeps the wait
+going (until `--timeout`, or for ever without one) — exit 5, never a false ENDED. Only an attempt that was never submitted
+(no job or log exists to read) is reported from the ledger alone, and only as `FAILED state=NOT_SUBMITTED`. The ledger
+side keeps the same order. Each update carries its read's window — [its ssh start, its answer], this machine's wall
+clock (`observe.obs_window`; every reader of a project's ledger runs here) — and the ledger orders it under the lock
+against the window the submission last recorded (`obs_w`; `ledger.order`): a read that starts after that window ended
+wins; one older than what the submission last recorded is dropped; one whose window overlaps it and agrees (both live,
+or both ended) stands if it began later, and one that overlaps and DISAGREES (live vs ended) is applied to neither side:
+the submission becomes `uncertain` ("conflicting reads", window widened to both), is counted live (`is_live`; status
+shows `UNCERTAIN`) whatever end it holds, and the next read whose window is strictly newer decides. A start time alone
+is no order: two reads overlap, and the one that started first may have seen the newer state. The clock: a read whose
+window ends more than 1 h (`ledger.SKEW_S`) before the recorded one started and disagrees with it is taken as the local
+clock having gone back — uncertain, never silently dropped, and the window only widens (a step back is not proven: a
+delayed old read looks the same, and a watermark moved back would let it decide), so after a real step back the run stays
+`UNCERTAIN` until the clock passes the recorded read (rsk wait: exit 5, never a false end); within 1 h it is an ordinary
+older read. Two ends that differ (COMPLETED 0:0 vs FAILED 1:0) disagree as live vs ended do: overlapping either way. A ledger written before windows has none: an end there is of unknown age, so a live read of the same job
+reopens it (live evidence wins), and a read confirming it records a window. A read that shows an ended job ended again
+is a confirmation: the end stays, the watermark moves to that read, so a delayed older live read can no longer reopen it.
+A strictly newer read that shows ANOTHER end — another state, or another known exit code: a job requeued and ended again
+between two reads — replaces the recorded end (audit `end_replaced`; the attempt's result is recomputed from it), so a
+cached `COMPLETED 0:0` never stands against a fresh `FAILED 1:0`; an end without an exit code (squeue's row, a pid gone
+without `.rc`) confirms one that has it, and an overlapping or uncertain read keeps the rules above.
+A newer read of the same job live again reopens its recorded end (audit `reopened`) — on a workstation only the same
+process: the same boot_id, pid AND /proc start as its receipt; another boot or another start (a reused pid) is not it
+(a confirmation of the end: the run's own process is over), and an identity that cannot be checked (unreadable on either side, or the log's pid file naming another pid) leaves it
+uncertain, never reopened, never ended. Every ledger write takes the deadline and the stop flag: its lock wait ends at
+the deadline, and no change is written once either passed (the round is judged in memory, said, never claimed recorded).
+Rounds are bounded (`--every`, at least 10 s, backing off to 2× without a change of state, never above 600 s).
+`--timeout S` is ONE deadline from the command's start: the local target discovery (at most 60 s), each read (at most
+`--deadline`), the ledger's reads, the ledger write (skipped, in memory only, with less than 6 s left; its lock wait is
+at most 5 s and never past the deadline) and each digest
+(at most 60 s) get what is left of it when they START, with no minimum, and nothing starts after it; an end a good read
+already showed is still reported then, `no digest (cut at --timeout)`. The end is a verdict line like launch's and
+cancel's: 0 = every run ended rc 0, 1 = any other end, 2 = usage or an unknown / ambiguous RUN, 5 = `--timeout`
+(still-unreadable targets and unverified ends named) or a RUN a blind target leaves unresolved, 130 = interrupted. The
+skill tells agents to run it in the background under whatever wake-up mechanism their runtime has and to act on its
+lines; it does not replace the review cadence above, it only makes "has it ended?" a fact instead of a loop's silence.
+
 ## Installation
 
 `install.sh` copies the harness to `~/.agents/run-skills/` and installs **one** copy of the skill into

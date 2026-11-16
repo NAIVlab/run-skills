@@ -285,6 +285,7 @@ plan is a card to show the user, not an approval: their approval (or a grant rec
 ## 5. Monitor / manage — start reviews with a bounded digest; cadence, milestones, detect-only: `experiment-conventions.md` §7
 ```
 rsk status -T <t>                                                    # every job of this project: ledger runs, unledgered jobs, needs user:
+rsk wait <run>... | --all-live [--timeout S]                         # in the background: one line per run that ends (ENDED / FAILED + digest), exit 0 all rc 0
 rsk logs -T <t> <jobid> [<ckpt-dir>] [-n 40]                         # the same digest as below, from the local project root
 rsk logs -T <t> <jobid> --grep 'loss|Traceback' [-i] [-n 20]         # only matching lines of the log's last 8 MiB (--bytes B ≤ 64 MiB)
 rsk exec -T <t> -- mfsgetquota -h <dir>                              # a directory quota `quota` cannot show, where the target reference names one
@@ -293,6 +294,17 @@ ssh <host> 'bash <REMOTE_DIR>/.<t>/status.sh -n 40 <jobid>'            # deep re
 ssh <host> 'squeue -u $USER -o "%.10i %.12P %.3t %.11M %.11L %R %j"'   # everything of yours; %R = pending reason, %j last = full name
 ssh <host> 'sacct -j <jobid> -X -o JobID,State%20,Elapsed,ExitCode'     # accounting (status.sh shows it once the job left the queue); memory: sacct -j <jobid>.batch -o MaxRSS
 ```
+**Waiting for runs to end:** run `rsk wait <run>…` (or `--all-live`) in the background under whatever wake-up or
+notification mechanism your runtime offers; act on each line it prints (`ENDED`, `FAILED` + `state=` / `rc=`, `UNOBSERVABLE <t>`, a heartbeat
+`waiting: K of N …`) and on its verdict line. Never hand-write a polling loop around `rsk exec` / `tail` / ssh: zsh does not
+split an unquoted `$VAR`, and a loop that discards read errors stays silent while runs end. `rsk status` / `rsk logs` are
+a one-off look; `rsk watch` follows a run table.
+It reports a run `ENDED` / `FAILED` only on a read of its target made during this wait: an end the ledger recorded earlier
+waits for a complete read (`<STATE> per the ledger, unverified` until then — an unreadable target ends nothing; a requeued
+job is waited for), and `UNCERTAIN` (two reads disagree, or a live process's identity cannot be checked) is not ended: the
+next read decides. `--timeout S` is one deadline for the whole command, reads and digests included (exit 5: say which runs
+are unverified or unread, never "done"). Exit 2 = an unknown or ambiguous RUN (a reused pid, a job id two attempts hold:
+name the run or its log path); a name the ledger lacks while a searched target is unreadable = exit 5 (narrow it with `-T`).
 `rsk status` tags run-watch's submits (journal nonces `rw-…`) and the `rsk bootstrap --job` job (its receipt's argv ends
 `bash <REMOTE_DIR>/.<t>/bootstrap.sh`) with their tool, never by a name: a job merely named `*-bootstrap` is UNLEDGERED,
 with a note. run-watch's runs still never enter the ledger (`rsk status` lists them as `(run-watch's)`): `rsk launch`

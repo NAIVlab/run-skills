@@ -35,12 +35,13 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 from remote_run import grants, harness, observe, paths
 from remote_run import ledger as L
-from remote_run.errors import FAILED, OK, UNKNOWN, USAGE, RskError
+from remote_run.errors import CONFLICT, FAILED, OK, UNKNOWN, USAGE, RskError
 
 ORDER = {"RUNNING": 0, "ALIVE": 0, "PENDING": 1, "REQUEUED": 1, "SUSPENDED": 1, "CONFIGURING": 1, "COMPLETING": 1}
 
@@ -222,7 +223,7 @@ def _proc(receipt: dict) -> dict:
 def reconcile(state: L.LedgerState, o: observe.Observation) -> list[tuple]:
     """Pure: what a GOOD observation O says about the ledger's submissions on its target.
     ("submitted", run, aid, nonce, fields) | ("not_submitted", run, aid, nonce, evidence, grant id) |
-    ("observe", run, aid, key, state, source, end|None)."""
+    ("observe", run, aid, key, state, source, end|None) | ("uncertain", run, aid, key, why, state, source)."""
     if not o.ok:
         return []
     out: list[tuple] = []
@@ -230,23 +231,74 @@ def reconcile(state: L.LedgerState, o: observe.Observation) -> list[tuple]:
     by_id = {j.id: j for j in o.jobs if j.id and j.source != "pid"}
     by_log = {j.log: j for j in o.jobs if j.log}
     carried = {n: jid for jid, n in o.comments.items()} if o.comments_ok else {}
+
+    def end_of(j: observe.Job, key: str, sub: dict) -> dict | None:
+        """The end O shows for job J (None: it is not over, or this read cannot tell)."""
+        if kind == "slurm":
+            return {"state": j.state, "rc": j.exit_code, "evidence": j.source} if j.state in observe.TERMINAL else None
+        if j.rc:
+            return {"state": "ENDED", "rc": j.rc.get("rc", ""), "evidence": f"{key}.rc term={j.rc.get('term', '?')}"}
+        if j.state == "ENDED":
+            was = str((sub.get("proc") or {}).get("boot_id") or "")
+            if was and o.boot_id and was != o.boot_id:   # positive evidence: the run's boot is over (no .rc written)
+                return {"state": "REBOOT", "rc": "", "evidence": f"pid {j.reason}, no .rc; the box's boot_id is "
+                                                                 f"{o.boot_id[:8]}…, the run's was {was[:8]}…"}
+            return {"state": "ENDED", "rc": "", "evidence": f"pid {j.reason}, no .rc"}
+        return None
+
     def seen(run: str, aid: str, key: str, sub: dict) -> None:
         j = (by_id if kind == "slurm" else by_log).get(key)
         if not j:
             return            # not in this read (older than --days, or not listed): absence is no evidence
-        end = None
-        if kind == "slurm" and j.state in observe.TERMINAL:
-            end = {"state": j.state, "rc": j.exit_code, "evidence": j.source}
-        elif kind == "nohup" and j.rc:
-            end = {"state": "ENDED", "rc": j.rc.get("rc", ""), "evidence": f"{key}.rc term={j.rc.get('term', '?')}"}
-        elif kind == "nohup" and j.state == "ENDED":
-            was = str((sub.get("proc") or {}).get("boot_id") or "")
-            if was and o.boot_id and was != o.boot_id:   # positive evidence: the run's boot is over (no .rc written)
-                end = {"state": "REBOOT", "rc": "", "evidence": f"pid {j.reason}, no .rc; the box's boot_id is "
-                                                              f"{o.boot_id[:8]}…, the run's was {was[:8]}…"}
-            else:
-                end = {"state": "ENDED", "rc": "", "evidence": f"pid {j.reason}, no .rc"}
-        out.append(("observe", run, aid, key, j.state, j.source, end))
+        out.append(("observe", run, aid, key, j.state, j.source, end_of(j, key, sub)))
+
+    def ended_again(run: str, aid: str, key: str, sub: dict) -> None:
+        """A submission the ledger has ended. The same job seen ended again: a confirmation (the end stays, the
+        submission's watermark moves to this read, so an older live read can no longer reopen it). The SAME job seen
+        live again reopens the end (a requeue keeps its Slurm job id; a nohup process is the same one only on the same
+        boot, pid and /proc start). A box process whose identity cannot be checked — a boot_id or start unreadable on
+        either side, or the log's pid file naming another pid — marks it uncertain (counted live; the next read
+        decides); a provably different one (another boot, or the same pid with another start: reused) confirms the
+        end."""
+        j = (by_id if kind == "slurm" else by_log).get(key)
+        if not j:
+            return
+        if kind == "slurm":
+            if j.id != str(sub.get("job") or ""):
+                return
+            out.append(("observe", run, aid, key, j.state, j.source, end_of(j, key, sub)))   # ended: confirmed
+            return
+        if j.state != "ALIVE":
+            end = end_of(j, key, sub)
+            if end is not None:
+                out.append(("observe", run, aid, key, j.state, j.source, end))
+            return
+        proc = sub.get("proc") or {}
+        was_boot, was_pid, was_start = (str(proc.get(k) or "") for k in ("boot_id", "pid", "start"))
+        def over(why: str) -> None:
+            """A provably different process under the log's pid: the run's own one is over — a confirmation of the
+            recorded end (it stays; the watermark moves), so a wait can end on this read."""
+            end = sub.get("end") or {}
+            out.append(("observe", run, aid, key, str(end.get("state") or "ENDED"), "pid",
+                        {"state": str(end.get("state") or "ENDED"), "rc": str(end.get("rc") or ""), "evidence": why}))
+
+        if was_boot and o.boot_id and was_boot != o.boot_id:
+            over(f"pid {j.pid} alive on another boot")   # another boot: the run's own process is over
+            return
+        if was_pid and was_pid != j.pid:
+            out.append(("uncertain", run, aid, key, f"its log's pid file names pid {j.pid}, alive; the launch was pid "
+                        f"{was_pid}", j.state, j.source))
+            return
+        missing = [w for w, a, b in (("boot_id", was_boot, o.boot_id), ("process start", was_start, j.pstart))
+                   if not a or not b]
+        if missing:
+            out.append(("uncertain", run, aid, key, f"pid {j.pid} is alive under its log, but its "
+                        f"{' and '.join(missing)} cannot be compared with the launch's", j.state, j.source))
+            return
+        if was_start != j.pstart:
+            over(f"pid {j.pid} reused (start {j.pstart}, the launch's {was_start})")
+            return
+        out.append(("observe", run, aid, key, j.state, j.source, None))
 
     for run, aid, att, sub in _subs(state, o.place.target):
         nonce, a = str(sub.get("nonce", "")), o.attempts.get(str(sub.get("nonce", "")))
@@ -270,36 +322,86 @@ def reconcile(state: L.LedgerState, o: observe.Observation) -> list[tuple]:
                 out.append(("submitted", run, aid, nonce, fields))
                 seen(run, aid, str(fields.get("job") or (fields.get("proc") or {}).get("log") or ""), {**sub, **fields})
             continue
-        if sub.get("submit") in ("submitted", "adopted") and not sub.get("end"):
-            seen(run, aid, str(sub.get("job") or (sub.get("proc") or {}).get("log") or ""), sub)
+        if sub.get("submit") in ("submitted", "adopted"):
+            key = str(sub.get("job") or (sub.get("proc") or {}).get("log") or "")
+            (ended_again if sub.get("end") else seen)(run, aid, key, sub)
     return out
 
 
-def record(led: L.Ledger, state: L.LedgerState, obs: list[observe.Observation]) -> list[str]:
-    """Apply reconcile() for every good observation; the ledger lock is waited for briefly, never for long."""
+def record(led: L.Ledger, state: L.LedgerState, obs: list[observe.Observation], deadline: float | None = None,
+           cancel: threading.Event | None = None) -> list[str]:
+    """Apply reconcile() for every good observation; the ledger lock is waited for briefly, never for long. Every
+    update carries its read's window (observe.obs_window) and the ledger orders it under the lock (L.order): STATE was
+    read before the lock, so a concurrent rsk status / launch / cancel / wait may have written another read meanwhile —
+    a strictly older one is dropped, an overlapping one that disagrees (live vs ended) leaves the submission uncertain
+    for the next read to decide; a SUBMIT_UNKNOWN another reader already resolved is left as it is. One write per run.
+    DEADLINE (time.monotonic()) / CANCEL (rsk wait's timeout and stop): the lock is waited for no longer, and no
+    change is written after either — what was not written is said, never claimed. rsk status, rsk launch's refresh
+    and --check-after, rsk cancel --wait and rsk wait all write through here."""
     todo = [(o, c) for o in obs for c in reconcile(state, o)]
     if not todo:
         return []
-    notes = []
+    notes: list[str] = []
+
+    def cut() -> str:
+        if cancel is not None and cancel.is_set():
+            return "stopped"
+        if deadline is not None and time.monotonic() >= deadline:
+            return "out of time"
+        return ""
+
+    lock_wait = 5.0 if deadline is None else min(5.0, deadline - time.monotonic())
+    if cut() or lock_wait <= 0:
+        return [f"WARNING: ledger not updated ({cut() or 'out of time'}): this round is in memory only"]
+    per_run: dict[str, list[tuple]] = {}
+    for o, c in todo:
+        at, win = _iso(o.observed_at), observe.obs_window(o)
+        if c[0] == "observe":
+            per_run.setdefault(c[1], []).append(("observe", c[2], c[3], c[4], c[5], at, c[6], "", win))
+        elif c[0] == "uncertain":
+            per_run.setdefault(c[1], []).append(("uncertain", c[2], c[3], c[4], at, c[5], c[6], win))
+    done = 0
     try:
-        with led.locked(timeout=5):
+        with led.locked(timeout=lock_wait, cancel=cancel):
             for o, c in todo:
-                at = _iso(o.observed_at)
+                if c[0] not in ("submitted", "not_submitted"):
+                    continue
+                if cut():
+                    raise RskError(f"ledger update cut ({cut()})", CONFLICT)
+                cur = ((led.read_run(c[1]).data or {}).get("attempts") or {}).get(c[2]) or {}
+                sub = next((x for x in cur.get("submissions") or [] if x.get("nonce") == c[3]), None)
+                if sub is None or sub.get("submit") != "unknown":
+                    continue          # resolved by another reader since STATE was read (or gone): theirs stands
                 if c[0] == "submitted":
                     led.set_submission(c[1], c[2], c[3], **c[4])
                     led.audit("reconciled", run=c[1], attempt=c[2], nonce=c[3], to="submitted", **{
                         k: v for k, v in c[4].items() if k in ("job", "evidence")})
                     notes.append(f"{c[1]} {c[2]}: SUBMIT_UNKNOWN -> submitted ({c[4]['evidence']})")
-                elif c[0] == "not_submitted":
+                else:
                     led.set_submission(c[1], c[2], c[3], submit="not_submitted", evidence=c[4])
                     led.audit("reconciled", run=c[1], attempt=c[2], nonce=c[3], to="not_submitted", evidence=c[4])
                     if c[5] and grants.refund(led, c[5], c[3], c[4]):
                         notes.append(f"{c[1]} {c[2]}: use of {c[5]} given back")
                     notes.append(f"{c[1]} {c[2]}: SUBMIT_UNKNOWN -> not submitted ({c[4]})")
-                else:
-                    led.observe(c[1], c[2], c[3], c[4], c[5], at=at, end=c[6])
+            for run, changes in per_run.items():
+                if cut():
+                    raise RskError(f"ledger update cut ({cut()})", CONFLICT)
+                _rec, outs = led.apply_changes(run, changes, deadline=deadline, cancel=cancel)
+                done += 1
+                for ch, how in zip(changes, outs):
+                    if how == "reopened":
+                        notes.append(f"{run} {ch[1]}: {ch[2]} is {ch[3]} again ({ch[4]}) — its recorded end is "
+                                     "reopened (a requeue): live")
+                    elif how == "replaced":
+                        notes.append(f"{run} {ch[1]}: {ch[2]} ended again as {ch[3]} ({ch[4]}) — a newer read "
+                                     "replaces its recorded end (requeued and ended again)")
+                    elif how == "uncertain":
+                        notes.append(f"{run} {ch[1]}: {ch[2]} is uncertain — "
+                                     + (ch[3] if ch[0] == "uncertain" else "reads disagree") + ": the next read decides")
     except (RskError, OSError) as exc:      # a read-only state dir, a full disk: the view is still printed
-        notes.append(f"WARNING: ledger not updated (read-only view): {exc}")
+        left = len(per_run) - done
+        notes.append(f"WARNING: ledger not updated (read-only view): {exc}"
+                     + (f" — {left} run(s) not recorded, in memory only" if cut() else ""))
     return notes
 
 
@@ -323,6 +425,9 @@ def _att_line(run: str, aid: str, att: dict, now: float, observed: dict[str, obs
     o = observed.get(str(att.get("target")))
     if o is not None and not o.ok and L.is_live(att):
         ev += f"  (target UNOBSERVABLE now: {o.why[:80]} — state unknown)"
+    unsure = next((x["uncertain"] for x in subs if x.get("uncertain")), None)
+    if unsure and not res:
+        ev += f"  ({str(unsure.get('why', ''))[:100]} — counted live; the next read decides)"
     g = (att.get("request") or {}).get("grant")
     return f"  {run:<28} {aid}  {st:<16} [{att.get('target')}] {where}{ev}{'  under ' + g if g else ''}"
 
@@ -397,6 +502,19 @@ def view(led: L.Ledger, state: L.LedgerState, obs: list[observe.Observation], da
             "lease_state": L.lease_state(lease), "watch_lock": lock_holder(led.project)}
 
 
+def read(led: L.Ledger, places: list[harness.Place], days: int, deadline: float) -> tuple[list[observe.Observation],
+                                                                                      list[str]]:
+    """rsk status's read: one read-only ssh per place in parallel (the journal entries of the ledger's SUBMIT_UNKNOWN
+    submissions asked for, and on Slurm the rs= comments), then what it shows applied to the ledger (record()).
+    rsk wait reads through this too: (observations, record()'s notes)."""
+    st0 = led.state()
+    asked = {p.target: sorted({str(s.get("nonce")) for _r, _a, _t, s in _subs(st0, p.target)
+                               if s.get("submit") == "unknown"}) for p in places}
+    comments = {p.target: p.kind == "slurm" and bool(asked[p.target]) for p in places}
+    obs = observe.observe(places, days, deadline, nonces=asked, comments=comments)
+    return obs, record(led, st0, obs)
+
+
 def _lease_line(v: dict) -> str:
     le = v["lease"]
     if not le:
@@ -423,12 +541,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         raise RskError(f"no target resolves a remote dir from {proj}'s conf (REMOTE_DIR / <TAG>_REMOTE_DIR / "
                        "WS_REMOTE_DIR) — see references/project-setup.md", USAGE)
     led = L.Ledger(proj)
-    st0 = led.state()
-    asked = {p.target: sorted({str(s.get("nonce")) for _r, _a, _t, s in _subs(st0, p.target)
-                               if s.get("submit") == "unknown"}) for p in places}
-    comments = {p.target: p.kind == "slurm" and bool(asked[p.target]) for p in places}
-    obs = observe.observe(places, args.days, args.deadline, nonces=asked, comments=comments)
-    notes = record(led, st0, obs)
+    obs, notes = read(led, places, args.days, args.deadline)
     st = led.state()
     targets = {p.target for p in places}
     v = view(led, st, obs, args.days, targets)
@@ -506,11 +619,16 @@ DIGEST = r'''rs_digest() {
 rs_digest'''
 
 
+def digest_body(place: harness.Place, run: str, lines: int = 5, ckpt: str = "") -> str:
+    """The remote script of `rsk logs`: the deployed status.sh for one job id or log path (rsk wait sends it too)."""
+    argv = ["-n", str(lines), run] + ([ckpt] if ckpt else [])
+    return (f"RDIR={shlex.quote(place.remote_dir)} DEPLOY={shlex.quote(place.deploy)} TGT={shlex.quote(place.target)}\n"
+            + DIGEST + " " + " ".join(shlex.quote(a) for a in argv) + "\n")
+
+
 def digest(place: harness.Place, run: str, lines: int = 5, ckpt: str = "", deadline: float = 60.0) -> int:
     """The deployed status.sh digest of one run (a Slurm job id or a log path), printed as it comes; its exit code."""
-    argv = ["-n", str(lines), run] + ([ckpt] if ckpt else [])
-    body = (f"RDIR={shlex.quote(place.remote_dir)} DEPLOY={shlex.quote(place.deploy)} TGT={shlex.quote(place.target)}\n"
-            + DIGEST + " " + " ".join(shlex.quote(a) for a in argv) + "\n")
+    body = digest_body(place, run, lines, ckpt)
     sys.stdout.flush()
     try:
         done = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=30", place.host, "bash -s"],
