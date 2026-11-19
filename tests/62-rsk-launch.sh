@@ -851,7 +851,7 @@ O=$(rsk launch -T ws-box -d 1 -N box--train--busy1--scratch--s0 -- sleep 30); RC
 ! ls "$W"/logs/box--train--busy1--scratch--s0-* >/dev/null 2>&1 && ok "...nothing launched" || bad "...nothing launched"
 rsk grant add --quote "launch anything on the box" -T ws-box --action launch --allow-warnings any --max-live none --max-launches none --expires 2099-12-31 >/dev/null
 O=$(rsk launch -T ws-box -d 1 -N box--train--busy1--scratch--s0 --gpu-busy-ok -- sleep 30); RC=$?; PB=$(pid_of "$O")
-[ "$RC" = 4 ] && has "$O" "never a standing grant's call" "--gpu-busy-ok: not covered even by a grant with --allow-warnings" || { bad "busy + grant (rc=$RC)"; printf '%s\n' "$O" | sed 's/^/    | /'; }
+[ "$RC" = 4 ] && has "$O" "never a standing grant's or the free rule's call" "--gpu-busy-ok: not covered even by a grant with --allow-warnings" || { bad "busy + grant (rc=$RC)"; printf '%s\n' "$O" | sed 's/^/    | /'; }
 has "$O" "^  busy now   1:$ME:$$" "card: who uses which GPU"; has "$O" '^  ON A BUSY GPU: GPU(s) 1' "card: ON A BUSY GPU"
 O=$(rsk launch --plan "$PB" --approve "yes, share GPU 1 with my other job"); RC=$?
 [ "$RC" = 0 ] && has "$O" '^launched: box--train--busy1--scratch--s0 a01 pid [0-9]* on GPU(s) 1 of ws-box' "approved card -> launched onto GPU 1" || { bad "approved busy launch (rc=$RC)"; printf '%s\n' "$O" | sed 's/^/    | /'; }
@@ -866,6 +866,24 @@ O=$(rsk launch -T ws-box -d 3 -N box--train--ds1--scratch--s0 -- deepspeed --num
 has "$O" '^  NO GRANT   1 launcher / container / env-dropping warning(s)' "...the card says NO GRANT"; ! ls "$W"/logs/box--train--ds1--scratch--s0-* >/dev/null 2>&1 && ok "...nothing launched" || bad "...nothing launched"
 O=$(rsk launch --plan "$PD" --approve "yes, deepspeed may take four GPUs"); RC=$?
 [ "$RC" = 0 ] && has "$O" '^launched: box--train--ds1--scratch--s0 a01 pid [0-9]* on GPU(s) 3 of ws-box' "...the user's approval of that card launches it" || { bad "NF8 approved card (rc=$RC)"; printf '%s\n' "$O" | tail -4 | sed 's/^/    | /'; }
+
+echo "-- F1: the free rule — a box whose profile says T_FREE='*' launches with no grant; a deny still wins --"
+mkdir -p "$RS_USER_DIR/targets/ws-free"
+{ cat "$RS_USER_DIR/targets/ws-box/profile.sh"; echo "T_FREE='*'"; } > "$RS_USER_DIR/targets/ws-free/profile.sh"
+WF=$(mk_proj ws-free 'x'); ln -s "$WF" "$H/projects/wf"; printf 'WS_REMOTE_DIR=projects/wf\nENV_KIND=none\n' > "$WF/.ws.conf"; CWD=$WF
+rm -f "$T/apps" "$T/apps.next"
+O=$(rsk launch -T ws-free -d 2 -N box--train--fr1--scratch--s0 -- sleep 30); RC=$?
+[ "$RC" = 0 ] && has "$O" "^covered by free: ws-free costs nothing (the profile's T_FREE)" "F1: no grant, no approval: launched under the free rule" || { bad "F1 free launch (rc=$RC)"; printf '%s\n' "$O" | tail -6 | sed 's/^/    | /'; }
+has "$O" '^launched: box--train--fr1--scratch--s0 a01 pid [0-9]* on GPU(s) 2 of ws-free' "...launched"
+has "$(pyl 'print(" ".join(a["event"] for a in L.Ledger(sys.argv[2]).read_audit()[0]))' "$WF")" 'free_launch' "...one audit line (free_launch), no record"
+O=$(rsk launch -T ws-free -d 3 -N box--train--fr2--scratch--s0 -- deepspeed --num_gpus 4 train.py); RC=$?
+[ "$RC" = 4 ] && has "$O" '^not covered: .*free rule: .*warning(s) on a workstation' "F1: a launcher warning on a free box -> exit 4, the user's call" || { bad "F1 box warning (rc=$RC)"; printf '%s\n' "$O" | tail -4 | sed 's/^/    | /'; }
+rsk grant deny -T ws-free --action launch --expires 2099-12-31 >/dev/null
+O=$(rsk launch -T ws-free -d 3 -N box--train--fr3--scratch--s0 -- sleep 30); RC=$?
+[ "$RC" = 3 ] && has "$O" '^denied: ' "F1: a deny still wins over the free rule (exit 3)" || { bad "F1 deny (rc=$RC)"; printf '%s\n' "$O" | tail -4 | sed 's/^/    | /'; }
+! ls "$WF"/logs/box--train--fr3--scratch--s0-* >/dev/null 2>&1 && ok "...nothing launched" || bad "...launched past a deny"
+rsk cancel box--train--fr1--scratch--s0 --grace 2 >/dev/null 2>&1
+rm -rf "$RS_USER_DIR/targets/ws-free"; CWD=$W
 
 echo "-- nohup cancel: receipt + /proc start + boot_id, TERM to the group, KILL after the grace --"
 O=$(rsk cancel box--train--busy1--scratch--s0 --grace 5); RC=$?

@@ -65,7 +65,9 @@ Auto-pick takes the **idlest** GPUs by `memory.used` among those with no compute
 table and use `-d` when the pick would land on a busy card. **`rsk launch` (§4) plans first and checks whether what
 the user already allowed covers that plan** (SKILL.md §3): covered → it launches and you report which record
 covered it; not covered (exit 4) → show its card verbatim (GPU request, `busy now` = who uses which GPU) with `ref:
-<reference path>` (re-read it if only a summary of it is in context) and wait for the user's words. Installed
+<reference path>` (re-read it if only a summary of it is in context) and wait for the user's words. A box whose
+profile says `T_FREE='*'` (it costs nothing) needs no question: `covered by free: …` — unless the card shows a
+WARNING or a busy GPU, or a deny matches. Installed
 without rsk: the same check against the user's words; outside them, print a one-line plan (target / GPU ids / run
 command / `ref: <reference path>`) and wait for their go. Never launch onto a GPU another job is using without the
 user's words naming it: with `-d <ids> --gpu-busy-ok` (rsk takes it only with `-d`), a card that lands on one (`ON A BUSY GPU`) is never grant-covered.

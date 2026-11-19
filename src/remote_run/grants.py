@@ -118,7 +118,9 @@ API:
                                     against max_live; also = the other actions that apply; cancel: covered with no
                                     record for a live ledger submission of RUN, or when APPROVED (rsk cancel --approve))
                                     the one entry point; Decision.code = 0 | 3 (deny) | 4 (needs the user);
-                                    RskError(CONFLICT) when grants.json is unreadable
+                                    RskError(CONFLICT) when grants.json is unreadable; a launch the free rule covers
+                                    (plan "free" = the profile's T_FREE) is Decision(True, FREE_RECORD, …) before any record
+  free_misses(plan, needed, state) -> [why]   F1: [] = the free rule covers it (no record, no budget; a deny first)
   deny_match(plan, actions, state, *, job=None) -> (deny|None, reason, cancel_own deny|None)   pure (job None = any)
   conf_extra_bad(words) -> [word]   the conf SBATCH_EXTRA words outside EXTRA_ALLOW (the card's NOTE)
   alloc_words(words) -> [word]      the conf SBATCH_EXTRA words that change the allocation (never grant-covered)
@@ -898,6 +900,8 @@ def validate(rec: Any) -> dict:
     kind = rec.get("kind")
     if "id" in rec and not (isinstance(rid, str) and L.NONCE_RE.fullmatch(rid)):
         errs.append(f"id {rid!r} must match {L.NONCE_RE.pattern}")
+    elif rid == "free":                                 # FREE_ID: the free rule's, never a record's (use() skips it)
+        errs.append("id 'free' is reserved for the free rule (T_FREE)")
     if "kind" in rec and kind not in KINDS:
         errs.append(f"kind {kind!r} (one of {', '.join(KINDS)})")
     if "quote" in rec and not isinstance(rec["quote"], str):
@@ -1147,7 +1151,12 @@ def revoke(led: L.Ledger, rid: str, why: str = "") -> dict:
 
 def use(led: L.Ledger, rid: str, nonce: str, action: str, hash: str = "", job: str = "") -> bool:
     """Count one use of RID by NONCE (idempotent: the same nonce again changes nothing; returns False). The audit
-    line goes first, so audit.jsonl always holds every use (what recount() rebuilds from)."""
+    line goes first, so audit.jsonl always holds every use (what recount() rebuilds from). The free rule (FREE_ID) has
+    no record: its use is one audit line (free_launch), counted nowhere."""
+    if rid == FREE_ID:
+        with led.locked():
+            led.audit("free_launch", nonce=nonce, action=action, hash=hash, job=job)
+        return True
     with led.locked():
         doc, got = load(led)
         r = _find(doc, rid)
@@ -1161,7 +1170,10 @@ def use(led: L.Ledger, rid: str, nonce: str, action: str, hash: str = "", job: s
 
 
 def refund(led: L.Ledger, rid: str, nonce: str, why: str) -> bool:
-    """Give back a use whose submit provably did not happen (verdict refused, or the user's not-submitted)."""
+    """Give back a use whose submit provably did not happen (verdict refused, or the user's not-submitted). The free
+    rule counts nothing: nothing to give back."""
+    if rid == FREE_ID:
+        return False
     with led.locked():
         doc, got = load(led)
         r = _find(doc, rid)
@@ -1866,10 +1878,89 @@ def check(ledger: L.Ledger | L.LedgerState, action: str, *, plan: dict | None = 
     rec, reasons = covers(facts_plan, action, state, orig=orig, extending=extending, also=also, prev=prev)
     if rec and rec.get("kind") == "deny":
         return Decision(False, rec, reasons, "")
+    free = free_misses(facts_plan, needed, state)    # F1: before a grant, so a free launch spends none of its budget
+    if not free:
+        return Decision(True, FREE_RECORD, [free_text(facts_plan)], "")
     if rec:
         return Decision(True, rec, [], "")
+    reasons = reasons + [f"free rule: {'; '.join(free)}"]
     what = f"{'/'.join(needed)} of {facts(facts_plan).name or 'this plan'}"
     return Decision(False, None, reasons, f"approval — no record covers {what} (show the card and ask the user)")
+
+
+FREE_ID = "free"
+# F1 (the user, 2026-11-18: "非付费的跑实验都不需要问"): a launch that costs nothing needs no grant and no approval —
+# the target's profile says what is free (T_FREE), rsk checks the plan against it. Not a ledger record: nothing stored,
+# nothing counted, no budget; every use is an audit line (free_launch). A deny still wins (it is checked first).
+FREE_RECORD = {"id": FREE_ID, "kind": "free", "actions": sorted(LAUNCHES), "scope": {}, "limits": {}}
+
+
+def free_list(text: str) -> tuple[str, ...]:
+    """The profile's T_FREE as a tuple (commas and whitespace separate): the partitions that cost nothing, `*` = every
+    one (a workstation: `*`, it has no partitions); () = nothing is declared free."""
+    return tuple(dict.fromkeys(p for p in re.split(r"[\s,]+", text or "") if p))
+
+
+def free_misses(plan: dict, needed: tuple[str, ...], state: L.LedgerState) -> list[str]:
+    """F1: [] when PLAN may go out under the free rule — every action NEEDED a launch-type one; the plan's target
+    declares it free (plan["free"] = the profile's T_FREE, set by launch.check_plan from harness.targets(): a Slurm
+    partition listed or `*`; a workstation `*`); no policy flag (a `--<x>-user-asked` is the user's word, never the
+    agent's) and no conf `-M`/`--clusters` (another cluster); no warning but
+    the availability gate's (a policy -y gate — a charged partition, occupancy — is the user's call; a workstation:
+    none at all, so no launcher / container warning and no busy GPU); a relaunch never while an earlier attempt may
+    be live. Else why not (one item each). What the free rule never touches: denies (checked before it), and the
+    card's own checks (names, the smoke tracker)."""
+    out: list[str] = []
+    if not needed or not set(needed) <= LAUNCHES:
+        return ["not a launch"]
+    f = facts(plan)
+    fl = free_list(str(plan.get("free", "")))
+    tgt = f.target or "this target"
+    if not fl:
+        return [f"{tgt}'s profile declares nothing free (T_FREE)"]
+    if f.unreadable:
+        out.append(f"unreadable plan fields: {', '.join(f.unreadable)}")
+    if f.kind == "slurm":
+        if not f.flags_known:
+            out.append("the plan does not name its policy flags (no flags=: an older deploy — rsk sync)")
+        elif f.flags:                       # e.g. --<x>-user-asked = ACK=1: the user's word, never the agent's
+            out.append(f"policy flag(s) {' '.join(f.flags)}: what a policy flag unlocks is the user's call")
+        clu = [w for w in _conf_words(plan) if (w.startswith("--") and "clusters" in sbatch_long(w[2:].split("=")[0]))
+               or (w.startswith("-M"))]
+        if clu:
+            out.append(f"the conf's SBATCH_EXTRA sends it to another cluster ({' '.join(clu)})")
+        if "*" not in fl and (f.partition is None or f.partition not in fl):
+            out.append(f"partition {f.partition or 'unknown'} is not one {tgt} declares free (T_FREE: {' '.join(fl)})")
+        if f.warnings != 0 and not (f.warnings is not None and f.warnings == f.warnings_avail):
+            a = f.warnings_avail if f.warnings_avail is not None else "unknown"
+            out.append(f"{f.warnings if f.warnings is not None else 'unknown'} warning(s), {a} of them the "
+                       "availability gate's: a policy -y gate (charged partition, occupancy …) is the user's call")
+    elif f.kind == "nohup":
+        if "*" not in fl:
+            out.append(f"{tgt}'s T_FREE is not `*` (a workstation has no partitions)")
+        if f.warnings != 0:
+            out.append(f"{f.warnings if f.warnings is not None else 'unknown'} warning(s) on a workstation (a busy "
+                       "GPU, a launcher / container / env-dropping tool): the user's call")
+        if f.warnings_gpu is None:
+            out.append("no warnings_gpu= in the plan (a launch.sh older than this rsk: rsk sync)")
+    else:
+        out.append(f"kind {f.kind or 'unknown'}")
+    if "relaunch" in needed or "resubmit" in needed:
+        out += _any_misses(plan, f, state)
+    return out
+
+
+def _conf_words(plan: dict) -> list[str]:
+    try:
+        return qwords(str(plan.get("conf_extra", "")))
+    except RskError:
+        return ["(unreadable conf_extra)"]
+
+
+def free_text(plan: dict) -> str:
+    f = facts(plan)
+    where = f"{f.target} partition {f.partition}" if f.kind == "slurm" else f.target
+    return f"free: {where} costs nothing (the profile's T_FREE) — no grant or approval needed (a deny still wins)"
 
 
 def own_submission(state: L.LedgerState, run: str, job: str) -> tuple[dict, dict, bool] | None:
@@ -1927,6 +2018,9 @@ def _ago(s: float) -> str:
 
 def describe(rec: dict) -> str:
     """What REC covers (or forbids), in one line."""
+    if rec.get("kind") == "free":
+        return ("the free rule: a launch on what the target's profile declares free (T_FREE), no policy -y gate — no "
+                "grant or approval needed; a deny still wins")
     sc, acts, lim = rec.get("scope") or {}, rec.get("actions") or [], rec.get("limits") or {}
     on = f" on {', '.join(sc['targets'])}" if sc.get("targets") else ""
     if rec.get("kind") == "approval" and acts == ["cancel"]:

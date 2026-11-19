@@ -213,7 +213,10 @@ at `rsk launch`) — a nudge, not a guard; `tests/lib.sh` exports `RS_VIA_RSK`.
 
 The user's policy: never ask again for what they already allowed, but check every action against it. Every launch, relaunch,
 chain and cancel calls `grants.check()` first — a deny → 3, a covering record → act and record the use, else
-`needs user:` → 4. rsk stores no user words: `--approve` is a flag (an optional value is accepted and ignored, as is
+`needs user:` → 4. The free rule (F1, `grants.free_misses`; after the denies, before any record) covers a launch-type action
+on what the profile's `T_FREE` declares free (partitions or `*`; `launch.check_plan` via `harness.targets()`) with
+no policy flag, no conf `-M`/`--clusters`, warnings none or only availability's (a box: none), no busy landing, no live
+earlier attempt: id `free` (`FREE_RECORD`, reserved), nothing stored but a `free_launch` audit line. rsk stores no user words: `--approve` is a flag (an optional value is accepted and ignored, as is
 cancel's old question flag), `rsk grant … --quote` is optional, and audit events carry no words. One record type in the ledger's `grants.json` (`<state>/projects/<sha256(realpath)[:16]>/`, flock, atomic
 writes with `.prev`, single-use `plans/`, append-only `audit.jsonl`): `approval` (the plan ids + bound hashes of the cards
 the user approved, claimed and recorded in one lock hold, expiring with the plans (24 h) — a sweep is one record),

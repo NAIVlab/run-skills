@@ -82,6 +82,8 @@ summary of it is in context) and wait for the user's words ("go" / "确认" / "�
 Never submit on implicit consent: a description of a run is not an approval of it. Installed without rsk: the same
 check against the user's words in the conversation; outside them, print a one-line plan ending `ref: <reference path>`
 and wait. A charged partition, more resources or a wider scope than the user authorised always goes back to them.
+A partition the profile declares free (`T_FREE`) needs no question: `covered by free: …` (SKILL.md §3) — unless a
+policy `-y` gate warns (a charged partition's, an occupancy gate's) or a deny matches.
 Classify and name the run per `experiment-conventions.md` (run class, structured `-n` name, wandb mapping; `rsk
 launch` NOTEs a new run's name outside its §2). A smoke goes out with `WANDB_MODE=disabled` (prepend `env
 WANDB_MODE=disabled` to the payload, or the conf's key when no ENV_HOOK, conda env or wandb_env naming WANDB_MODE can

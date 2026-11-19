@@ -36,7 +36,10 @@ every key; [`../AGENTS.md`](../AGENTS.md) documents the `policy.sh` API (`t_part
   single-quoted, only `$HOME` / `$USER` expand (on the remote). Choose the storage policy deliberately:
   `T_ENV_ROOT` (where venvs and uv caches live — move them off a filesystem that is slow on small files),
   `T_TMPDIR` (`project` or the job's `inherit`ed `$TMPDIR`), `T_COMPILE_CACHE`, and `T_SUFFIX` when two targets
-  share a filesystem but not an OS or GPU architecture. `T_PARTITIONS` is a display list (error messages, `run-avail`'s
+  share a filesystem but not an OS or GPU architecture. `T_FREE` says what costs nothing — the partitions that charge
+  no allocation, `*` for all (a workstation: `*`); rsk launches there with no
+  grant or approval (DESIGN "The free rule"), so list only what is truly free, and keep a paid partition behind a
+  policy `-y` gate. `T_PARTITIONS` is a display list (error messages, `run-avail`'s
   `sinfo -p`; spaces or commas separate): `policy.sh`'s `t_partition` decides which partitions exist. `rsk grant
   add|deny|import --partition` refuses one the list lacks (exit 2: a typo would never match) unless the user confirms
   it is real (`--unlisted-partition`; import: `"unlisted_ok": true`) — then it is recorded with a NOTE, which `rsk grant

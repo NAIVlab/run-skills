@@ -80,6 +80,9 @@ Do not ask again for what the user already allowed; check every action against i
 resubmit or cancel, check for an existing authorisation first (`rsk launch` / `rsk cancel` check the project's ledger:
 approvals, grants, denies); act when it covers the action, ask only when it does not. `--approve` is a flag that says
 the user approved what is on screen (the card, the rows, this cancel); rsk records that it was approved, never their words.
+- **Free runs need no question**: a launch on what the profile declares free (`T_FREE`: a box `*`, a cluster its no-charge
+  partitions) needs no grant (`covered by free: …`) — not past a deny, a policy `-y` gate (availability alone is fine) or
+  flag (`--…-user-asked` is only ever the user's word), a box WARNING or busy GPU, or a live earlier attempt. Record no grant for it; report what you launched.
 - "Run this set on this target", "you decide", "auto-resume preemptions within N": record it once, `rsk grant add
   --action launch|relaunch|chain -T <t> [--partition P] [--name '<glob>'] [--max-gpus N] [--max-nodes K] [--max-time T]
   [--allow-warnings availability|any] --max-live N|none --max-launches N|none --expires <date>|none` — exactly the

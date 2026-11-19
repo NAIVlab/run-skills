@@ -1185,7 +1185,7 @@ budget lib/common.sh 178; budget remote/env.sh 170; budget remote/bootstrap.sh 1
 # over SB_ARGS as the scan reads it (+4) and its comment (+4), gpu_avail's [excluded] mark (+2), the NOTEs for a value that is no plain
 # host list and for several --exclude (+3), the check's comment (+2)
 budget remote/status.sh 175   # generous on purpose: every lookup has an explicit failure branch; compressing them hides bugs
-budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 271; budget AGENTS.md 387; budget INSTALL.md 238 # AGENTS +2: cancel --wait / the verdict line / the dir probe / other_dirs; +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
+budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget README.md 271; budget AGENTS.md 391; budget INSTALL.md 238 # AGENTS +4: the free rule (F1, T_FREE); +2: cancel --wait / the verdict line / the dir probe / other_dirs; +10: rsk, +1: the hpc-run/ws-run uninstall, +16: the attempt journal, +13: api=3 (plan, --rs-expect, --rs-chain, busy GPUs, the rsk redirect); INSTALL +2: which rsk, setup without rsk
 # 2026-11-12: AGENTS +6 (OUTPUT_ROOT in Config precedence: prefixable for both kinds, unset by its readers, rs_output_root /
 # rs_root_rel, run-pull --root and run-sync --root's contract, tests/48 (+5); the wrappers line: sync_modes reads --root (+1))
 # 2026-11-12 review: AGENTS +1 (369 → 370) — rs_rpath's local-$HOME reading, credential dirs, the root listed first (-n too)
@@ -1221,7 +1221,7 @@ budget tests/lib.sh 130; budget selftest.sh 65; budget install.sh 130; budget RE
 # _spaced), status --json's INVALID records (+5); cancel words naming the job, cancel.named / unnamed (+2)); README +0
 # NF8: AGENTS +3 (warnings_gpu in the block and never grant-covered, grants.gpu_warn_miss (+1); a .wandb_env naming HF_HOME /
 # ACCELERATE_ (NF7, +1); --asked and ranges in the cancel approval (+1)); README +0
-budget skills/remote-run/SKILL.md 180; budget bin/run-watch 1103   # round 3: SKILL +11 (the -y rule with grant kinds, --allow-warnings availability|any,
+budget skills/remote-run/SKILL.md 183; budget bin/run-watch 1103   # F1: SKILL +3 (free runs need no question); round 3: SKILL +11 (the -y rule with grant kinds, --allow-warnings availability|any,
 # derived actions and the sticky class, relaunch only after an infrastructure end, cancel approvals bound / 1 h / used up, rsk watch --act vs
 # denies (also in §3), `plan <id> is free again`); run-watch +116 lines (881 → 997), D11 — target column and same-target inheritance, sticky unknowns from any state file
 # (foreign/settled/R_FU, the journal hands back the row's own status), fail-stop inherited with rows plus --release of a non-row trigger, pending

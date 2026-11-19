@@ -482,10 +482,28 @@ changes the allocation the caps check) and `--same-name-ok`, and the agent cance
 | the user said "run this set of experiments on this target" | parameters within that scope: act directly |
 | the user approved a sweep | the whole set shares one approval, no per-member question |
 | a preempted run resumes with its original configuration, and the user authorised auto-resume | within the budget: act directly |
+| an experiment that costs nothing (a workstation, a free partition: the profile's `T_FREE`) | act directly (the free rule, below) |
 | a charged partition, more resources, or a wider experiment scope | confirm |
 | the user said "cancel job 123" | cancel once the job's identity is verified (their OK is for that command) |
 | the user authorised "on a failure, stop the rest of the group" | act when the condition holds |
 | the agent decides on its own that a run is not worth continuing | its own run (this project's ledger): cancel and report; anything else: confirm |
+
+**The free rule (F1, 2026-11-18: "非付费的跑实验都不需要问" — experiments that cost nothing need no question).** What
+costs money is a site fact, so it lives in the target's profile: `T_FREE` lists the partitions that charge nothing
+(`*` = every one; a workstation the user owns: `*`; empty or absent = nothing free, the shipped default); a paid
+partition stays out of it and behind a policy `-y` gate. `grants.check()` tries it after the denies and before any record, so a free launch spends
+no grant budget: a launch-type action is covered when the plan's target declares it free (`launch.check_plan` reads
+`T_FREE` through `harness.targets()`, never from the plan the target printed), it carries no policy flag (`flags=`
+empty: a `--<x>-user-asked` sets the policy's ACK, the user's word that the agent cannot give itself) and no conf
+`-M` / `--clusters` (another cluster's partitions), its warnings are none or only the availability gate's (a policy `-y` gate — a charged
+partition, an occupancy gate — still needs the user; a workstation: no warning at all, so no launcher / container
+WARNING, and a busy GPU stays the user's call as for any grant), an older box block without `warnings_gpu` is not
+free, and a relaunch never starts while an earlier attempt may be live (`_any_misses`, as
+under a `launch` grant). There is no record: nothing is stored or counted, the use is one `free_launch` audit line, the
+card says `covered by free: …`; the id `free` is reserved (`validate()` refuses a record named so). The conf's own `ACCOUNT` / `--qos` words are the project's chosen configuration (a
+priority QOS on a free partition is common) and do not end the rule: the policy, which sees them, gates what charges. A
+user who wants to be asked on a free target records a deny for it. The facts:
+`tests/py/test_free.py`, `tests/62` 'F1'.
 
 How rsk maps it. `rsk launch` plans on the target first (plan mode, above), stores the plan and its card, and calls
 `grants.check()` before anything is submitted; `rsk cancel` does the same before it signals anything. There is one

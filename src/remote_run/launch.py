@@ -1286,11 +1286,27 @@ def check_plan(rec: dict, runs: dict | None = None, unread: set[str] | None = No
         plan["class"] = rec["class"]
     plan["classes_recorded"] = grants.run_classes((runs or {}).get(rec["run"]))   # each attempt's, '' = none
     plan["plan_id"] = rec["id"]
+    plan["free"] = target_free(str(rec.get("target", "")))      # F1: the profile's T_FREE, read now (grants.free_misses)
     if rec.get("created_at"):          # relaunch_after any reads the journal count only from a fresh plan
         plan["plan_age_s"] = max(0.0, time.time() - L.epoch(rec["created_at"]))
     if unread:
         plan["unreadable_now"] = sorted(unread)
     return plan
+
+
+_FREE: dict[str, str] | None = None
+
+
+def target_free(target: str) -> str:
+    """The profile's T_FREE of TARGET as the harness loads it now ('' when nothing is declared free, the target is
+    unknown or the listing fails: the free rule then covers nothing). Read once per rsk process."""
+    global _FREE
+    if _FREE is None:
+        try:
+            _FREE = {t.name: t.free for t in harness.targets(paths.harness_src()) if not t.error}
+        except (OSError, subprocess.SubprocessError, RskError):
+            _FREE = {}
+    return _FREE.get(target, "")
 
 
 def room(rec: dict, bound_hash: str) -> float:
@@ -1321,8 +1337,8 @@ def decide(source: L.Ledger | L.LedgerState, rec: dict, need: int | None = None,
     if left < n:
         why.append(f"room for {int(left)} of the {n} chain segments")
     hit = busy_landing(rec)
-    if hit and d.record.get("kind") == "grant":
-        why.append(f"{hit}: a GPU another job uses is never a standing grant's call — only the user's OK for that GPU")
+    if hit and d.record.get("kind") in ("grant", "free"):
+        why.append(f"{hit}: a GPU another job uses is never a standing grant's or the free rule's call — only the user's OK for that GPU")
     if why:
         return grants.Decision(False, None, [f"{d.record['id']}: {'; '.join(why)}"],
                                f"approval — no record covers {'/'.join(acts)} of {rec['name']} (show the card and ask "
@@ -1836,7 +1852,8 @@ def cmd_new(ns: argparse.Namespace, led: L.Ledger, src: Path, proj: Path) -> int
         out("not covered: " + ("; ".join(d.reasons) or "no record"))
         out(f"needs user: approval — plan {rec['id']}")
         return NEEDS_USER
-    out(f"covered by {d.record['id']} ({d.record['kind']}): {grants.describe(d.record)}")
+    out(f"covered by {d.reasons[0]}" if d.record["kind"] == "free" else
+        f"covered by {d.record['id']} ({d.record['kind']}): {grants.describe(d.record)}")
     launched: list = []
     code = submit_plan(led, src, proj, place, rec, d.record["id"], ns.deadline, launched=launched,
                        unread=unread)

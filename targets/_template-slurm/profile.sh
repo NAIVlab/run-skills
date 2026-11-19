@@ -22,5 +22,6 @@ T_MAXTIME=7-00:00:00             # cluster-wide walltime cap; policy.sh lowers i
 T_FORBIDDEN_QOS=''               # QOS names rejected when found in SBATCH_EXTRA
 T_SBATCH_EXTRA_ALLOW=''          # extra sbatch options SBATCH_EXTRA may use beyond the shipped set (e.g. '--open-mode -w'); others warn
 T_PARTITIONS='gpu cpu'           # a display list (error messages, run-avail's sinfo -p; spaces or commas separate); policy.sh is the authority: rsk grant refuses a --partition this lacks (exit 2) unless --unlisted-partition, then records it with a NOTE — list every partition users name
+T_FREE=''                        # partitions that charge nothing ('*' = every one; '' = none): rsk launches there with no grant or approval (the free rule; a policy -y gate or a deny still goes to the user) — keep every paid partition out of it and behind a -y gate
 T_WATCH_RECOVER=1                # 0 = run-watch never resubmits here (reports needs-ok); 1 = within a table's approved budget
 T_BOOTSTRAP_JOB=''                # submit.sh flags for `run-bootstrap --job` (e.g. '-p cpu -c 8 -m 32G -t 02:00:00'); '' = pass them

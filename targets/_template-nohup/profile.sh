@@ -16,3 +16,4 @@ T_TMPDIR=project                 # workstation /tmp is often tiny: keep tmp in-p
 T_COMPILE_CACHE=project
 T_REMOTE_DIR_REQUIRED=0
 T_CONF_KEYS=''
+T_FREE=''                        # '*' = launching here costs nothing (the user's own box): rsk launches with no grant or approval (the free rule; any WARNING, a busy GPU, a deny still go to the user); '' = ask
